@@ -3,3 +3,4 @@ logs
 *.log
 target
 Cargo.lock
+.idea/
