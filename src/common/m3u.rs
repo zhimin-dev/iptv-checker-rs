@@ -255,6 +255,7 @@ impl M3uObjectList {
         }
         drop(tx); // 发送完成后关闭队列
 
+        counter.print_now_status();
         let mut i = 0;
         loop {
             if i == counter.total {
@@ -280,7 +281,7 @@ impl M3uObjectList {
         for x in &self.result_list {
             if x.status == Success {
                 counter.incr_succ();
-                let exp: Vec<&str> = x.raw.split("\n").collect();
+                let exp: Vec<&str> = x.raw.split('\n').collect();
                 for o in exp {
                     lines.push(o.to_owned());
                 }
@@ -537,7 +538,7 @@ pub mod m3u {
         if _body.starts_with("#EXTM3U") {
             return Some(SourceTypeNormal);
         }
-        let exp = _body.split("\n");
+        let exp = _body.split('\n');
         let mut quota = false;
         for x in exp {
             if !quota {

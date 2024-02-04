@@ -68,7 +68,7 @@ pub fn read_pid_num() -> Result<u32, Error> {
     match read_pid_contents(PID_FILE.to_string()) {
         Ok(contents) => {
             let mut n_contents = contents;
-            n_contents = n_contents.replace("\n", "");
+            n_contents = n_contents.replace('\n', "");
             match n_contents.parse::<u32>() {
                 Ok(num) => Ok(num),
                 Err(e) => Err(Error::new(ErrorKind::InvalidData, e)),
