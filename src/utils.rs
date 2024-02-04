@@ -8,7 +8,7 @@ use std::process::Command;
 
 pub fn get_out_put_filename(output_file: String) -> String {
     let mut filename = output_file.clone();
-    if output_file == "" {
+    if output_file.is_empty() {
         filename = get_random_output_filename();
     }
     filename
@@ -27,7 +27,7 @@ fn get_random_output_filename() -> String {
 
 fn read_pid_contents(pid_file: String) -> Result<String, Error> {
     let mut f = File::open(pid_file)?;
-    let mut contents = String::new();
+    let mut contents = String::default();
     f.read_to_string(&mut contents)?;
     Ok(contents)
 }

@@ -18,7 +18,7 @@ pub fn check_body_is_m3u8_format(_body: String) -> bool {
 pub fn parse_normal_str(_body: String) -> M3uObjectList {
     let mut result = M3uObjectList::new();
     let mut list = Vec::new();
-    let exp_line = _body.split('\n');
+    let exp_line = _body.lines();
     let mut m3u_ext = M3uExt { x_tv_url: vec![] };
     let mut index = 1;
     let mut one_m3u = Vec::new();
@@ -60,29 +60,29 @@ fn parse_m3u_header(_str: String) -> M3uExt {
 }
 
 fn parse_one_m3u(_arr: Vec<&str>, index: i32) -> Option<M3uObject> {
-    let url = _arr.get(_arr.len() - 1).unwrap().to_string();
-    if _arr.get(0).unwrap().starts_with("#EXTINF") && is_url(url.to_owned()) {
+    let url = _arr.last().unwrap().to_string();
+    if _arr.first().unwrap().starts_with("#EXTINF") && is_url(url.to_owned()) {
         let mut extend = M3uExtend::new();
-        if let Some(title) = _arr.get(0).unwrap().split("group-title=\"").nth(1) {
+        if let Some(title) = _arr.first().unwrap().split("group-title=\"").nth(1) {
             extend.set_group_title(title.split('"').next().unwrap().to_owned())
         }
-        if let Some(tv_id) = _arr.get(0).unwrap().split("tvg-id=\"").nth(1) {
+        if let Some(tv_id) = _arr.first().unwrap().split("tvg-id=\"").nth(1) {
             extend.set_tv_id(tv_id.split('"').next().unwrap().to_owned())
         }
-        if let Some(tv_logo) = _arr.get(0).unwrap().split("tvg-logo=\"").nth(1) {
+        if let Some(tv_logo) = _arr.first().unwrap().split("tvg-logo=\"").nth(1) {
             extend.set_tv_logo(tv_logo.split('"').next().unwrap().to_owned())
         }
-        if let Some(tv_country) = _arr.get(0).unwrap().split("tvg-country=\"").nth(1) {
+        if let Some(tv_country) = _arr.first().unwrap().split("tvg-country=\"").nth(1) {
             extend.set_tv_country(tv_country.split('"').next().unwrap().to_owned())
         }
-        if let Some(tv_language) = _arr.get(0).unwrap().split("tvg-language=\"").nth(1) {
+        if let Some(tv_language) = _arr.first().unwrap().split("tvg-language=\"").nth(1) {
             extend.set_tv_language(tv_language.split('"').next().unwrap().to_owned())
         }
-        if let Some(user_agent) = _arr.get(0).unwrap().split("user-agent=\"").nth(1) {
+        if let Some(user_agent) = _arr.first().unwrap().split("user-agent=\"").nth(1) {
             extend.set_user_agent(user_agent.split('"').next().unwrap().to_owned())
         }
-        let exp: Vec<&str> = _arr.get(0).unwrap().split(',').collect();
-        let name = exp.get(exp.len() - 1).unwrap();
+        let exp: Vec<&str> = _arr.first().unwrap().split(',').collect();
+        let name = exp.last().unwrap();
 
         let mut m3u_obj = M3uObject::new();
         m3u_obj.set_extend(extend);
@@ -99,14 +99,14 @@ fn parse_one_m3u(_arr: Vec<&str>, index: i32) -> Option<M3uObject> {
 pub fn parse_quota_str(_body: String) -> M3uObjectList {
     let mut result = M3uObjectList::new();
     let mut list = Vec::new();
-    let exp_line = _body.split('\n');
+    let exp_line = _body.lines();
     let mut now_group = String::from("");
     let mut index = 1;
     for x in exp_line {
         let one_c: Vec<&str> = x.split(',').collect();
         let mut name = String::from("");
         let mut url = String::from("");
-        match one_c.get(0) {
+        match one_c.first() {
             Some(pname) => {
                 name = pname.to_string();
             }
@@ -119,7 +119,7 @@ pub fn parse_quota_str(_body: String) -> M3uObjectList {
             }
             None => {}
         }
-        if name != "" && url != "" {
+        if !name.is_empty()&& !url.is_empty() {
             if !is_url(url.clone()) {
                 now_group = name.to_string();
             } else {

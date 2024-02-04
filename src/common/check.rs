@@ -124,13 +124,11 @@ pub mod check {
             for one in res_data.streams.into_iter() {
                 if one.codec_type == "video" {
                     let mut video = VideoInfo::new();
-                    match one.width {
-                        Some(e) => video.set_width(e),
-                        _ => {}
+                    if let Some(e) = one.width {
+                        video.set_width(e)
                     }
-                    match one.height {
-                        Some(e) => video.set_height(e),
-                        _ => {}
+                    if let Some(e) = one.height {
+                        video.set_height(e)
                     }
                     video.set_codec(one.codec_name);
                     body.set_video(video);
