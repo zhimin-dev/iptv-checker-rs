@@ -24,6 +24,7 @@ url = "2.5.0"
 rand = "0.8"
 crossbeam-channel = "0.5"
 threadpool = "1.8.1"
+tempfile = "3.9.0"
 
 [target.'cfg(windows)'.dependencies]
 # 只在Windows平台上使用的依赖项

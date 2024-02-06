@@ -3,7 +3,8 @@ mod utils;
 mod web;
 
 use clap::{arg, Args as clapArgs, Parser, Subcommand};
-use std::env;
+use std::{env};
+use tempfile::tempdir;
 
 #[derive(Subcommand)]
 enum Commands {
@@ -42,7 +43,7 @@ pub struct CheckArgs {
     // #[arg(short = 's', long = "search_clarity", default_value_t = String::from(""))]
     // search_clarity: String,
     /// 输出文件，如果不指定，则默认生成一个随机文件名
-    #[arg(short = 'o', long="output-file", default_value_t = String::from(""))]
+    #[arg(short = 'o', long = "output-file", default_value_t = String::from(""))]
     output_file: String,
 
     /// 超时时间，默认超时时间为28秒
@@ -60,24 +61,35 @@ pub struct CheckArgs {
 
 #[derive(Parser)]
 #[command(name = "iptv-checker")]
-#[command(author="zmisgod", version=env!("CARGO_PKG_VERSION"), about="a iptv-checker cmd, source code 👉 https://github.com/zhimin-dev/iptv-checker", long_about = None, )]
+#[command(author = "zmisgod", version = env ! ("CARGO_PKG_VERSION"), about = "a iptv-checker cmd, source code 👉 https://github.com/zhimin-dev/iptv-checker", long_about = None,)]
 pub struct Args {
     #[command(subcommand)]
     command: Commands,
 }
-const PID_FILE: &str = "/tmp/iptv_checker_web_server.pid";
 
-async fn start_daemonize_web(port: u16, cmd_dir: String) {
+// const PID_FILE: &str = "/tmp/iptv_checker_web_server.pid";
+
+fn get_pid_file() -> String {
+    if let Ok(dir) = tempdir() {
+        if  let Some(a) = dir.path().join("iptv_checker_web_server.pid").to_str() {
+            return a.to_owned();
+        }
+    }
+    return String::default();
+}
+
+async fn start_daemonize_web(pid_name:&String, port: u16, cmd_dir: String) {
     println!("start web-----{}", cmd_dir);
-    utils::check_pid_exits();
+    utils::check_pid_exits(pid_name);
     println!("start web server, port:{}", port);
     // 启动 web 服务
     web::start_web(port).await;
 }
 
 pub fn show_status() {
-    if utils::file_exists(PID_FILE) {
-        match utils::read_pid_num() {
+    let pid_name = get_pid_file();
+    if utils::file_exists(&pid_name) {
+        match utils::read_pid_num(&pid_name) {
             Ok(num) => {
                 let has_process = utils::check_process(num).unwrap();
                 if has_process {
@@ -93,6 +105,9 @@ pub fn show_status() {
 
 #[actix_web::main]
 pub async fn main() {
+    // println!("{:?}", get_pid_file());
+    // return ;
+    let pid_name = get_pid_file();
     let args = Args::parse();
     match args.command {
         Commands::Web(args) => {
@@ -109,9 +124,9 @@ pub async fn main() {
                 if port == 0 {
                     port = 8080
                 }
-                start_daemonize_web(port, c_dir).await;
+                start_daemonize_web(&pid_name, port, c_dir).await;
             } else if args.stop {
-                utils::check_pid_exits();
+                utils::check_pid_exits(&pid_name);
             }
         }
         Commands::Check(args) => {

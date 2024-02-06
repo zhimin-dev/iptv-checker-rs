@@ -1,4 +1,3 @@
-use crate::PID_FILE;
 use rand::distributions::Alphanumeric;
 use rand::Rng;
 use std::fs;
@@ -37,7 +36,7 @@ pub fn check_process(pid: u32) -> Result<bool, Error> {
     Ok(status.unwrap().status.success())
 }
 
-pub fn file_exists(file_path: &str) -> bool {
+pub fn file_exists(file_path: &String) -> bool {
     if let Ok(metadata) = fs::metadata(file_path) {
         metadata.is_file()
     } else {
@@ -46,9 +45,9 @@ pub fn file_exists(file_path: &str) -> bool {
 }
 
 // 如果pid文件存在，需要将之前的pid删除，然后才能启动新的pid
-pub fn check_pid_exits() {
-    if file_exists(PID_FILE) {
-        let num = read_pid_num().expect("获取pid失败");
+pub fn check_pid_exits(pid_name:&String) {
+    if file_exists(pid_name) {
+        let num = read_pid_num(pid_name).expect("获取pid失败");
         let has_process = check_process(num).expect("检查pid失败");
         if has_process {
             kill_process(num);
@@ -64,8 +63,8 @@ fn kill_process(pid: u32) {
         .expect("Failed to execute command");
 }
 
-pub fn read_pid_num() -> Result<u32, Error> {
-    match read_pid_contents(PID_FILE.to_string()) {
+pub fn read_pid_num(pid_name:&String ) -> Result<u32, Error> {
+    match read_pid_contents(pid_name.clone()) {
         Ok(contents) => {
             let mut n_contents = contents;
             n_contents = n_contents.replace('\n', "");
