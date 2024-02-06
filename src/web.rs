@@ -36,12 +36,12 @@ struct CheckUrlIsAvailableRequest {
     url: String,
     timeout: Option<i32>,
 }
+
 #[get("/check-url-is-available")]
 async fn check_url_is_available(req: web::Query<CheckUrlIsAvailableRequest>) -> impl Responder {
     let mut timeout = 0;
-    match req.timeout {
-        Some(i) => timeout = i,
-        _ => {}
+    if let Some(i) = req.timeout {
+        timeout = i;
     }
     let res = check::check::check_link_is_valid(req.url.to_owned(), timeout as u64, true, true);
     match res.await {
@@ -65,9 +65,8 @@ struct FetchM3uBodyRequest {
 #[get("/fetch-m3u-body")]
 async fn fetch_m3u_body(req: web::Query<FetchM3uBodyRequest>) -> impl Responder {
     let mut timeout = 0;
-    match req.timeout {
-        Some(i) => timeout = i,
-        _ => {}
+    if let Some(i) = req.timeout {
+        timeout = i;
     }
     let client = reqwest::Client::builder()
         .timeout(time::Duration::from_millis(timeout as u64))
@@ -137,10 +136,10 @@ pub async fn start_web(port: u16) {
                     .show_files_listing(),
             )
     })
-    .bind(("0.0.0.0", port))
-    .expect("Failed to bind address")
-    .run()
-    .await
-    .expect("failed to run server");
+        .bind(("0.0.0.0", port))
+        .expect("Failed to bind address")
+        .run()
+        .await
+        .expect("failed to run server");
     // });
 }

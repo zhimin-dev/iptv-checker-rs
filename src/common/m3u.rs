@@ -1,6 +1,6 @@
 use crate::common::check::check::check_link_is_valid;
 use crate::common::CheckDataStatus::{Failed, Success, Unchecked};
-use crate::common::SourceType::{SourceTypeNormal, SourceTypeQuota};
+use crate::common::SourceType::{Normal, Quota};
 use crate::common::VideoType::Unknown;
 use actix_rt::time;
 use serde::{Deserialize, Serialize};
@@ -255,6 +255,7 @@ impl M3uObjectList {
         }
         drop(tx); // 发送完成后关闭队列
 
+        counter.print_now_status();
         let mut i = 0;
         loop {
             if i == counter.total {
@@ -280,7 +281,7 @@ impl M3uObjectList {
         for x in &self.result_list {
             if x.status == Success {
                 counter.incr_succ();
-                let exp: Vec<&str> = x.raw.split("\n").collect();
+                let exp: Vec<&str> = x.raw.lines().collect();
                 for o in exp {
                     lines.push(o.to_owned());
                 }
@@ -372,8 +373,8 @@ impl From<String> for M3uObjectList {
         };
         let source_type = m3u::check_source_type(_str.to_owned());
         return match source_type {
-            Some(SourceTypeNormal) => m3u::body_normal(_str.clone()),
-            Some(SourceTypeQuota) => m3u::body_quota(_str.clone()),
+            Some(Normal) => m3u::body_normal(_str.clone()),
+            Some(Quota) => m3u::body_quota(_str.clone()),
             None => empty_data,
         };
     }
@@ -521,13 +522,14 @@ impl AudioInfo {
 }
 
 pub enum SourceType {
-    SourceTypeNormal, //m3u标准文件
-    SourceTypeQuota,  //名称,url格式
+    Normal, //m3u标准文件
+    Quota,  //名称,url格式
 }
 
+#[allow(dead_code)]
 pub mod m3u {
     use crate::common::util::{get_url_body, is_url, parse_normal_str, parse_quota_str};
-    use crate::common::SourceType::{SourceTypeNormal, SourceTypeQuota};
+    use crate::common::SourceType::{Normal, Quota};
     use crate::common::{M3uObjectList, SourceType};
     use core::option::Option;
     use std::fs::File;
@@ -535,20 +537,20 @@ pub mod m3u {
 
     pub fn check_source_type(_body: String) -> Option<SourceType> {
         if _body.starts_with("#EXTM3U") {
-            return Some(SourceTypeNormal);
+            return Some(Normal);
         }
-        let exp = _body.split("\n");
+        let exp = _body.lines();
         let mut quota = false;
         for x in exp {
             if !quota {
-                let exp: Vec<&str> = x.split(",").collect();
+                let exp: Vec<&str> = x.split(',').collect();
                 if exp.len() >= 2 {
                     quota = true
                 }
             }
         }
         if quota {
-            return Some(SourceTypeQuota);
+            return Some(Quota);
         }
         return None;
     }
@@ -566,8 +568,8 @@ pub mod m3u {
     pub fn from_body(_str: &String) -> M3uObjectList {
         let source_type = check_source_type(_str.to_owned());
         return match source_type {
-            Some(SourceTypeNormal) => body_normal(_str.clone()),
-            Some(SourceTypeQuota) => body_quota(_str.clone()),
+            Some(Normal) => body_normal(_str.clone()),
+            Some(Quota) => body_quota(_str.clone()),
             None => M3uObjectList::new(),
         };
     }
@@ -579,7 +581,7 @@ pub mod m3u {
         for _str in str_arr {
             let source_type = check_source_type(_str.to_owned());
             match source_type {
-                Some(SourceTypeNormal) => {
+                Some(Normal) => {
                     let nor_data = body_normal(_str.clone());
                     list.extend(nor_data.clone().get_list());
                     match nor_data.get_header() {
@@ -589,7 +591,7 @@ pub mod m3u {
                         None => {}
                     }
                 }
-                Some(SourceTypeQuota) => {
+                Some(Quota) => {
                     let quo_data = body_quota(_str.clone());
                     list.extend(quo_data.clone().get_list());
                     match quo_data.get_header() {
