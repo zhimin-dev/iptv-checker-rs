@@ -1,15 +1,13 @@
 use crate::common::check;
-use crate::common::task;
 use actix_files as fs;
 use actix_files::NamedFile;
 use actix_web::{get, post, web, App, HttpResponse, HttpServer, Responder, Result};
 use serde::{Deserialize, Serialize};
 use std::time;
+use crate::common::task::{TaskManager, add_task, delete_task, list_task};
+use std::sync::{Arc, Mutex};
+use std::collections::HashMap;
 
-#[post("/task/post")]
-async fn accept_one_task(_info: web::Json<task::TaskPost>) -> Result<String> {
-    Ok(format!("task post"))
-}
 
 #[derive(Debug, Deserialize, Serialize)]
 struct TaskDel {
@@ -26,9 +24,17 @@ async fn del_one_task() -> Result<String> {
     Ok(format!("task del"))
 }
 
-#[post("/task/list")]
-async fn list_task() -> Result<String> {
-    Ok(format!("task list"))
+
+async fn check_ipv6() -> impl Responder {
+    let result = reqwest::get("http://[2606:2800:220:1:248:1893:25c8:1946]").await;
+
+    match result {
+        Ok(_) => HttpResponse::Ok().body("IPv6 is supported"),
+        Err(e) => {
+            // 处理错误，根据错误类型返回更探针对性的信息也可以
+            HttpResponse::Ok().body(format!("IPv6 might not be supported: {}", e))
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -124,8 +130,16 @@ async fn system_status() -> impl Responder {
 }
 
 pub async fn start_web(port: u16) {
-    // actix_rt::System::new().block_on(async {
-    let _ = HttpServer::new(|| {
+    let data = Arc::new(TaskManager {
+        tasks: Mutex::new(HashMap::new()),
+    });
+
+    // 尝试从文件加载任务
+    if let Err(e) = data.load_tasks() {
+        eprintln!("Failed to load tasks: {}", e);
+    }
+
+    let _ = HttpServer::new(move || {
         App::new()
             .service(check_url_is_available)
             .service(fetch_m3u_body)
@@ -135,11 +149,14 @@ pub async fn start_web(port: u16) {
                 fs::Files::new("/assets", VIEW_BASE_DIR.to_owned() + "/assets")
                     .show_files_listing(),
             )
+            .app_data(web::Data::new(data.clone()))
+            .route("/tasks/list", web::get().to(list_task))
+            .route("/tasks/add", web::post().to(add_task))
+            .route("/tasks/delete/{id}", web::delete().to(delete_task))
     })
         .bind(("0.0.0.0", port))
         .expect("Failed to bind address")
         .run()
         .await
         .expect("failed to run server");
-    // });
 }

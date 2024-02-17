@@ -42,6 +42,7 @@ pub struct CheckArgs {
     // /// [待实现]支持sdr、hd、fhd、uhd、fuhd搜索
     // #[arg(short = 's', long = "search_clarity", default_value_t = String::from(""))]
     // search_clarity: String,
+
     /// 输出文件，如果不指定，则默认生成一个随机文件名
     #[arg(short = 'o', long = "output-file", default_value_t = String::from(""))]
     output_file: String,
@@ -66,8 +67,6 @@ pub struct Args {
     #[command(subcommand)]
     command: Commands,
 }
-
-// const PID_FILE: &str = "/tmp/iptv_checker_web_server.pid";
 
 fn get_pid_file() -> String {
     if let Ok(dir) = tempdir() {
@@ -105,8 +104,6 @@ pub fn show_status() {
 
 #[actix_web::main]
 pub async fn main() {
-    // println!("{:?}", get_pid_file());
-    // return ;
     let pid_name = get_pid_file();
     let args = Args::parse();
     match args.command {
