@@ -22,7 +22,7 @@ jobs:
       run: make build
       
     - name: Create Release and Upload Release Asset
-      uses: ssoftprops/action-gh-release@v0.1.15
+      uses: softprops/action-gh-release@v1
       with:
         tag_name: ${{ github.ref }}
         name: Release ${{ github.ref }}
