@@ -1,0 +1,33 @@
+name: Rust
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout source
+      uses: actions/checkout@v3
+      
+    - name: Build
+      run: make build
+      
+    - name: Create Release and Upload Release Asset
+      uses: ssoftprops/action-gh-release@v0.1.15
+      with:
+        tag_name: ${{ github.ref }}
+        name: Release ${{ github.ref }}
+        body: New Release.
+        draft: false
+        prerelease: false
+        files:
+          iptv-checker-rs-*
