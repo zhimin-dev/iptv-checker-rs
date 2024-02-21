@@ -8,25 +8,29 @@ permissions:
   contents: write
 
 jobs:
-  build-and-upload:
+  build:
     name: Build and upload
     runs-on: ${{ matrix.os }}
 
     strategy:
       matrix:
-        # You can add more, for any target you'd like!
+        build: [linux, macos, windows]
         include:
           - build: linux
             os: ubuntu-latest
+            rust: nightly
             target: x86_64-unknown-linux-musl
 
           - build: macos
             os: macos-latest
+            rust: nightly
             target: x86_64-apple-darwin
 
-          # - build: windows
-          #   os: windows-latest
-          #   target: x86_64-pc-windows-gnu
+          - build: windows
+            os: windows-latest
+            rust: nightly-x86_64-msvc
+            target: x86_64-pc-windows-gnu
+      fail-fast: false
 
     steps:
       - name: Checkout
@@ -43,19 +47,24 @@ jobs:
         with:
           # Make Rust compile to our target (defined in the matrix)
           targets: ${{ matrix.target }}
+          profile: minimal
+          override: true
+          target: ${{ matrix.target }}
 
-      - name: Build
-        uses: actions-rs/cargo@v1
-        with:
-          use-cross: true
-          command: build
-          args: --verbose --release --target ${{ matrix.target }}
+      - name: Build binary
+        run: cargo build --verbose --release --target ${{ matrix.target }}
+        env:
+          RUST_BACKTRACE: 1
+
+      - name: Strip binary (linux and macos)
+        if: matrix.build == 'linux' || matrix.build == 'macos'
+        run: strip "target/${{ matrix.target }}/release/iptv-checker-rs"
 
       - name: Build archive
         shell: bash
         run: |
           # Replace with the name of your binary
-          binary_name=""
+          binary_name="iptv-checker-rs"
 
           dirname="$binary_name-${{ env.VERSION }}-${{ matrix.target }}"
           mkdir "$dirname"
