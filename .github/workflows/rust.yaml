@@ -50,7 +50,7 @@ jobs:
           target: ${{ matrix.target }}
 
       - name: Build binary
-        run: make run
+        run: make build
         env:
           RUST_BACKTRACE: 1
 
