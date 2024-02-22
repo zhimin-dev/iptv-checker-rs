@@ -50,7 +50,7 @@ jobs:
           target: ${{ matrix.target }}
 
       - name: Build binary
-        run: cargo build --verbose --release --target ${{ matrix.target }}
+        run: make run
         env:
           RUST_BACKTRACE: 1
 
