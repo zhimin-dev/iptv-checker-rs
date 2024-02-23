@@ -2,60 +2,55 @@ name: Rust
 
 on:
   push:
-    branches: [ "main" ]
+    tags:
+      - "v*"
 
 permissions:
   contents: write
 
 jobs:
-  build:
-    name: Build and upload
-    runs-on: ${{ matrix.os }}
-
+  build_release:
     strategy:
       matrix:
-        build: [linux, macos, windows]
+        target:
+          - x86_64-unknown-linux-musl
+          - x86_64-pc-windows-gnu
+          - x86_64-apple-darwin
         include:
-          - build: linux
+          - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
-            rust: nightly
-            target: x86_64-unknown-linux-musl
-
-          - build: macos
-            os: macos-latest
-            rust: nightly
-            target: x86_64-apple-darwin
-
-          - build: windows
+          - target: x86_64-pc-windows-gnu
             os: windows-latest
-            rust: nightly-x86_64-msvc
-            target: x86_64-pc-windows-gnu
-      fail-fast: false
+          - target: x86_64-apple-darwin
+            os: macos-latest
+
+    runs-on: ${{ matrix.os }}
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v2
 
-      - name: Install musl-tools
-        run: sudo apt install -y musl-tools
-
-      - name: Get the release version from the tag
-        shell: bash
-        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
-
-      - name: Install Rust
+      - name: Install rust
         uses: actions-rs/toolchain@v1
         with:
-          # Make Rust compile to our target (defined in the matrix)
           toolchain: stable
-          default: true
-          override: true
           target: ${{ matrix.target }}
+          override: true
 
-      - name: Build binary
-        run: cargo build --verbose --release --target ${{ matrix.target }}
-        env:
-          RUST_BACKTRACE: 1
+      - name: Install Cross
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo install cross
+
+      - name: Build - windows
+        if: matrix.os == 'windows-latest'
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Build - linux
+        if: matrix.os == 'ubuntu-latest'
+        run: cross build --release --target ${{ matrix.target }}
+
+      - name: Build - macos
+        if: matrix.os == 'macos-latest'
+        run: cargo build --release --target ${{ matrix.target }}
 
       - name: Strip binary (linux and macos)
         if: matrix.build == 'linux' || matrix.build == 'macos'
@@ -66,7 +61,6 @@ jobs:
         run: |
           # Replace with the name of your binary
           binary_name="iptv-checker-rs"
-
           dirname="$binary_name-${{ env.VERSION }}-${{ matrix.target }}"
           mkdir "$dirname"
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
@@ -74,7 +68,6 @@ jobs:
           else
             mv "target/${{ matrix.target }}/release/$binary_name" "$dirname"
           fi
-
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
             7z a "$dirname.zip" "$dirname"
             echo "ASSET=$dirname.zip" >> $GITHUB_ENV
