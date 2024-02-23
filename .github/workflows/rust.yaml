@@ -40,14 +40,23 @@ jobs:
         shell: bash
         run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
 
-      - name: Install Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          # Make Rust compile to our target (defined in the matrix)
-          toolchain: stable
-          default: true
-          override: true
-          target: ${{ matrix.target }}
+      - name: Install dependencies (Linux)
+        if: startsWith(matrix.platform, 'ubuntu')
+        run: |
+          sudo apt-get install -y musl-tools
+          rustup target add x86_64-unknown-linux-musl
+
+      - name: Install dependencies (OSX)
+        if: startsWith(matrix.platform, 'macos')
+        run: |
+          brew install filosottile/musl-cross/musl-cross
+          rustup target add x86_64-unknown-linux-musl
+            
+      - name: Install dependencies (Windows)
+        if: startsWith(matrix.platform, 'windows')
+        run: |
+          choco install -y llvm
+          rustup target add x86_64-pc-windows-gnu
 
       - name: Build binary
         run: make build
