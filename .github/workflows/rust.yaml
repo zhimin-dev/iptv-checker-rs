@@ -8,89 +8,48 @@ permissions:
   contents: write
 
 jobs:
-  build:
-    name: Build and upload
-    runs-on: ${{ matrix.os }}
-
+  build_release:
     strategy:
       matrix:
-        build: [linux, macos, windows]
+        target:
+            - x86_64-unknown-linux-musl     
+            - x86_64-pc-windows-gnu
+            - x86_64-apple-darwin
         include:
-          - build: linux
-            os: ubuntu-latest
-            rust: nightly
-            target: x86_64-unknown-linux-musl
+            - target: x86_64-unknown-linux-musl
+              os: ubuntu-latest
+            - target: x86_64-pc-windows-gnu
+              os: windows-latest
+            - target: x86_64-apple-darwin
+              os: macos-latest
 
-          - build: macos
-            os: macos-latest
-            rust: nightly
-            target: x86_64-apple-darwin
-
-          - build: windows
-            os: windows-latest
-            rust: nightly-x86_64-msvc
-            target: x86_64-pc-windows-gnu
-      fail-fast: false
+    runs-on: ${{ matrix.os }}
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v3
+    - uses: actions/checkout@v2
 
-      - name: Get the release version from the tag
-        shell: bash
-        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+    - name: Install rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        target: ${{ matrix.target }}
+        override: true
+        
+    - name: Install Cross
+      if: matrix.os == 'ubuntu-latest'
+      run: cargo install cross
 
-      - name: Install dependencies (Linux)
-        if: startsWith(matrix.platform, 'ubuntu')
-        run: |
-          sudo apt-get install -y musl-tools
-          rustup target add x86_64-unknown-linux-musl
-
-      - name: Install dependencies (OSX)
-        if: startsWith(matrix.platform, 'macos')
-        run: |
-          brew install filosottile/musl-cross/musl-cross
-          rustup target add x86_64-unknown-linux-musl
-            
-      - name: Install dependencies (Windows)
-        if: startsWith(matrix.platform, 'windows')
-        run: |
-          choco install -y llvm
-          rustup target add x86_64-pc-windows-gnu
-
-      - name: Build binary
-        run: make build
-        env:
-          RUST_BACKTRACE: 1
-
-      - name: Strip binary (linux and macos)
-        if: matrix.build == 'linux' || matrix.build == 'macos'
-        run: strip "target/${{ matrix.target }}/release/iptv-checker-rs"
-
-      - name: Build archive
-        shell: bash
-        run: |
-          # Replace with the name of your binary
-          binary_name="iptv-checker-rs"
-
-          dirname="$binary_name-${{ env.VERSION }}-${{ matrix.target }}"
-          mkdir "$dirname"
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            mv "target/${{ matrix.target }}/release/$binary_name.exe" "$dirname"
+    - name: Build
+      run: |
+          if [ "${{ matrix.os }}" == "ubuntu-latest" ]; then
+            cross build --release --target ${{ matrix.target }}
           else
-            mv "target/${{ matrix.target }}/release/$binary_name" "$dirname"
+            cargo build --release --target ${{ matrix.target }}
           fi
 
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            7z a "$dirname.zip" "$dirname"
-            echo "ASSET=$dirname.zip" >> $GITHUB_ENV
-          else
-            tar -czf "$dirname.tar.gz" "$dirname"
-            echo "ASSET=$dirname.tar.gz" >> $GITHUB_ENV
-          fi
-
-      - name: Release
-        uses: softprops/action-gh-release@v1
-        with:
-          files: |
-            ${{ env.ASSET }}
+    - name: Archive release binaries
+      uses: actions/upload-artifact@v2
+      with:
+        name: ${{ matrix.target }}
+        path: |
+            target/${{ matrix.target }}/release/*
