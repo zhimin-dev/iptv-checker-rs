@@ -13,13 +13,13 @@ jobs:
       matrix:
         target:
             - x86_64-unknown-linux-musl     
-            # - x86_64-pc-windows-gnu
+             - x86_64-pc-windows-gnu
             - x86_64-apple-darwin
         include:
             - target: x86_64-unknown-linux-musl
               os: ubuntu-latest
-            # - target: x86_64-pc-windows-gnu
-            #   os: windows-latest
+            - target: x86_64-pc-windows-gnu
+              os: windows-latest
             - target: x86_64-apple-darwin
               os: macos-latest
 
@@ -39,19 +39,43 @@ jobs:
       if: matrix.os == 'ubuntu-latest'
       run: cargo install cross
 
-    - name: Build
-      run: |
-          if [ "${{ matrix.os }}" == "ubuntu-latest" ]; then
-            cross build --release --target ${{ matrix.target }}
-          elif [ "${{ matrix.os }}" == "macos-latest" ]; then
-            cargo build --release --target ${{ matrix.target }}
-          else
-            cargo build --release --target ${{ matrix.target }}
-          fi
+    - name: Build - windows
+      if: matrix.os == 'windows-latest'
+      run: cargo build --release --target ${{ matrix.target }}
 
-    - name: Archive release binaries
-      uses: actions/upload-artifact@v2
+    - name: Build - linux
+      if: matrix.os == 'ubuntu-latest'
+      run: cross build --release --target ${{ matrix.target }}
+
+    - name: Build - macos
+      if: matrix.os == 'macos-latest'
+      run: cargo build --release --target ${{ matrix.target }}
+
+    - name: Strip binary (linux and macos)
+      if: matrix.build == 'linux' || matrix.build == 'macos'
+      run: strip "target/${{ matrix.target }}/release/iptv-checker-rs"
+        - name: Build archive
+          shell: bash
+          run: |
+            # Replace with the name of your binary
+            binary_name="iptv-checker-rs"
+            dirname="$binary_name-${{ env.VERSION }}-${{ matrix.target }}"
+            mkdir "$dirname"
+            if [ "${{ matrix.os }}" = "windows-latest" ]; then
+              mv "target/${{ matrix.target }}/release/$binary_name.exe" "$dirname"
+            else
+              mv "target/${{ matrix.target }}/release/$binary_name" "$dirname"
+            fi
+            if [ "${{ matrix.os }}" = "windows-latest" ]; then
+              7z a "$dirname.zip" "$dirname"
+              echo "ASSET=$dirname.zip" >> $GITHUB_ENV
+            else
+              tar -czf "$dirname.tar.gz" "$dirname"
+              echo "ASSET=$dirname.tar.gz" >> $GITHUB_ENV
+            fi
+
+    - name: Release
+      uses: softprops/action-gh-release@v1
       with:
-        name: ${{ matrix.target }}
-        path: |
-            target/${{ matrix.target }}/release/*
+        files: |
+          ${{ env.ASSET }}
