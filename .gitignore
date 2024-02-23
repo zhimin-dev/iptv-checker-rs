@@ -4,3 +4,5 @@ logs
 target
 Cargo.lock
 .idea/
+tasks.json
+.cargo
