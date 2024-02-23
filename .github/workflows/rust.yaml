@@ -43,6 +43,8 @@ jobs:
       run: |
           if [ "${{ matrix.os }}" == "ubuntu-latest" ]; then
             cross build --release --target ${{ matrix.target }}
+          elif [ "${{ matrix.os }}" == "macos-latest" ]; then
+            cargo build --release --target ${{ matrix.target }}
           else
             cargo build --release --target ${{ matrix.target }}
           fi
