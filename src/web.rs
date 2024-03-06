@@ -7,6 +7,9 @@ use std::time;
 use crate::common::task::{TaskManager, add_task, delete_task, list_task};
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
+use clokwerk::{Scheduler, TimeUnits};
+use std::thread;
+use std::time::Duration;
 
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -17,11 +20,6 @@ struct TaskDel {
 #[derive(Debug, Deserialize, Serialize)]
 struct TaskDelResp {
     result: bool, //是否成功
-}
-
-#[post("/task/del")]
-async fn del_one_task() -> Result<String> {
-    Ok(format!("task del"))
 }
 
 
@@ -139,6 +137,23 @@ pub async fn start_web(port: u16) {
         eprintln!("Failed to load tasks: {}", e);
     }
 
+    // 使用 Arc<Mutex<Scheduler>> 来共享 scheduler
+    let scheduler: Arc<Mutex<Scheduler>> = Arc::new(Mutex::new(Scheduler::with_tz(chrono::Local)));
+
+    // 创建一个新线程来运行定时任务
+    let scheduler_thread = {
+        let scheduler = Arc::clone(&scheduler);
+        thread::spawn(move || {
+            loop {
+                {
+                    let mut scheduler = scheduler.lock().unwrap();
+                    scheduler.run_pending();
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+        })
+    };
+
     let _ = HttpServer::new(move || {
         App::new()
             .service(check_url_is_available)
@@ -150,6 +165,7 @@ pub async fn start_web(port: u16) {
                     .show_files_listing(),
             )
             .app_data(web::Data::new(data.clone()))
+            .app_data(web::Data::new(scheduler.clone()))
             .route("/tasks/list", web::get().to(list_task))
             .route("/tasks/add", web::post().to(add_task))
             .route("/tasks/delete/{id}", web::delete().to(delete_task))
@@ -159,4 +175,6 @@ pub async fn start_web(port: u16) {
         .run()
         .await
         .expect("failed to run server");
+
+    scheduler_thread.join().unwrap();
 }

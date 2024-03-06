@@ -27,6 +27,7 @@ threadpool = "1.8.1"
 tempfile = "3.9.0"
 uuid = { version = "0.8", features = ["v4"] }
 md5 = "0.7.0"
+clokwerk = { version = "0.3.5" }
 
 [target.'cfg(windows)'.dependencies]
 # 只在Windows平台上使用的依赖项

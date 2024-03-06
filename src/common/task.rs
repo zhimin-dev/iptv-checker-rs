@@ -7,30 +7,39 @@ use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 use md5;
 use std::time::{SystemTime, UNIX_EPOCH};
+use clokwerk::{Scheduler, TimeUnits};
 
 const FILE_PATH: &str = "tasks.json";
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct TaskInfo {
-    //任务状态
-    status: TaskStatus,
-    // 总的频道数
-    total: i32,
-    // 已检查频道数
-    current: i32,
+    // 运行时间
+    run_time: RunTime,
+
+    // 最后一次运行时间
+    last_run_time: i32,
+
+    // 任务状态
+    task_status: TaskStatus,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+enum RunTime {
+    EveryDay,
+    EveryHour,
 }
 
 impl TaskInfo {
     pub fn new() -> TaskInfo {
         return TaskInfo {
-            status: TaskStatus::Pending,
-            total: 0,
-            current: 0,
+            run_time: RunTime::EveryDay,
+            task_status: TaskStatus::Pending,
+            last_run_time: 0,
         };
     }
 
     pub fn set_status(&mut self, stats: TaskStatus) {
-        self.status = stats
+        self.task_status = stats
     }
 }
 
@@ -46,7 +55,7 @@ pub struct TaskContent {
     md5: String,
 }
 
-fn md5_str(input:String) ->String {
+fn md5_str(input: String) -> String {
     let digest = md5::compute(input);
 
     format!("{:x}", digest)
@@ -211,9 +220,19 @@ impl TaskManager {
             }
         };
     }
+
+    pub fn run_job(&self) {
+        println!("run job")
+    }
 }
 
-pub async fn add_task(task_manager: web::Data<Arc<TaskManager>>, task_json: web::Json<TaskContent>) -> impl Responder {
+pub async fn add_task(task_manager: web::Data<Arc<TaskManager>>, scheduler: web::Data<Arc<Mutex<Scheduler>>>, task_json: web::Json<TaskContent>) -> impl Responder {
+    {
+        let mut scheduler = scheduler.lock().unwrap();
+        scheduler.every(10.seconds()).run(move || {
+            println!("add task!");
+        });
+    }
     let mut resp = HashMap::new();
     let task = task_json.into_inner();
     match task_manager.add_task(task) {
