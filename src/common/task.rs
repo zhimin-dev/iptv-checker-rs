@@ -8,16 +8,22 @@ use uuid::Uuid;
 use md5;
 use std::time::{SystemTime, UNIX_EPOCH};
 use clokwerk::{Scheduler, TimeUnits};
+use crate::common::do_check;
 
 const FILE_PATH: &str = "tasks.json";
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct TaskInfo {
-    // 运行时间
-    run_time: RunTime,
+    // 定时时间
+    run_type: RunTime,
 
-    // 最后一次运行时间
+    // 最后一次运行时间, (s)
     last_run_time: i32,
+
+    // next run time, (s)
+    next_run_time: i32,
+
+    is_running: bool,
 
     // 任务状态
     task_status: TaskStatus,
@@ -32,14 +38,28 @@ enum RunTime {
 impl TaskInfo {
     pub fn new() -> TaskInfo {
         return TaskInfo {
-            run_time: RunTime::EveryDay,
+            run_type: RunTime::EveryDay,
             task_status: TaskStatus::Pending,
             last_run_time: 0,
+            next_run_time: 0,
+            is_running: false,
         };
+    }
+
+    pub fn set_run_type(&mut self, run_type: RunTime) {
+        self.run_type = run_type
     }
 
     pub fn set_status(&mut self, stats: TaskStatus) {
         self.task_status = stats
+    }
+
+    pub fn set_next_run_time(&mut self, time: i32) {
+        self.next_run_time = time
+    }
+
+    pub fn set_last_run_time(&mut self, time: i32) {
+        self.next_run_time = time
     }
 }
 
@@ -71,6 +91,10 @@ impl TaskContent {
         }
     }
 
+    pub fn get_urls(self) -> Vec<String> {
+        self.urls
+    }
+
     pub fn gen_md5(&mut self) {
         self.md5 = String::from("");
         let json_string = serde_json::to_string(&self).unwrap();
@@ -94,7 +118,6 @@ impl TaskContent {
 enum TaskStatus {
     Pending,
     InProgress,
-    Completed,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -140,6 +163,42 @@ impl Task {
 
     pub fn set_task_info(&mut self, task_info: TaskInfo) {
         self.task_info = task_info
+    }
+
+    pub fn get_task_info(self) -> TaskInfo {
+        self.task_info
+    }
+
+    pub fn run(&mut self) {
+        if self.task_info.is_running {
+            return;
+        }
+        if self.task_info.next_run_time != 0 && self.task_info.next_run_time > now() as i32 {
+            return;
+        }
+        self.task_info.is_running = true;
+        self.task_info.task_status = TaskStatus::InProgress;
+        let urls = self.clone().original.get_urls();
+        let out_out_file = self.clone().original.result_name;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            do_check(urls, out_out_file.clone(), 2800, true, 2800, 10).await.unwrap();
+        });
+        self.task_info.task_status = TaskStatus::Pending;
+        self.task_info.is_running = false;
+        self.task_info.last_run_time = now() as i32;
+        let now_time = now() as i32;
+        match self.task_info.run_type {
+            RunTime::EveryDay => {
+                self.task_info.next_run_time = now_time + 86400;
+            }
+            RunTime::EveryHour => {
+                self.task_info.next_run_time = now_time + 3600;
+            }
+        }
     }
 }
 
@@ -189,15 +248,27 @@ impl TaskManager {
         }
     }
 
-    fn save_tasks(&self) -> Result<()> {
+    pub fn save_tasks(&self) -> Result<()> {
         let tasks = self.tasks.lock().unwrap();
         save_tasks_to_file(&*tasks)
     }
 
-    fn update_task_status(&self, id: String, status: TaskStatus) -> Result<bool> {
+    pub fn update_task_status(&self, id: String, status: TaskStatus) -> Result<bool> {
         let mut tasks = self.tasks.lock().unwrap();
         if let Some(task) = tasks.get_mut(&id) {
             task.task_info.set_status(status);
+            drop(tasks);
+            self.save_tasks()?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    pub fn update_task(&self, id: String, mut task_info: TaskInfo) -> Result<bool> {
+        let mut tasks = self.tasks.lock().unwrap();
+        if let Some(task) = tasks.get_mut(&id) {
+            task.set_task_info(task_info);
             drop(tasks);
             self.save_tasks()?;
             Ok(true)
@@ -220,19 +291,9 @@ impl TaskManager {
             }
         };
     }
-
-    pub fn run_job(&self) {
-        println!("run job")
-    }
 }
 
 pub async fn add_task(task_manager: web::Data<Arc<TaskManager>>, scheduler: web::Data<Arc<Mutex<Scheduler>>>, task_json: web::Json<TaskContent>) -> impl Responder {
-    {
-        let mut scheduler = scheduler.lock().unwrap();
-        scheduler.every(10.seconds()).run(move || {
-            println!("add task!");
-        });
-    }
     let mut resp = HashMap::new();
     let task = task_json.into_inner();
     match task_manager.add_task(task) {

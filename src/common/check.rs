@@ -1,5 +1,7 @@
+use std::fmt::Error;
 use crate::common::{AudioInfo, VideoInfo};
 use serde::{Deserialize, Serialize};
+use crate::{common, utils};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CheckUrlIsAvailableResponse {
@@ -199,4 +201,22 @@ pub mod check {
         // curl -6 test.ipw.cn
         Ok(true)
     }
+}
+
+pub async fn do_check(input_files: Vec<String>, output_file: String, timeout: u64, print_result: bool, request_timeout: i32, concurrent: i32) -> Result<bool, Error> {
+    let mut data =
+        common::m3u::m3u::from_arr(input_files.to_owned(), timeout)
+            .await;
+    let output_file = utils::get_out_put_filename(output_file.clone());
+    if print_result {
+        println!("输出文件: {}", output_file);
+    }
+    data.check_data_new(request_timeout, concurrent)
+        .await;
+    data.output_file(output_file).await;
+    if print_result {
+        let status_string = data.print_result();
+        println!("\n{}\n解析完成----", status_string);
+    }
+    Ok(true)
 }

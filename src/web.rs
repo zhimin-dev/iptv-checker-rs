@@ -153,8 +153,21 @@ pub async fn start_web(port: u16) {
             }
         })
     };
-
+    let data_clone = Arc::clone(&data);
+    {
+        let mut scheduler = scheduler.lock().unwrap();
+        scheduler.every(10.seconds()).run(move || {
+            let data_clone = Arc::clone(&data_clone);
+            let tasks = data_clone.list_task().unwrap();
+            for mut task in tasks {
+                task.run();
+                data_clone.update_task(task.get_uuid(), task.get_task_info()).unwrap();
+            }
+        });
+    }
+    let data_clone_for_http = Arc::clone(&data);
     let _ = HttpServer::new(move || {
+        let data_clone_for_http_server = Arc::clone(&data_clone_for_http);
         App::new()
             .service(check_url_is_available)
             .service(fetch_m3u_body)
@@ -164,7 +177,7 @@ pub async fn start_web(port: u16) {
                 fs::Files::new("/assets", VIEW_BASE_DIR.to_owned() + "/assets")
                     .show_files_listing(),
             )
-            .app_data(web::Data::new(data.clone()))
+            .app_data(web::Data::new(data_clone_for_http_server))
             .app_data(web::Data::new(scheduler.clone()))
             .route("/tasks/list", web::get().to(list_task))
             .route("/tasks/add", web::post().to(add_task))

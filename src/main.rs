@@ -5,6 +5,7 @@ mod web;
 use clap::{arg, Args as clapArgs, Parser, Subcommand};
 use std::{env};
 use tempfile::tempdir;
+use crate::common::do_check;
 
 #[derive(Subcommand)]
 enum Commands {
@@ -129,19 +130,7 @@ pub async fn main() {
         Commands::Check(args) => {
             if args.input_file.len() > 0 {
                 println!("您输入的文件地址是: {}", args.input_file.join(","));
-                let mut data =
-                    common::m3u::m3u::from_arr(args.input_file.to_owned(), args.timeout as u64)
-                        .await;
-                let output_file = utils::get_out_put_filename(args.output_file.clone());
-                println!("输出文件: {}", output_file);
-                if args.debug {
-                    data.set_debug_mod(args.debug);
-                }
-                data.check_data_new(args.timeout as i32, args.concurrency)
-                    .await;
-                data.output_file(output_file).await;
-                let status_string = data.print_result();
-                println!("\n{}\n解析完成----", status_string);
+                do_check(args.input_file.to_owned(),args.output_file.clone(), args.timeout as u64, true, args.timeout as i32, args.concurrency).await.unwrap();
             }
         }
     }
