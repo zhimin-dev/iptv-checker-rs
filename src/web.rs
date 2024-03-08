@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use clokwerk::{Scheduler, TimeUnits};
 use std::thread;
 use std::time::Duration;
+use actix_web::web::Redirect;
 
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -104,13 +105,7 @@ async fn fetch_m3u_body(req: web::Query<FetchM3uBodyRequest>) -> impl Responder 
     };
 }
 
-static VIEW_BASE_DIR: &str = "./../dist/";
-
-#[get("/")]
-async fn index() -> impl Responder {
-    println!("---now index");
-    NamedFile::open(VIEW_BASE_DIR.to_owned() + "index.html")
-}
+static VIEW_BASE_DIR: &str = "./static/";
 
 #[derive(Serialize, Deserialize)]
 struct SystemStatus {
@@ -125,6 +120,12 @@ async fn system_status() -> impl Responder {
     };
     let obj = serde_json::to_string(&system_status).unwrap();
     return HttpResponse::Ok().body(obj);
+}
+
+#[get("/")]
+async fn index() -> impl Responder {
+    let path: std::path::PathBuf = "./web/index.html".into(); // 替换为实际的 index.html 路径
+    NamedFile::open(path)
 }
 
 pub async fn start_web(port: u16) {
@@ -171,10 +172,11 @@ pub async fn start_web(port: u16) {
         App::new()
             .service(check_url_is_available)
             .service(fetch_m3u_body)
-            .service(index)
             .service(system_status)
+            .service(system_status)
+            .service(index)
             .service(
-                fs::Files::new("/assets", VIEW_BASE_DIR.to_owned() + "/assets")
+                fs::Files::new("/static", VIEW_BASE_DIR.to_owned())
                     .show_files_listing(),
             )
             .app_data(web::Data::new(data_clone_for_http_server))
@@ -182,6 +184,7 @@ pub async fn start_web(port: u16) {
             .route("/tasks/list", web::get().to(list_task))
             .route("/tasks/add", web::post().to(add_task))
             .route("/tasks/delete/{id}", web::delete().to(delete_task))
+            .service(fs::Files::new("/assets", "./web/assets"))
     })
         .bind(("0.0.0.0", port))
         .expect("Failed to bind address")
