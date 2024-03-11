@@ -24,14 +24,17 @@ struct TaskDelResp {
 }
 
 
-async fn check_ipv6() -> impl Responder {
+pub async fn check_ipv6() -> bool {
     let result = reqwest::get("http://[2606:2800:220:1:248:1893:25c8:1946]").await;
 
     match result {
-        Ok(_) => HttpResponse::Ok().body("IPv6 is supported"),
+        Ok(_) => {
+            true
+        }
         Err(e) => {
             // 处理错误，根据错误类型返回更探针对性的信息也可以
-            HttpResponse::Ok().body(format!("IPv6 might not be supported: {}", e))
+            // HttpResponse::Ok().body(format!("IPv6 might not be supported: {}", e))
+            false
         }
     }
 }
@@ -110,16 +113,18 @@ pub static VIEW_BASE_DIR: &str = "./static/";
 #[derive(Serialize, Deserialize)]
 struct SystemStatus {
     can_ipv6: bool,
+    version: String,
 }
 
-#[get("/system-status")]
+#[get("/system/info")]
 async fn system_status() -> impl Responder {
-    let check_ipv6 = check::check::check_can_support_ipv6().unwrap();
+    let check_ipv6 = check_ipv6().await;
     let system_status = SystemStatus {
         can_ipv6: check_ipv6,
+        version: env!("CARGO_PKG_VERSION").to_string(),
     };
     let obj = serde_json::to_string(&system_status).unwrap();
-    return HttpResponse::Ok().body(obj);
+    return HttpResponse::Ok().append_header(("Content-Type", "application/json")).body(obj);
 }
 
 #[get("/")]
