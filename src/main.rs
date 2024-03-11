@@ -6,6 +6,7 @@ use clap::{arg, Args as clapArgs, Parser, Subcommand};
 use std::{env};
 use tempfile::tempdir;
 use crate::common::do_check;
+use crate::web::VIEW_BASE_DIR;
 
 #[derive(Subcommand)]
 enum Commands {
@@ -71,15 +72,14 @@ pub struct Args {
 
 fn get_pid_file() -> String {
     if let Ok(dir) = tempdir() {
-        if  let Some(a) = dir.path().join("iptv_checker_web_server.pid").to_str() {
+        if let Some(a) = dir.path().join("iptv_checker_web_server.pid").to_str() {
             return a.to_owned();
         }
     }
     return String::default();
 }
 
-async fn start_daemonize_web(pid_name:&String, port: u16, cmd_dir: String) {
-    println!("start web-----{}", cmd_dir);
+async fn start_daemonize_web(pid_name: &String, port: u16) {
     utils::check_pid_exits(pid_name);
     println!("start web server, port:{}", port);
     // 启动 web 服务
@@ -112,17 +112,11 @@ pub async fn main() {
             if args.status {
                 show_status();
             } else if args.start {
-                let mut c_dir = String::from("");
-                if let Ok(current_dir) = env::current_dir() {
-                    if let Some(c_str) = current_dir.to_str() {
-                        c_dir = c_str.to_string();
-                    }
-                }
                 let mut port = args.port;
                 if port == 0 {
                     port = 8080
                 }
-                start_daemonize_web(&pid_name, port, c_dir).await;
+                start_daemonize_web(&pid_name, port).await;
             } else if args.stop {
                 utils::check_pid_exits(&pid_name);
             }
@@ -130,7 +124,7 @@ pub async fn main() {
         Commands::Check(args) => {
             if args.input_file.len() > 0 {
                 println!("您输入的文件地址是: {}", args.input_file.join(","));
-                do_check(args.input_file.to_owned(),args.output_file.clone(), args.timeout as u64, true, args.timeout as i32, args.concurrency).await.unwrap();
+                do_check(args.input_file.to_owned(), args.output_file.clone(), args.timeout as u64, true, args.timeout as i32, args.concurrency).await.unwrap();
             }
         }
     }

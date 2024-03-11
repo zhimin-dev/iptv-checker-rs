@@ -21,7 +21,7 @@ fn get_random_output_filename() -> String {
         .take(10)
         .map(char::from)
         .collect();
-    format!("./{}.m3u", random_string)
+    format!("{}.m3u", random_string)
 }
 
 fn read_pid_contents(pid_file: String) -> Result<String, Error> {

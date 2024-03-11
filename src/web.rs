@@ -105,7 +105,7 @@ async fn fetch_m3u_body(req: web::Query<FetchM3uBodyRequest>) -> impl Responder 
     };
 }
 
-static VIEW_BASE_DIR: &str = "./static/";
+pub static VIEW_BASE_DIR: &str = "./static/";
 
 #[derive(Serialize, Deserialize)]
 struct SystemStatus {

@@ -2,6 +2,7 @@ use std::fmt::Error;
 use crate::common::{AudioInfo, VideoInfo};
 use serde::{Deserialize, Serialize};
 use crate::{common, utils};
+use crate::web::VIEW_BASE_DIR;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CheckUrlIsAvailableResponse {
@@ -207,7 +208,9 @@ pub async fn do_check(input_files: Vec<String>, output_file: String, timeout: u6
     let mut data =
         common::m3u::m3u::from_arr(input_files.to_owned(), timeout)
             .await;
-    let output_file = utils::get_out_put_filename(output_file.clone());
+    let mut output_file = utils::get_out_put_filename(output_file.clone());
+    // 拼接目录
+    output_file = format!("{}{}", VIEW_BASE_DIR, output_file);
     if print_result {
         println!("输出文件: {}", output_file);
     }
