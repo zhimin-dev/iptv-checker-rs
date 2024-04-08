@@ -11,7 +11,16 @@ use clokwerk::{Scheduler, TimeUnits};
 use std::thread;
 use std::time::Duration;
 use actix_web::web::Redirect;
-
+use futures::{StreamExt, TryStreamExt};
+use std::io::Write;
+use std::fs::File;
+use actix_multipart::{
+    form::{
+        tempfile::{TempFile, TempFileConfig},
+        MultipartForm,
+    },
+    Multipart,
+};
 
 #[derive(Debug, Deserialize, Serialize)]
 struct TaskDel {
@@ -45,7 +54,7 @@ struct CheckUrlIsAvailableRequest {
     timeout: Option<i32>,
 }
 
-#[get("/check-url-is-available")]
+#[get("/check/url-is-available")]
 async fn check_url_is_available(req: web::Query<CheckUrlIsAvailableRequest>) -> impl Responder {
     let mut timeout = 0;
     if let Some(i) = req.timeout {
@@ -70,7 +79,7 @@ struct FetchM3uBodyRequest {
     timeout: Option<i32>,
 }
 
-#[get("/fetch-m3u-body")]
+#[get("/fetch/m3u-body")]
 async fn fetch_m3u_body(req: web::Query<FetchM3uBodyRequest>) -> impl Responder {
     let mut timeout = 0;
     if let Some(i) = req.timeout {
@@ -111,17 +120,19 @@ async fn fetch_m3u_body(req: web::Query<FetchM3uBodyRequest>) -> impl Responder 
 pub static VIEW_BASE_DIR: &str = "./static/";
 
 #[derive(Serialize, Deserialize)]
-struct SystemStatus {
+struct SystemStatusResp {
     can_ipv6: bool,
     version: String,
+    output: String,
 }
 
 #[get("/system/info")]
 async fn system_status() -> impl Responder {
     let check_ipv6 = check_ipv6().await;
-    let system_status = SystemStatus {
+    let system_status = SystemStatusResp {
         can_ipv6: check_ipv6,
         version: env!("CARGO_PKG_VERSION").to_string(),
+        output: format!("{}{}", VIEW_BASE_DIR, "upload".to_string()),
     };
     let obj = serde_json::to_string(&system_status).unwrap();
     return HttpResponse::Ok().append_header(("Content-Type", "application/json")).body(obj);
@@ -131,6 +142,33 @@ async fn system_status() -> impl Responder {
 async fn index() -> impl Responder {
     let path: std::path::PathBuf = "./web/index.html".into(); // 替换为实际的 index.html 路径
     NamedFile::open(path)
+}
+
+#[derive(Debug, MultipartForm)]
+struct UploadFormReq {
+    #[multipart(rename = "file")]
+    file: TempFile,
+}
+
+#[derive(Serialize, Deserialize)]
+struct UploadResponse {
+    msg: String,
+    url: String,
+}
+
+#[post("/media/upload")]
+async fn upload(
+    MultipartForm(form): MultipartForm<UploadFormReq>,
+) -> impl Responder {
+    let path = format!("static/input/{}", form.file.file_name.unwrap());
+    log::info!("saving to {path}");
+    form.file.file.persist(path.clone()).unwrap();
+    let resp = UploadResponse {
+        msg: "success".to_string(),
+        url: path.clone().to_string(),
+    };
+    let obj = serde_json::to_string(&resp).unwrap();
+    return HttpResponse::Ok().append_header(("Content-Type", "application/json")).body(obj);
 }
 
 pub async fn start_web(port: u16) {
@@ -180,6 +218,7 @@ pub async fn start_web(port: u16) {
             .service(system_status)
             .service(system_status)
             .service(index)
+            .service(upload)
             .service(
                 fs::Files::new("/static", VIEW_BASE_DIR.to_owned())
                     .show_files_listing(),

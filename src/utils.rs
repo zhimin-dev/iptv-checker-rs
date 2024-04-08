@@ -13,6 +13,10 @@ pub fn get_out_put_filename(output_file: String) -> String {
     filename
 }
 
+pub fn convert_string_to_err(s: String) -> Result<(), String> {
+    Err(s)
+}
+
 fn get_random_output_filename() -> String {
     let rng = rand::thread_rng();
 

@@ -2,13 +2,14 @@ use actix_web::{web, HttpResponse, Responder};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{Read, Write, Result};
+use std::io::{Read, Write, Result, Error, ErrorKind};
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 use md5;
 use std::time::{SystemTime, UNIX_EPOCH};
 use clokwerk::{Scheduler, TimeUnits};
 use crate::common::do_check;
+use crate::utils::convert_string_to_err;
 
 const FILE_PATH: &str = "tasks.json";
 
@@ -67,8 +68,6 @@ impl TaskInfo {
 pub struct TaskContent {
     // 订阅源
     urls: Vec<String>,
-    // 订阅内容
-    contents: String,
     // 结果文件名，最后可以通过这个文件来获取结果
     result_name: String,
     // 最终的md5
@@ -85,7 +84,6 @@ impl TaskContent {
     pub fn new() -> TaskContent {
         TaskContent {
             urls: vec![],
-            contents: "".to_string(),
             result_name: "".to_string(),
             md5: "".to_string(),
         }
@@ -103,10 +101,6 @@ impl TaskContent {
 
     pub fn set_urls(&mut self, urls: Vec<String>) {
         self.urls = urls;
-    }
-
-    pub fn set_contents(&mut self, contents: String) {
-        self.contents = contents
     }
 
     pub fn set_result_file_name(&mut self, name: String) {
@@ -211,8 +205,9 @@ impl TaskManager {
         let mut ori = TaskContent::new();
         if task.urls.len() > 0 {
             ori.set_urls(task.urls);
-        } else if !task.contents.is_empty() {
-            ori.set_contents(task.contents);
+        }
+        if task.result_name.is_empty() {
+            return Err(Error::new(ErrorKind::Other, "参数错误"));
         }
         if !task.result_name.is_empty() {
             ori.set_result_file_name(task.result_name)
@@ -302,9 +297,9 @@ pub async fn add_task(task_manager: web::Data<Arc<TaskManager>>, scheduler: web:
             resp.insert("data", id.to_string());
             HttpResponse::Ok().json(resp)
         }
-        Err(_) => {
+        Err(err) => {
             resp.insert("code", String::from("500"));
-            resp.insert("msg", String::from("internal error"));
+            resp.insert("msg", String::from(err.to_string()));
             HttpResponse::Ok().json(resp)
         }
     }
