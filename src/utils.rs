@@ -8,9 +8,13 @@ use std::process::Command;
 pub fn get_out_put_filename(output_file: String) -> String {
     let mut filename = output_file.clone();
     if output_file.is_empty() {
-        filename = get_random_output_filename();
+        filename = format!("static/output/{}", get_random_output_filename());
     }
     filename
+}
+
+pub fn convert_string_to_err(s: String) -> Result<(), String> {
+    Err(s)
 }
 
 fn get_random_output_filename() -> String {
@@ -21,7 +25,7 @@ fn get_random_output_filename() -> String {
         .take(10)
         .map(char::from)
         .collect();
-    format!("./{}.m3u", random_string)
+    format!("{}.m3u", random_string)
 }
 
 fn read_pid_contents(pid_file: String) -> Result<String, Error> {

@@ -1,5 +1,8 @@
+use std::fmt::Error;
 use crate::common::{AudioInfo, VideoInfo};
 use serde::{Deserialize, Serialize};
+use crate::{common, utils};
+use crate::web::VIEW_BASE_DIR;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CheckUrlIsAvailableResponse {
@@ -173,14 +176,20 @@ pub mod check {
                             Err(e) => return Err(e),
                         };
                     } else {
-                        let _body = res.text().await.unwrap();
-                        return if check_body_is_m3u8_format(_body.clone()) {
-                            let mut body: CheckUrlIsAvailableResponse =
-                                CheckUrlIsAvailableResponse::new();
-                            body.set_delay(delay as i32);
-                            Ok(body)
-                        } else {
-                            Err(Error::new(ErrorKind::Other, "not a m3u8 file"))
+                        return match res.text().await {
+                            Ok(_body) => {
+                                return if check_body_is_m3u8_format(_body.clone()) {
+                                    let mut body: CheckUrlIsAvailableResponse =
+                                        CheckUrlIsAvailableResponse::new();
+                                    body.set_delay(delay as i32);
+                                    Ok(body)
+                                } else {
+                                    Err(Error::new(ErrorKind::Other, "not a m3u8 file"))
+                                };
+                            }
+                            Err(e) => {
+                                Err(Error::new(ErrorKind::Other, e.to_string()))
+                            }
                         };
                     }
                 }
@@ -194,9 +203,24 @@ pub mod check {
             }
         };
     }
+}
 
-    pub fn check_can_support_ipv6() -> Result<bool, Error> {
-        // curl -6 test.ipw.cn
-        Ok(true)
+pub async fn do_check(input_files: Vec<String>, output_file: String, timeout: u64, print_result: bool, request_timeout: i32, concurrent: i32) -> Result<bool, Error> {
+    let mut data =
+        common::m3u::m3u::from_arr(input_files.to_owned(), timeout)
+            .await;
+    let mut output_file = utils::get_out_put_filename(output_file.clone());
+    // 拼接目录
+    output_file = format!("{}{}", "./", output_file);
+    if print_result {
+        println!("输出文件: {}", output_file);
     }
+    data.check_data_new(request_timeout, concurrent)
+        .await;
+    data.output_file(output_file).await;
+    if print_result {
+        let status_string = data.print_result();
+        println!("\n{}\n解析完成----", status_string);
+    }
+    Ok(true)
 }

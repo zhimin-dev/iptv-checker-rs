@@ -2,35 +2,64 @@ use actix_web::{web, HttpResponse, Responder};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{Read, Write, Result};
+use std::io::{Read, Write, Result, Error, ErrorKind};
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 use md5;
 use std::time::{SystemTime, UNIX_EPOCH};
+use clokwerk::{Scheduler, TimeUnits};
+use crate::common::do_check;
 
 const FILE_PATH: &str = "tasks.json";
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct TaskInfo {
-    //任务状态
-    status: TaskStatus,
-    // 总的频道数
-    total: i32,
-    // 已检查频道数
-    current: i32,
+    // 定时时间
+    run_type: RunTime,
+
+    // 最后一次运行时间, (s)
+    last_run_time: i32,
+
+    // next run time, (s)
+    next_run_time: i32,
+
+    is_running: bool,
+
+    // 任务状态
+    task_status: TaskStatus,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+enum RunTime {
+    EveryDay,
+    EveryHour,
 }
 
 impl TaskInfo {
     pub fn new() -> TaskInfo {
         return TaskInfo {
-            status: TaskStatus::Pending,
-            total: 0,
-            current: 0,
+            run_type: RunTime::EveryDay,
+            task_status: TaskStatus::Pending,
+            last_run_time: 0,
+            next_run_time: 0,
+            is_running: false,
         };
     }
 
+    pub fn set_run_type(&mut self, run_type: RunTime) {
+        self.run_type = run_type
+    }
+
     pub fn set_status(&mut self, stats: TaskStatus) {
-        self.status = stats
+        self.task_status = stats
+    }
+
+    pub fn set_next_run_time(&mut self, time: i32) {
+        self.next_run_time = time
+    }
+
+    pub fn set_last_run_time(&mut self, time: i32) {
+        self.next_run_time = time
     }
 }
 
@@ -38,15 +67,15 @@ impl TaskInfo {
 pub struct TaskContent {
     // 订阅源
     urls: Vec<String>,
-    // 订阅内容
-    contents: String,
     // 结果文件名，最后可以通过这个文件来获取结果
     result_name: String,
     // 最终的md5
     md5: String,
+    // 运行类型
+    run_type: RunTime,
 }
 
-fn md5_str(input:String) ->String {
+fn md5_str(input: String) -> String {
     let digest = md5::compute(input);
 
     format!("{:x}", digest)
@@ -56,10 +85,14 @@ impl TaskContent {
     pub fn new() -> TaskContent {
         TaskContent {
             urls: vec![],
-            contents: "".to_string(),
             result_name: "".to_string(),
             md5: "".to_string(),
+            run_type: RunTime::EveryDay,
         }
+    }
+
+    pub fn get_urls(self) -> Vec<String> {
+        self.urls
     }
 
     pub fn gen_md5(&mut self) {
@@ -72,12 +105,12 @@ impl TaskContent {
         self.urls = urls;
     }
 
-    pub fn set_contents(&mut self, contents: String) {
-        self.contents = contents
-    }
-
     pub fn set_result_file_name(&mut self, name: String) {
         self.result_name = name
+    }
+
+    pub fn set_run_type(&mut self, run_type: RunTime) {
+        self.run_type = run_type
     }
 }
 
@@ -85,7 +118,6 @@ impl TaskContent {
 enum TaskStatus {
     Pending,
     InProgress,
-    Completed,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -122,7 +154,8 @@ impl Task {
     }
 
     pub fn set_original(&mut self, original: TaskContent) {
-        self.original = original
+        self.original = original.clone();
+        self.task_info.set_run_type(original.run_type.clone());
     }
 
     pub fn get_uuid(&self) -> String {
@@ -131,6 +164,42 @@ impl Task {
 
     pub fn set_task_info(&mut self, task_info: TaskInfo) {
         self.task_info = task_info
+    }
+
+    pub fn get_task_info(self) -> TaskInfo {
+        self.task_info
+    }
+
+    pub fn run(&mut self) {
+        if self.task_info.is_running {
+            return;
+        }
+        if self.task_info.next_run_time != 0 && self.task_info.next_run_time > now() as i32 {
+            return;
+        }
+        self.task_info.is_running = true;
+        self.task_info.task_status = TaskStatus::InProgress;
+        let urls = self.clone().original.get_urls();
+        let out_out_file = self.clone().original.result_name;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            do_check(urls, out_out_file.clone(), 2800, true, 2800, 10).await.unwrap();
+        });
+        self.task_info.task_status = TaskStatus::Pending;
+        self.task_info.is_running = false;
+        self.task_info.last_run_time = now() as i32;
+        let now_time = now() as i32;
+        match self.task_info.run_type {
+            RunTime::EveryDay => {
+                self.task_info.next_run_time = now_time + 86400;
+            }
+            RunTime::EveryHour => {
+                self.task_info.next_run_time = now_time + 3600;
+            }
+        }
     }
 }
 
@@ -143,12 +212,14 @@ impl TaskManager {
         let mut ori = TaskContent::new();
         if task.urls.len() > 0 {
             ori.set_urls(task.urls);
-        } else if !task.contents.is_empty() {
-            ori.set_contents(task.contents);
+        }
+        if task.result_name.is_empty() {
+            return Err(Error::new(ErrorKind::Other, "参数错误"));
         }
         if !task.result_name.is_empty() {
             ori.set_result_file_name(task.result_name)
         }
+        ori.set_run_type(task.run_type);
         ori.gen_md5();
         let mut task = Task::new();
         task.set_original(ori);
@@ -180,15 +251,27 @@ impl TaskManager {
         }
     }
 
-    fn save_tasks(&self) -> Result<()> {
+    pub fn save_tasks(&self) -> Result<()> {
         let tasks = self.tasks.lock().unwrap();
         save_tasks_to_file(&*tasks)
     }
 
-    fn update_task_status(&self, id: String, status: TaskStatus) -> Result<bool> {
+    pub fn update_task_status(&self, id: String, status: TaskStatus) -> Result<bool> {
         let mut tasks = self.tasks.lock().unwrap();
         if let Some(task) = tasks.get_mut(&id) {
             task.task_info.set_status(status);
+            drop(tasks);
+            self.save_tasks()?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    pub fn update_task(&self, id: String, mut task_info: TaskInfo) -> Result<bool> {
+        let mut tasks = self.tasks.lock().unwrap();
+        if let Some(task) = tasks.get_mut(&id) {
+            task.set_task_info(task_info);
             drop(tasks);
             self.save_tasks()?;
             Ok(true)
@@ -213,7 +296,7 @@ impl TaskManager {
     }
 }
 
-pub async fn add_task(task_manager: web::Data<Arc<TaskManager>>, task_json: web::Json<TaskContent>) -> impl Responder {
+pub async fn add_task(task_manager: web::Data<Arc<TaskManager>>, scheduler: web::Data<Arc<Mutex<Scheduler>>>, task_json: web::Json<TaskContent>) -> impl Responder {
     let mut resp = HashMap::new();
     let task = task_json.into_inner();
     match task_manager.add_task(task) {
@@ -222,9 +305,9 @@ pub async fn add_task(task_manager: web::Data<Arc<TaskManager>>, task_json: web:
             resp.insert("data", id.to_string());
             HttpResponse::Ok().json(resp)
         }
-        Err(_) => {
+        Err(err) => {
             resp.insert("code", String::from("500"));
-            resp.insert("msg", String::from("internal error"));
+            resp.insert("msg", String::from(err.to_string()));
             HttpResponse::Ok().json(resp)
         }
     }
