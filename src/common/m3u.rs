@@ -241,10 +241,7 @@ impl M3uObjectList {
             thread::spawn(move || loop {
                 let item = {
                     let rx_lock = data_rx_clone.lock().unwrap();
-                    match rx_lock.recv() {
-                        Ok(item) => item,
-                        Err(_) => break,
-                    }
+                    rx_lock.recv().unwrap_or_else(|_| M3uObject::new())
                 };
                 let result = set_one_item(debug, item, request_time, search_clarity);
                 tx_clone.send(result).unwrap();
@@ -306,7 +303,6 @@ impl M3uObjectList {
                 let temp = x.clone();
                 result_m3u_content.push(temp.to_owned());
             }
-
             let mut fd = File::create(output_file.to_owned()).unwrap();
             for x in result_m3u_content {
                 let _ = fd.write(format!("{}\n", x).as_bytes());
@@ -632,9 +628,15 @@ pub mod m3u {
                         .expect("can not open this url"),
                 )
             } else {
-                let mut data = File::open(x).expect("file not exists");
                 let mut contents = String::from("");
-                data.read_to_string(&mut contents).unwrap();
+                if x.starts_with("static") {
+                    println!("{}", x);
+                    let mut data = File::open(format!("./{}", x)).expect(format!("file {} not exists", x).as_str());
+                    data.read_to_string(&mut contents).unwrap();
+                }else{
+                    let mut data = File::open(x).expect("file not exists");
+                    data.read_to_string(&mut contents).unwrap();
+                }
                 body_arr.push(contents);
             }
         }

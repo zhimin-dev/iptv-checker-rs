@@ -6,7 +6,6 @@ use clap::{arg, Args as clapArgs, Parser, Subcommand};
 use std::{env};
 use tempfile::tempdir;
 use crate::common::do_check;
-use crate::web::VIEW_BASE_DIR;
 
 #[derive(Subcommand)]
 enum Commands {

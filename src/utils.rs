@@ -8,7 +8,7 @@ use std::process::Command;
 pub fn get_out_put_filename(output_file: String) -> String {
     let mut filename = output_file.clone();
     if output_file.is_empty() {
-        filename = get_random_output_filename();
+        filename = format!("static/output/{}", get_random_output_filename());
     }
     filename
 }

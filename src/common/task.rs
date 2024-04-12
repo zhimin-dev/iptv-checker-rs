@@ -9,7 +9,6 @@ use md5;
 use std::time::{SystemTime, UNIX_EPOCH};
 use clokwerk::{Scheduler, TimeUnits};
 use crate::common::do_check;
-use crate::utils::convert_string_to_err;
 
 const FILE_PATH: &str = "tasks.json";
 
@@ -72,6 +71,8 @@ pub struct TaskContent {
     result_name: String,
     // 最终的md5
     md5: String,
+    // 运行类型
+    run_type: RunTime,
 }
 
 fn md5_str(input: String) -> String {
@@ -86,6 +87,7 @@ impl TaskContent {
             urls: vec![],
             result_name: "".to_string(),
             md5: "".to_string(),
+            run_type: RunTime::EveryDay,
         }
     }
 
@@ -105,6 +107,10 @@ impl TaskContent {
 
     pub fn set_result_file_name(&mut self, name: String) {
         self.result_name = name
+    }
+
+    pub fn set_run_type(&mut self, run_type: RunTime) {
+        self.run_type = run_type
     }
 }
 
@@ -148,7 +154,8 @@ impl Task {
     }
 
     pub fn set_original(&mut self, original: TaskContent) {
-        self.original = original
+        self.original = original.clone();
+        self.task_info.set_run_type(original.run_type.clone());
     }
 
     pub fn get_uuid(&self) -> String {
@@ -212,6 +219,7 @@ impl TaskManager {
         if !task.result_name.is_empty() {
             ori.set_result_file_name(task.result_name)
         }
+        ori.set_run_type(task.run_type);
         ori.gen_md5();
         let mut task = Task::new();
         task.set_original(ori);
