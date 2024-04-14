@@ -186,7 +186,7 @@ impl Task {
             .build()
             .unwrap();
         rt.block_on(async {
-            do_check(urls, out_out_file.clone(), 2800, true, 2800, 10).await.unwrap();
+            do_check(urls, out_out_file.clone(), 10000, true, 10000, 10).await.unwrap();
         });
         self.task_info.task_status = TaskStatus::Pending;
         self.task_info.is_running = false;

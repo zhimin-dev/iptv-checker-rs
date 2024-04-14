@@ -13,11 +13,16 @@ use std::time::Duration;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct M3uExtend {
-    group_title: String, //group title
-    tv_logo: String,     //台标
-    tv_language: String, //语言
-    tv_country: String,  //国家
-    tv_id: String,       //电视id
+    group_title: String,
+    //group title
+    tv_logo: String,
+    //台标
+    tv_language: String,
+    //语言
+    tv_country: String,
+    //国家
+    tv_id: String,
+    //电视id
     user_agent: String,  // user-agent
 }
 
@@ -60,13 +65,20 @@ impl M3uExtend {
 
 #[derive(Debug, Clone)]
 pub struct M3uObject {
-    index: i32,                        //索引
-    url: String,                       //连接url
-    name: String,                      //显示名称
-    extend: Option<M3uExtend>,         //扩展信息
-    search_name: String,               //搜索名称
-    raw: String,                       //原始的m3u文件信息
-    status: CheckDataStatus,           //当前状态
+    index: i32,
+    //索引
+    url: String,
+    //连接url
+    name: String,
+    //显示名称
+    extend: Option<M3uExtend>,
+    //扩展信息
+    search_name: String,
+    //搜索名称
+    raw: String,
+    //原始的m3u文件信息
+    status: CheckDataStatus,
+    //当前状态
     other_status: Option<OtherStatus>, //其它状态
 }
 
@@ -119,8 +131,10 @@ impl M3uObject {
 
 #[derive(Copy, Clone)]
 pub struct M3uObjectListCounter {
-    check_index: i32,   //当前检查的索引
-    total: i32,         // 总数
+    check_index: i32,
+    //当前检查的索引
+    total: i32,
+    // 总数
     success_count: i32, // 成功数据
 }
 
@@ -378,15 +392,19 @@ impl From<String> for M3uObjectList {
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
 pub enum CheckDataStatus {
-    Unchecked, //未检查
-    Success,   //检查成功
+    Unchecked,
+    //未检查
+    Success,
+    //检查成功
     Failed,    //检查失败，包含超时、无效
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct OtherStatus {
-    video: Option<VideoInfo>,     //视频信息
-    audio: Option<AudioInfo>,     //音频信息
+    video: Option<VideoInfo>,
+    //视频信息
+    audio: Option<AudioInfo>,
+    //音频信息
     network: Option<NetworkInfo>, //网路状态信息
 }
 
@@ -518,7 +536,8 @@ impl AudioInfo {
 }
 
 pub enum SourceType {
-    Normal, //m3u标准文件
+    Normal,
+    //m3u标准文件
     Quota,  //名称,url格式
 }
 
@@ -622,18 +641,20 @@ pub mod m3u {
         let mut body_arr = vec![];
         for x in _url {
             if is_url(x.clone()) {
-                body_arr.push(
-                    get_url_body(x.clone(), _timeout)
-                        .await
-                        .expect("can not open this url"),
-                )
+                match get_url_body(x.clone(), _timeout).await {
+                    Ok(data) => {
+                        body_arr.push(data)
+                    }
+                    Err(e) => {
+                        println!("url can not be open : {}", x.clone())
+                    }
+                }
             } else {
                 let mut contents = String::from("");
                 if x.starts_with("static") {
-                    println!("{}", x);
                     let mut data = File::open(format!("./{}", x)).expect(format!("file {} not exists", x).as_str());
                     data.read_to_string(&mut contents).unwrap();
-                }else{
+                } else {
                     let mut data = File::open(x).expect("file not exists");
                     data.read_to_string(&mut contents).unwrap();
                 }
