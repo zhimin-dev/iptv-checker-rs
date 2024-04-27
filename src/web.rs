@@ -4,7 +4,7 @@ use actix_files::NamedFile;
 use actix_web::{get, post, web, App, HttpResponse, HttpServer, Responder, Result};
 use serde::{Deserialize, Serialize};
 use std::time;
-use crate::common::task::{TaskManager, add_task, delete_task, list_task};
+use crate::common::task::{TaskManager, add_task, delete_task, list_task, update_task, run_task};
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
 use clokwerk::{Scheduler, TimeUnits};
@@ -193,19 +193,19 @@ pub async fn start_web(port: u16) {
                     let mut scheduler = scheduler.lock().unwrap();
                     scheduler.run_pending();
                 }
-                thread::sleep(Duration::from_millis(100));
+                thread::sleep(Duration::from_secs(30));
             }
         })
     };
     let data_clone = Arc::clone(&data);
     {
         let mut scheduler = scheduler.lock().unwrap();
-        scheduler.every(10.seconds()).run(move || {
+        scheduler.every(30.seconds()).run(move || {
             let data_clone = Arc::clone(&data_clone);
             let tasks = data_clone.list_task().unwrap();
             for mut task in tasks {
                 task.run();
-                data_clone.update_task(task.get_uuid(), task.get_task_info()).unwrap();
+                data_clone.update_task_info(task.get_uuid(), task.get_task_info()).unwrap();
             }
         });
     }
@@ -226,6 +226,8 @@ pub async fn start_web(port: u16) {
             .app_data(web::Data::new(data_clone_for_http_server))
             .app_data(web::Data::new(scheduler.clone()))
             .route("/tasks/list", web::get().to(list_task))
+            .route("/tasks/run", web::get().to(run_task))
+            .route("/tasks/update", web::post().to(update_task))
             .route("/tasks/add", web::post().to(add_task))
             .route("/tasks/delete/{id}", web::delete().to(delete_task))
             .service(fs::Files::new("/assets", "./web/assets"))

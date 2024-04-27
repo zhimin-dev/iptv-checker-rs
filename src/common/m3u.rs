@@ -258,7 +258,10 @@ impl M3uObjectList {
                     rx_lock.recv().unwrap_or_else(|_| M3uObject::new())
                 };
                 let result = set_one_item(debug, item, request_time, search_clarity);
-                tx_clone.send(result).unwrap();
+                match tx_clone.send(result) {
+                    Ok(_) => {}
+                    Err(e) => {}
+                }
             });
         }
         for item in data {
@@ -651,14 +654,19 @@ pub mod m3u {
                 }
             } else {
                 let mut contents = String::from("");
+                let mut file_name = x.clone();
                 if x.starts_with("static") {
-                    let mut data = File::open(format!("./{}", x)).expect(format!("file {} not exists", x).as_str());
-                    data.read_to_string(&mut contents).unwrap();
-                } else {
-                    let mut data = File::open(x).expect("file not exists");
-                    data.read_to_string(&mut contents).unwrap();
+                    file_name = format!("./{}", x)
                 }
-                body_arr.push(contents);
+                match File::open(file_name) {
+                    Ok(mut data) => {
+                        data.read_to_string(&mut contents).unwrap();
+                        body_arr.push(contents);
+                    }
+                    Err(e) => {
+                        println!("file {} not exists", x)
+                    }
+                }
             }
         }
         from_body_arr(body_arr)
