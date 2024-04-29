@@ -253,14 +253,25 @@ impl M3uObjectList {
             let data_rx_clone = Arc::clone(&new_data_rx);
 
             thread::spawn(move || loop {
-                let item = {
-                    let rx_lock = data_rx_clone.lock().unwrap();
-                    rx_lock.recv().unwrap_or_else(|_| M3uObject::new())
-                };
-                let result = set_one_item(debug, item, request_time, search_clarity);
-                match tx_clone.send(result) {
-                    Ok(_) => {}
-                    Err(e) => {}
+                match data_rx_clone.lock() {
+                    Ok(data) => {
+                        let item = {
+                            let rx_lock = data;
+                            rx_lock.recv().unwrap_or_else(|_| M3uObject::new())
+                        };
+                        if item.url == "" {
+                            break
+                        }
+                        let result = set_one_item(debug, item, request_time, search_clarity);
+                        match tx_clone.send(result) {
+                            Ok(_) => {}
+                            Err(e) => {}
+                        }
+                    }
+                    Err(e) => {
+                        println!("error ---{} ", e);
+                        break
+                    }
                 }
             });
         }
