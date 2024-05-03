@@ -8,6 +8,7 @@ use uuid::Uuid;
 use md5;
 use std::time::{SystemTime, UNIX_EPOCH};
 use clokwerk::{Scheduler, TimeUnits};
+use nix::libc::time;
 use crate::common::do_check;
 
 const FILE_PATH: &str = "tasks.json";
@@ -162,6 +163,10 @@ impl Task {
         self.id.clone()
     }
 
+    pub fn set_id(&mut self, id: String) {
+        self.id = id.clone()
+    }
+
     pub fn set_task_info(&mut self, task_info: TaskInfo) {
         self.task_info = task_info
     }
@@ -181,12 +186,13 @@ impl Task {
         self.task_info.task_status = TaskStatus::InProgress;
         let urls = self.clone().original.get_urls();
         let out_out_file = self.clone().original.result_name;
-        let rt = tokio::runtime::Builder::new_current_thread()
+        let mut rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
         rt.block_on(async {
-            do_check(urls, out_out_file.clone(), 2800, true, 2800, 10).await.unwrap();
+            let _ = do_check(urls, out_out_file.clone(), 10000, true, 10000, 30).await;
+            println!("end check");
         });
         self.task_info.task_status = TaskStatus::Pending;
         self.task_info.is_running = false;
@@ -210,9 +216,10 @@ pub struct TaskManager {
 impl TaskManager {
     pub fn add_task(&self, task: TaskContent) -> Result<String> {
         let mut ori = TaskContent::new();
-        if task.urls.len() > 0 {
-            ori.set_urls(task.urls);
+        if task.urls.is_empty() {
+            return Err(Error::new(ErrorKind::Other, "参数错误"));
         }
+        ori.set_urls(task.urls);
         if task.result_name.is_empty() {
             return Err(Error::new(ErrorKind::Other, "参数错误"));
         }
@@ -228,6 +235,47 @@ impl TaskManager {
         drop(tasks); // 显式释放锁以防止死锁
         self.save_tasks()?;
         Ok(task.get_uuid())
+    }
+
+    pub fn run_task(&self, id: String) -> Result<bool> {
+        let mut tasks = self.tasks.lock().unwrap();
+        if let Some(mut task) = tasks.get_mut(&id) {
+            task.task_info.set_next_run_time(now() as i32);
+            drop(tasks);
+            self.save_tasks()?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    pub fn update_task(&self, id: String, pass_task: TaskContent) -> Result<bool> {
+        let mut tasks = self.tasks.lock().unwrap();
+        if let Some(mut task) = tasks.get_mut(&id) {
+            let mut task_info = task.clone().get_task_info();
+            let mut ori = task.original.clone();
+            if pass_task.urls.is_empty() {
+                return Err(Error::new(ErrorKind::Other, "参数错误"));
+            }
+            ori.set_urls(pass_task.urls.clone());
+            if pass_task.result_name.is_empty() {
+                return Err(Error::new(ErrorKind::Other, "参数错误"));
+            }
+            if !pass_task.result_name.is_empty() {
+                ori.set_result_file_name(pass_task.result_name)
+            }
+            ori.set_run_type(pass_task.run_type);
+            let mut task = Task::new();
+            task.set_original(ori);
+            task.set_id(id);
+            task.set_task_info(task_info);
+            tasks.insert(task.get_uuid(), task.clone());
+            drop(tasks);
+            self.save_tasks()?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
     }
 
     pub fn delete_task(&self, id: String) -> Result<bool> {
@@ -268,7 +316,7 @@ impl TaskManager {
         }
     }
 
-    pub fn update_task(&self, id: String, mut task_info: TaskInfo) -> Result<bool> {
+    pub fn update_task_info(&self, id: String, mut task_info: TaskInfo) -> Result<bool> {
         let mut tasks = self.tasks.lock().unwrap();
         if let Some(task) = tasks.get_mut(&id) {
             task.set_task_info(task_info);
@@ -296,7 +344,53 @@ impl TaskManager {
     }
 }
 
-pub async fn add_task(task_manager: web::Data<Arc<TaskManager>>, scheduler: web::Data<Arc<Mutex<Scheduler>>>, task_json: web::Json<TaskContent>) -> impl Responder {
+
+#[derive(Serialize, Deserialize)]
+pub struct UpdateTaskQuery {
+    task_id: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct RunTaskQuery {
+    task_id: String,
+}
+
+pub async fn run_task(task_manager: web::Data<Arc<TaskManager>>, req: web::Query<RunTaskQuery>) -> impl Responder {
+    println!("{}", req.task_id.clone());
+    let mut resp = HashMap::new();
+    match task_manager.run_task(req.task_id.clone()) {
+        Ok(id) => {
+            resp.insert("code", String::from("200"));
+            resp.insert("data", req.task_id.to_string());
+            HttpResponse::Ok().content_type("application/json").json(resp)
+        }
+        Err(err) => {
+            resp.insert("code", String::from("500"));
+            resp.insert("msg", String::from(err.to_string()));
+            HttpResponse::Ok().content_type("application/json").json(resp)
+        }
+    }
+}
+
+pub async fn update_task(task_manager: web::Data<Arc<TaskManager>>, task_json: web::Json<TaskContent>, req: web::Query<UpdateTaskQuery>) -> impl Responder {
+    println!("{}", req.task_id.clone());
+    let mut resp = HashMap::new();
+    let task = task_json.into_inner();
+    match task_manager.update_task(req.task_id.clone(), task) {
+        Ok(id) => {
+            resp.insert("code", String::from("200"));
+            resp.insert("data", req.task_id.to_string());
+            HttpResponse::Ok().json(resp)
+        }
+        Err(err) => {
+            resp.insert("code", String::from("500"));
+            resp.insert("msg", String::from(err.to_string()));
+            HttpResponse::Ok().json(resp)
+        }
+    }
+}
+
+pub async fn add_task(task_manager: web::Data<Arc<TaskManager>>, task_json: web::Json<TaskContent>) -> impl Responder {
     let mut resp = HashMap::new();
     let task = task_json.into_inner();
     match task_manager.add_task(task) {
