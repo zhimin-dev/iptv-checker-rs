@@ -76,6 +76,10 @@ pub struct TaskContent {
     keyword_like: Option<Vec<String>>,
     // 不喜欢关键词
     keyword_dislike: Option<Vec<String>>,
+    // 下载远端文件
+    http_timeout: Option<i32>,
+    // 检查时的超时配置
+    check_timeout: Option<i32>,
 }
 
 fn md5_str(input: String) -> String {
@@ -93,6 +97,8 @@ impl TaskContent {
             run_type: RunTime::EveryDay,
             keyword_like: None,
             keyword_dislike: None,
+            http_timeout: None,
+            check_timeout: None,
         }
     }
 
@@ -120,6 +126,46 @@ impl TaskContent {
 
     pub fn set_keyword_dislike(&mut self, dislike: Vec<String>) {
         self.keyword_dislike = Some(dislike);
+    }
+
+    pub fn set_http_timeout(&mut self, timeout: i32) {
+        self.http_timeout = Some(timeout);
+    }
+
+    pub fn get_http_timeout(self) -> i32 {
+        let default_val = 10000;
+        match self.http_timeout {
+            Some(n) => {
+                if n == 0 {
+                    default_val
+                } else {
+                    n
+                }
+            }
+            None => {
+                default_val
+            }
+        }
+    }
+
+    pub fn get_check_timeout(self) -> i32 {
+        let default_val = 10000;
+        match self.check_timeout {
+            Some(n) => {
+                if n == 0 {
+                    default_val
+                } else {
+                    n
+                }
+            }
+            None => {
+                default_val
+            }
+        }
+    }
+
+    pub fn set_check_timeout(&mut self, timeout: i32) {
+        self.check_timeout = Some(timeout);
     }
 
     pub fn set_run_type(&mut self, run_type: RunTime) {
@@ -206,12 +252,14 @@ impl Task {
         if self.clone().original.keyword_dislike.is_some() {
             keyword_dislike = self.clone().original.keyword_dislike.unwrap()
         }
+        let http_timeout = self.clone().original.get_http_timeout();
+        let check_timeout = self.clone().original.get_check_timeout();
         let mut rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
         rt.block_on(async {
-            let _ = do_check(urls, out_out_file.clone(), 10000, true, 10000, 30, keyword_like.clone(), keyword_dislike.clone()).await;
+            let _ = do_check(urls, out_out_file.clone(), http_timeout, true, check_timeout, 30, keyword_like.clone(), keyword_dislike.clone()).await;
             println!("end check");
         });
         self.task_info.task_status = TaskStatus::Pending;
@@ -245,6 +293,12 @@ impl TaskManager {
         }
         if !task.result_name.is_empty() {
             ori.set_result_file_name(task.result_name)
+        }
+        if task.http_timeout.is_some() {
+            ori.set_http_timeout(task.http_timeout.unwrap());
+        }
+        if task.check_timeout.is_some() {
+            ori.set_check_timeout(task.check_timeout.unwrap());
         }
         if task.keyword_like.is_some() {
             ori.set_keyword_like(task.keyword_like.unwrap())
@@ -289,6 +343,12 @@ impl TaskManager {
             }
             if !pass_task.result_name.is_empty() {
                 ori.set_result_file_name(pass_task.result_name)
+            }
+            if pass_task.http_timeout.is_some() {
+                ori.set_http_timeout(pass_task.http_timeout.unwrap());
+            }
+            if pass_task.check_timeout.is_some() {
+                ori.set_check_timeout(pass_task.check_timeout.unwrap());
             }
             if pass_task.keyword_like.is_some() {
                 ori.set_keyword_like(pass_task.keyword_like.unwrap())

@@ -204,12 +204,12 @@ pub mod check {
     }
 }
 
-pub async fn do_check(input_files: Vec<String>, output_file: String, timeout: u64,
+pub async fn do_check(input_files: Vec<String>, output_file: String, timeout: i32,
                       print_result: bool, request_timeout: i32, concurrent: i32,
                       keyword_like: Vec<String>, keyword_dislike: Vec<String>,
 ) -> Result<bool, Error> {
     let mut data =
-        common::m3u::m3u::from_arr(input_files.to_owned(), timeout, keyword_like.to_owned(), keyword_dislike.to_owned())
+        common::m3u::m3u::from_arr(input_files.to_owned(), timeout as u64, keyword_like.to_owned(), keyword_dislike.to_owned())
             .await;
     let mut output_file = utils::get_out_put_filename(output_file.clone());
     // 拼接目录

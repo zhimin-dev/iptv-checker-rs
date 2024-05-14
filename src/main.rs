@@ -132,7 +132,7 @@ pub async fn main() {
             if args.input_file.len() > 0 {
                 println!("您输入的文件地址是: {}", args.input_file.join(","));
                 do_check(args.input_file.to_owned(), args.output_file.clone(),
-                         args.timeout as u64, true, args.timeout as i32,
+                         args.timeout as i32, true, args.timeout as i32,
                          args.concurrency,
                          args.keyword_like.to_owned(), args.keyword_dislike.to_owned()).await.unwrap();
             }
