@@ -3,8 +3,7 @@ mod utils;
 mod web;
 
 use clap::{arg, Args as clapArgs, Parser, Subcommand};
-use std::{env, thread};
-use std::time::Duration;
+use std::{env};
 use tempfile::tempdir;
 use crate::common::do_check;
 
@@ -60,6 +59,14 @@ pub struct CheckArgs {
     /// 并发数
     #[arg(short = 'c', long = "concurrency", default_value_t = 1)]
     concurrency: i32,
+
+    /// 想看关键词
+    #[arg(long = "like")]
+    keyword_like: Vec<String>,
+
+    /// 不想看关键词
+    #[arg(long = "dislike")]
+    keyword_dislike: Vec<String>,
 }
 
 #[derive(Parser)]
@@ -124,7 +131,10 @@ pub async fn main() {
         Commands::Check(args) => {
             if args.input_file.len() > 0 {
                 println!("您输入的文件地址是: {}", args.input_file.join(","));
-                do_check(args.input_file.to_owned(), args.output_file.clone(), args.timeout as u64, true, args.timeout as i32, args.concurrency).await.unwrap();
+                do_check(args.input_file.to_owned(), args.output_file.clone(),
+                         args.timeout as u64, true, args.timeout as i32,
+                         args.concurrency,
+                         args.keyword_like.to_owned(), args.keyword_dislike.to_owned()).await.unwrap();
             }
         }
     }

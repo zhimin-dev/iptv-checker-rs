@@ -7,8 +7,6 @@ use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 use md5;
 use std::time::{SystemTime, UNIX_EPOCH};
-use clokwerk::{Scheduler, TimeUnits};
-use nix::libc::time;
 use crate::common::do_check;
 
 const FILE_PATH: &str = "tasks.json";
@@ -74,6 +72,10 @@ pub struct TaskContent {
     md5: String,
     // 运行类型
     run_type: RunTime,
+    // 喜欢关键词
+    keyword_like: Option<Vec<String>>,
+    // 不喜欢关键词
+    keyword_dislike: Option<Vec<String>>,
 }
 
 fn md5_str(input: String) -> String {
@@ -89,6 +91,8 @@ impl TaskContent {
             result_name: "".to_string(),
             md5: "".to_string(),
             run_type: RunTime::EveryDay,
+            keyword_like: None,
+            keyword_dislike: None,
         }
     }
 
@@ -108,6 +112,14 @@ impl TaskContent {
 
     pub fn set_result_file_name(&mut self, name: String) {
         self.result_name = name
+    }
+
+    pub fn set_keyword_like(&mut self, like: Vec<String>) {
+        self.keyword_like = Some(like);
+    }
+
+    pub fn set_keyword_dislike(&mut self, dislike: Vec<String>) {
+        self.keyword_dislike = Some(dislike);
     }
 
     pub fn set_run_type(&mut self, run_type: RunTime) {
@@ -186,12 +198,20 @@ impl Task {
         self.task_info.task_status = TaskStatus::InProgress;
         let urls = self.clone().original.get_urls();
         let out_out_file = self.clone().original.result_name;
+        let mut keyword_like = vec![];
+        if self.clone().original.keyword_like.is_some() {
+            keyword_like = self.clone().original.keyword_like.unwrap()
+        }
+        let mut keyword_dislike = vec![];
+        if self.clone().original.keyword_dislike.is_some() {
+            keyword_dislike = self.clone().original.keyword_dislike.unwrap()
+        }
         let mut rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
         rt.block_on(async {
-            let _ = do_check(urls, out_out_file.clone(), 10000, true, 10000, 30).await;
+            let _ = do_check(urls, out_out_file.clone(), 10000, true, 10000, 30, keyword_like.clone(), keyword_dislike.clone()).await;
             println!("end check");
         });
         self.task_info.task_status = TaskStatus::Pending;
@@ -225,6 +245,12 @@ impl TaskManager {
         }
         if !task.result_name.is_empty() {
             ori.set_result_file_name(task.result_name)
+        }
+        if task.keyword_like.is_some() {
+            ori.set_keyword_like(task.keyword_like.unwrap())
+        }
+        if task.keyword_dislike.is_some() {
+            ori.set_keyword_dislike(task.keyword_dislike.unwrap())
         }
         ori.set_run_type(task.run_type);
         ori.gen_md5();
@@ -263,6 +289,12 @@ impl TaskManager {
             }
             if !pass_task.result_name.is_empty() {
                 ori.set_result_file_name(pass_task.result_name)
+            }
+            if pass_task.keyword_like.is_some() {
+                ori.set_keyword_like(pass_task.keyword_like.unwrap())
+            }
+            if pass_task.keyword_dislike.is_some() {
+                ori.set_keyword_dislike(pass_task.keyword_dislike.unwrap())
             }
             ori.set_run_type(pass_task.run_type);
             let mut task = Task::new();
