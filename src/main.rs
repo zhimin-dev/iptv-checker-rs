@@ -7,6 +7,8 @@ use std::{env};
 use tempfile::tempdir;
 use crate::common::do_check;
 
+const DEFAULT_HTTP_PORT:u16 = 8089;
+
 #[derive(Subcommand)]
 enum Commands {
     /// web相关命令
@@ -21,8 +23,8 @@ pub struct WebArgs {
     #[arg(long = "start", default_value_t = false)]
     start: bool,
 
-    /// 指定这个web服务的端口号，默认8089
-    #[arg(long = "port", default_value_t = 8089)]
+    /// 指定这个web服务的端口号
+    #[arg(long = "port", default_value_t = DEFAULT_HTTP_PORT)]
     port: u16,
 
     /// 关闭这个web服务
@@ -121,7 +123,7 @@ pub async fn main() {
             } else if args.start {
                 let mut port = args.port;
                 if port == 0 {
-                    port = 8080
+                    port = DEFAULT_HTTP_PORT
                 }
                 start_daemonize_web(&pid_name, port).await;
             } else if args.stop {

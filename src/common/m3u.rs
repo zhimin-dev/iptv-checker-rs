@@ -610,15 +610,20 @@ pub mod m3u {
         }
         let mut save_list = vec![];
         for i in list {
-            let mut save = false;
-            for lk in keyword_like.to_owned() {
-                if i.search_name.contains(&lk.to_lowercase()) {
-                    save = true
+            let mut save = true;
+            if keyword_like.len() > 0 {
+                save = false;
+                for lk in keyword_like.to_owned() {
+                    if i.search_name.contains(&lk.to_lowercase()) {
+                        save = true
+                    }
                 }
             }
-            for dk in keyword_dislike.to_owned() {
-                if i.search_name.contains(&dk.to_lowercase()) {
-                    save = false
+            if keyword_dislike.len() > 0 {
+                for dk in keyword_dislike.to_owned() {
+                    if i.search_name.contains(&dk.to_lowercase()) {
+                        save = false
+                    }
                 }
             }
             if save {

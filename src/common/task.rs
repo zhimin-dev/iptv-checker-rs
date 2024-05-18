@@ -82,6 +82,8 @@ pub struct TaskContent {
     check_timeout: Option<i32>,
 }
 
+const DEFAULT_TIMEOUT: i32 = 30000;
+
 fn md5_str(input: String) -> String {
     let digest = md5::compute(input);
 
@@ -133,7 +135,7 @@ impl TaskContent {
     }
 
     pub fn get_http_timeout(self) -> i32 {
-        let default_val = 10000;
+        let default_val = DEFAULT_TIMEOUT;
         match self.http_timeout {
             Some(n) => {
                 if n == 0 {
@@ -149,7 +151,7 @@ impl TaskContent {
     }
 
     pub fn get_check_timeout(self) -> i32 {
-        let default_val = 10000;
+        let default_val = DEFAULT_TIMEOUT;
         match self.check_timeout {
             Some(n) => {
                 if n == 0 {
@@ -252,6 +254,7 @@ impl Task {
         if self.clone().original.keyword_dislike.is_some() {
             keyword_dislike = self.clone().original.keyword_dislike.unwrap()
         }
+        let task_id = self.clone().id.clone();
         let http_timeout = self.clone().original.get_http_timeout();
         let check_timeout = self.clone().original.get_check_timeout();
         let mut rt = tokio::runtime::Builder::new_current_thread()
@@ -259,8 +262,9 @@ impl Task {
             .build()
             .unwrap();
         rt.block_on(async {
+            println!("start taskId: {}", task_id);
             let _ = do_check(urls, out_out_file.clone(), http_timeout, true, check_timeout, 30, keyword_like.clone(), keyword_dislike.clone()).await;
-            println!("end check");
+            println!("end taskId: {}", task_id);
         });
         self.task_info.task_status = TaskStatus::Pending;
         self.task_info.is_running = false;
