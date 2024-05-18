@@ -260,7 +260,7 @@ impl M3uObjectList {
                             rx_lock.recv().unwrap_or_else(|_| M3uObject::new())
                         };
                         if item.url == "" {
-                            break
+                            break;
                         }
                         let result = set_one_item(debug, item, request_time, search_clarity);
                         match tx_clone.send(result) {
@@ -270,7 +270,7 @@ impl M3uObjectList {
                     }
                     Err(e) => {
                         println!("error ---{} ", e);
-                        break
+                        break;
                     }
                 }
             });
@@ -559,7 +559,7 @@ pub enum SourceType {
 pub mod m3u {
     use crate::common::util::{get_url_body, is_url, parse_normal_str, parse_quota_str};
     use crate::common::SourceType::{Normal, Quota};
-    use crate::common::{M3uObjectList, SourceType};
+    use crate::common::{M3uObject, M3uObjectList, SourceType};
     use core::option::Option;
     use std::fs::File;
     use std::io::Read;
@@ -603,7 +603,37 @@ pub mod m3u {
         };
     }
 
-    pub fn from_body_arr(str_arr: Vec<String>) -> M3uObjectList {
+
+    pub fn filter_by_keyword(list: Vec<M3uObject>, keyword_like: Vec<String>, keyword_dislike: Vec<String>) -> Vec<M3uObject> {
+        if keyword_like.len() == 0 && keyword_dislike.len() == 0 {
+            return list;
+        }
+        let mut save_list = vec![];
+        for i in list {
+            let mut save = true;
+            if keyword_like.len() > 0 {
+                save = false;
+                for lk in keyword_like.to_owned() {
+                    if i.search_name.contains(&lk.to_lowercase()) {
+                        save = true
+                    }
+                }
+            }
+            if keyword_dislike.len() > 0 {
+                for dk in keyword_dislike.to_owned() {
+                    if i.search_name.contains(&dk.to_lowercase()) {
+                        save = false
+                    }
+                }
+            }
+            if save {
+                save_list.push(i);
+            }
+        }
+        save_list
+    }
+
+    pub fn from_body_arr(str_arr: Vec<String>, keyword_like: Vec<String>, keyword_dislike: Vec<String>) -> M3uObjectList {
         let mut obj = M3uObjectList::new();
         let mut header = vec![];
         let mut list = vec![];
@@ -633,7 +663,7 @@ pub mod m3u {
                 None => {}
             };
         }
-        obj.set_list(list);
+        obj.set_list(filter_by_keyword(list, keyword_like, keyword_dislike));
         return obj;
     }
 
@@ -651,7 +681,7 @@ pub mod m3u {
         return from_body(&contents);
     }
 
-    pub async fn from_arr(_url: Vec<String>, _timeout: u64) -> M3uObjectList {
+    pub async fn from_arr(_url: Vec<String>, _timeout: u64, keyword_like: Vec<String>, keyword_dislike: Vec<String>) -> M3uObjectList {
         let mut body_arr = vec![];
         for x in _url {
             if is_url(x.clone()) {
@@ -680,6 +710,6 @@ pub mod m3u {
                 }
             }
         }
-        from_body_arr(body_arr)
+        from_body_arr(body_arr, keyword_like, keyword_dislike)
     }
 }

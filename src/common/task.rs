@@ -7,8 +7,6 @@ use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 use md5;
 use std::time::{SystemTime, UNIX_EPOCH};
-use clokwerk::{Scheduler, TimeUnits};
-use nix::libc::time;
 use crate::common::do_check;
 
 const FILE_PATH: &str = "tasks.json";
@@ -74,7 +72,17 @@ pub struct TaskContent {
     md5: String,
     // 运行类型
     run_type: RunTime,
+    // 喜欢关键词
+    keyword_like: Option<Vec<String>>,
+    // 不喜欢关键词
+    keyword_dislike: Option<Vec<String>>,
+    // 下载远端文件
+    http_timeout: Option<i32>,
+    // 检查时的超时配置
+    check_timeout: Option<i32>,
 }
+
+const DEFAULT_TIMEOUT: i32 = 30000;
 
 fn md5_str(input: String) -> String {
     let digest = md5::compute(input);
@@ -89,6 +97,10 @@ impl TaskContent {
             result_name: "".to_string(),
             md5: "".to_string(),
             run_type: RunTime::EveryDay,
+            keyword_like: None,
+            keyword_dislike: None,
+            http_timeout: None,
+            check_timeout: None,
         }
     }
 
@@ -108,6 +120,54 @@ impl TaskContent {
 
     pub fn set_result_file_name(&mut self, name: String) {
         self.result_name = name
+    }
+
+    pub fn set_keyword_like(&mut self, like: Vec<String>) {
+        self.keyword_like = Some(like);
+    }
+
+    pub fn set_keyword_dislike(&mut self, dislike: Vec<String>) {
+        self.keyword_dislike = Some(dislike);
+    }
+
+    pub fn set_http_timeout(&mut self, timeout: i32) {
+        self.http_timeout = Some(timeout);
+    }
+
+    pub fn get_http_timeout(self) -> i32 {
+        let default_val = DEFAULT_TIMEOUT;
+        match self.http_timeout {
+            Some(n) => {
+                if n == 0 {
+                    default_val
+                } else {
+                    n
+                }
+            }
+            None => {
+                default_val
+            }
+        }
+    }
+
+    pub fn get_check_timeout(self) -> i32 {
+        let default_val = DEFAULT_TIMEOUT;
+        match self.check_timeout {
+            Some(n) => {
+                if n == 0 {
+                    default_val
+                } else {
+                    n
+                }
+            }
+            None => {
+                default_val
+            }
+        }
+    }
+
+    pub fn set_check_timeout(&mut self, timeout: i32) {
+        self.check_timeout = Some(timeout);
     }
 
     pub fn set_run_type(&mut self, run_type: RunTime) {
@@ -186,13 +246,25 @@ impl Task {
         self.task_info.task_status = TaskStatus::InProgress;
         let urls = self.clone().original.get_urls();
         let out_out_file = self.clone().original.result_name;
+        let mut keyword_like = vec![];
+        if self.clone().original.keyword_like.is_some() {
+            keyword_like = self.clone().original.keyword_like.unwrap()
+        }
+        let mut keyword_dislike = vec![];
+        if self.clone().original.keyword_dislike.is_some() {
+            keyword_dislike = self.clone().original.keyword_dislike.unwrap()
+        }
+        let task_id = self.clone().id.clone();
+        let http_timeout = self.clone().original.get_http_timeout();
+        let check_timeout = self.clone().original.get_check_timeout();
         let mut rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
         rt.block_on(async {
-            let _ = do_check(urls, out_out_file.clone(), 10000, true, 10000, 30).await;
-            println!("end check");
+            println!("start taskId: {}", task_id);
+            let _ = do_check(urls, out_out_file.clone(), http_timeout, true, check_timeout, 30, keyword_like.clone(), keyword_dislike.clone()).await;
+            println!("end taskId: {}", task_id);
         });
         self.task_info.task_status = TaskStatus::Pending;
         self.task_info.is_running = false;
@@ -225,6 +297,18 @@ impl TaskManager {
         }
         if !task.result_name.is_empty() {
             ori.set_result_file_name(task.result_name)
+        }
+        if task.http_timeout.is_some() {
+            ori.set_http_timeout(task.http_timeout.unwrap());
+        }
+        if task.check_timeout.is_some() {
+            ori.set_check_timeout(task.check_timeout.unwrap());
+        }
+        if task.keyword_like.is_some() {
+            ori.set_keyword_like(task.keyword_like.unwrap())
+        }
+        if task.keyword_dislike.is_some() {
+            ori.set_keyword_dislike(task.keyword_dislike.unwrap())
         }
         ori.set_run_type(task.run_type);
         ori.gen_md5();
@@ -263,6 +347,18 @@ impl TaskManager {
             }
             if !pass_task.result_name.is_empty() {
                 ori.set_result_file_name(pass_task.result_name)
+            }
+            if pass_task.http_timeout.is_some() {
+                ori.set_http_timeout(pass_task.http_timeout.unwrap());
+            }
+            if pass_task.check_timeout.is_some() {
+                ori.set_check_timeout(pass_task.check_timeout.unwrap());
+            }
+            if pass_task.keyword_like.is_some() {
+                ori.set_keyword_like(pass_task.keyword_like.unwrap())
+            }
+            if pass_task.keyword_dislike.is_some() {
+                ori.set_keyword_dislike(pass_task.keyword_dislike.unwrap())
             }
             ori.set_run_type(pass_task.run_type);
             let mut task = Task::new();
