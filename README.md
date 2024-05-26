@@ -19,11 +19,14 @@ iptv-checker-rs 检查相关的命令
 Usage: iptv-checker-rs check [OPTIONS]
 
 Options:
-  -i, --input-file <INPUT_FILE>    输入文件，可以是本地文件或者是网络文件，支持标准m3u格式以及非标准的格式：CCTV,https://xxxx.com/xxx.m3u8格式
+  -i, --input-file <INPUT_FILE>    输入文件，可以是本地文件或者是网络文件，支持标准m3u格式以及非标准的格式： CCTV,https://xxxx.com/xxx.m3u8格式
   -o, --output-file <OUTPUT_FILE>  输出文件，如果不指定，则默认生成一个随机文件名 [default: ]
   -t, --timeout <TIMEOUT>          超时时间，默认超时时间为28秒 [default: 28000]
       --debug                      debug使用，可以看到相关的中间日志
   -c, --concurrency <CONCURRENCY>  并发数 [default: 1]
+      --like <KEYWORD_LIKE>        想看关键词
+      --dislike <KEYWORD_DISLIKE>  不想看关键词
+      --sort                       频道排序
   -h, --help                       Print help
 ```
 
@@ -58,6 +61,8 @@ make build
 
 ## 更新日志
 
+- 3.2.1
+  - web支持并发、排序设置
 - 3.2.0
   - 支持关键词匹配
   - 支持超时时间配置
