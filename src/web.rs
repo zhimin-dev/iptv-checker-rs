@@ -4,7 +4,7 @@ use actix_files::NamedFile;
 use actix_web::{get, post, web, App, HttpResponse, HttpServer, Responder, Result};
 use serde::{Deserialize, Serialize};
 use std::time;
-use crate::common::task::{TaskManager, add_task, delete_task, list_task, update_task, run_task};
+use crate::common::task::{TaskManager, add_task, delete_task, list_task, update_task, run_task, get_download_body};
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
 use clokwerk::{Scheduler, TimeUnits};
@@ -34,7 +34,8 @@ struct TaskDelResp {
 
 
 pub async fn check_ipv6() -> bool {
-    let result = reqwest::get("http://[2606:2800:220:1:248:1893:25c8:1946]").await;
+    let result =
+        reqwest::get("http://[2606:2800:220:1:248:1893:25c8:1946]").await;
 
     match result {
         Ok(_) => {
@@ -60,7 +61,8 @@ async fn check_url_is_available(req: web::Query<CheckUrlIsAvailableRequest>) -> 
     if let Some(i) = req.timeout {
         timeout = i;
     }
-    let res = check::check::check_link_is_valid(req.url.to_owned(), timeout as u64, true, true);
+    let res = check::check::check_link_is_valid(req.url.to_owned(),
+                                                timeout as u64, true, true);
     match res.await {
         Ok(data) => {
             let obj = serde_json::to_string(&data).unwrap();
@@ -229,6 +231,7 @@ pub async fn start_web(port: u16) {
             .route("/tasks/run", web::get().to(run_task))
             .route("/tasks/update", web::post().to(update_task))
             .route("/tasks/add", web::post().to(add_task))
+            .route("/tasks/get-download-body", web::get().to(get_download_body))
             .route("/tasks/delete/{id}", web::delete().to(delete_task))
             .service(fs::Files::new("/assets", "./web/assets"))
     })

@@ -166,7 +166,8 @@ pub mod check {
                 if res.status().is_success() {
                     let delay = Utc::now().timestamp_millis() - curr_timestamp;
                     if need_video_info {
-                        let ffmpeg_res = get_link_info(_url.to_owned(), timeout);
+                        let ffmpeg_res =
+                            get_link_info(_url.to_owned(), timeout);
                         match ffmpeg_res {
                             Ok(mut data) => {
                                 data.set_delay(delay as i32);
@@ -206,10 +207,11 @@ pub mod check {
 
 pub async fn do_check(input_files: Vec<String>, output_file: String, timeout: i32,
                       print_result: bool, request_timeout: i32, concurrent: i32,
-                      keyword_like: Vec<String>, keyword_dislike: Vec<String>,
+                      keyword_like: Vec<String>, keyword_dislike: Vec<String>, sort: bool,
 ) -> Result<bool, Error> {
     let mut data =
-        common::m3u::m3u::from_arr(input_files.to_owned(), timeout as u64, keyword_like.to_owned(), keyword_dislike.to_owned())
+        common::m3u::m3u::from_arr(input_files.to_owned(), timeout as u64,
+                                   keyword_like.to_owned(), keyword_dislike.to_owned())
             .await;
     let mut output_file = utils::get_out_put_filename(output_file.clone());
     // 拼接目录
@@ -217,7 +219,7 @@ pub async fn do_check(input_files: Vec<String>, output_file: String, timeout: i3
     if print_result {
         println!("输出文件: {}", output_file);
     }
-    data.check_data_new(request_timeout, concurrent)
+    data.check_data_new(request_timeout, concurrent, sort )
         .await;
     data.output_file(output_file).await;
     if print_result {

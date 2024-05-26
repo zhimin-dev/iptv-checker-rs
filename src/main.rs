@@ -3,11 +3,11 @@ mod utils;
 mod web;
 
 use clap::{arg, Args as clapArgs, Parser, Subcommand};
-use std::{env};
+use std::env;
 use tempfile::tempdir;
 use crate::common::do_check;
 
-const DEFAULT_HTTP_PORT:u16 = 8089;
+const DEFAULT_HTTP_PORT: u16 = 8089;
 
 #[derive(Subcommand)]
 enum Commands {
@@ -38,7 +38,8 @@ pub struct WebArgs {
 
 #[derive(clapArgs)]
 pub struct CheckArgs {
-    /// 输入文件，可以是本地文件或者是网络文件，支持标准m3u格式以及非标准的格式：CCTV,https://xxxx.com/xxx.m3u8格式
+    /// 输入文件，可以是本地文件或者是网络文件，支持标准m3u格式以及非标准的格式：
+    /// CCTV,https://xxxx.com/xxx.m3u8格式
     #[arg(short = 'i', long = "input-file")]
     input_file: Vec<String>,
 
@@ -69,11 +70,18 @@ pub struct CheckArgs {
     /// 不想看关键词
     #[arg(long = "dislike")]
     keyword_dislike: Vec<String>,
+
+    /// 频道排序
+    #[arg(long = "sort", default_value_t = false)]
+    sort: bool,
 }
 
 #[derive(Parser)]
-#[command(name = "iptv-checker")]
-#[command(author = "zmisgod", version = env ! ("CARGO_PKG_VERSION"), about = "a iptv-checker cmd, source code 👉 https://github.com/zhimin-dev/iptv-checker", long_about = None,)]
+#[command(
+    name = "iptv-checker", author = "zmisgod", version = env ! ("CARGO_PKG_VERSION"),
+    about = "a iptv-checker cmd, source code 👉 https://github.com/zhimin-dev/iptv-checker",
+    long_about = None,
+)]
 pub struct Args {
     #[command(subcommand)]
     command: Commands,
@@ -136,7 +144,8 @@ pub async fn main() {
                 do_check(args.input_file.to_owned(), args.output_file.clone(),
                          args.timeout as i32, true, args.timeout as i32,
                          args.concurrency,
-                         args.keyword_like.to_owned(), args.keyword_dislike.to_owned()).await.unwrap();
+                         args.keyword_like.to_owned(), args.keyword_dislike.to_owned(),
+                         args.sort).await.unwrap();
             }
         }
     }

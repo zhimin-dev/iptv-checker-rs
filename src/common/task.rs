@@ -80,9 +80,14 @@ pub struct TaskContent {
     http_timeout: Option<i32>,
     // 检查时的超时配置
     check_timeout: Option<i32>,
+    // 是否支持排序
+    sort: Option<bool>,
+    // 并发数
+    concurrent: Option<i32>,
 }
 
 const DEFAULT_TIMEOUT: i32 = 30000;
+const DEFAULT_CONCURRENT: i32 = 30;
 
 fn md5_str(input: String) -> String {
     let digest = md5::compute(input);
@@ -101,6 +106,8 @@ impl TaskContent {
             keyword_dislike: None,
             http_timeout: None,
             check_timeout: None,
+            sort: None,
+            concurrent: None,
         }
     }
 
@@ -130,8 +137,32 @@ impl TaskContent {
         self.keyword_dislike = Some(dislike);
     }
 
+    pub fn set_sort(&mut self, sort: bool) {
+        self.sort = Some(sort)
+    }
+
+    pub fn set_concurrent(&mut self, concurrent: i32) {
+        self.concurrent = Some(concurrent)
+    }
+
     pub fn set_http_timeout(&mut self, timeout: i32) {
         self.http_timeout = Some(timeout);
+    }
+
+    pub fn get_current(self) -> i32 {
+        let default_val = DEFAULT_CONCURRENT;
+        match self.concurrent {
+            Some(n) => {
+                if n == 0 {
+                    default_val
+                } else {
+                    n
+                }
+            }
+            None => {
+                default_val
+            }
+        }
     }
 
     pub fn get_http_timeout(self) -> i32 {
@@ -254,8 +285,13 @@ impl Task {
         if self.clone().original.keyword_dislike.is_some() {
             keyword_dislike = self.clone().original.keyword_dislike.unwrap()
         }
+        let mut sort = false;
+        if self.clone().original.sort.is_some() {
+            sort = self.clone().original.sort.unwrap();
+        }
         let task_id = self.clone().id.clone();
         let http_timeout = self.clone().original.get_http_timeout();
+        let concurrent = self.clone().original.get_current();
         let check_timeout = self.clone().original.get_check_timeout();
         let mut rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -263,7 +299,9 @@ impl Task {
             .unwrap();
         rt.block_on(async {
             println!("start taskId: {}", task_id);
-            let _ = do_check(urls, out_out_file.clone(), http_timeout, true, check_timeout, 30, keyword_like.clone(), keyword_dislike.clone()).await;
+            let _ = do_check(urls, out_out_file.clone(), http_timeout,
+                             true, check_timeout, concurrent, keyword_like.clone(),
+                             keyword_dislike.clone(), sort).await;
             println!("end taskId: {}", task_id);
         });
         self.task_info.task_status = TaskStatus::Pending;
@@ -310,6 +348,12 @@ impl TaskManager {
         if task.keyword_dislike.is_some() {
             ori.set_keyword_dislike(task.keyword_dislike.unwrap())
         }
+        if task.sort.is_some() {
+            ori.set_sort(task.sort.unwrap());
+        }
+        if task.concurrent.is_some() {
+            ori.set_concurrent(task.concurrent.unwrap());
+        }
         ori.set_run_type(task.run_type);
         ori.gen_md5();
         let mut task = Task::new();
@@ -331,6 +375,14 @@ impl TaskManager {
         } else {
             Ok(false)
         }
+    }
+
+    pub fn get_task(&self, id: String) -> Option<Task> {
+        let mut tasks = self.tasks.lock().unwrap();
+        if let Some(data) = tasks.get_mut(&id) {
+            return Some(data.clone());
+        }
+        return None;
     }
 
     pub fn update_task(&self, id: String, pass_task: TaskContent) -> Result<bool> {
@@ -359,6 +411,12 @@ impl TaskManager {
             }
             if pass_task.keyword_dislike.is_some() {
                 ori.set_keyword_dislike(pass_task.keyword_dislike.unwrap())
+            }
+            if pass_task.sort.is_some() {
+                ori.set_sort(pass_task.sort.unwrap());
+            }
+            if pass_task.concurrent.is_some() {
+                ori.set_concurrent(pass_task.concurrent.unwrap());
             }
             ori.set_run_type(pass_task.run_type);
             let mut task = Task::new();
@@ -451,7 +509,8 @@ pub struct RunTaskQuery {
     task_id: String,
 }
 
-pub async fn run_task(task_manager: web::Data<Arc<TaskManager>>, req: web::Query<RunTaskQuery>) -> impl Responder {
+pub async fn run_task(task_manager: web::Data<Arc<TaskManager>>,
+                      req: web::Query<RunTaskQuery>) -> impl Responder {
     println!("{}", req.task_id.clone());
     let mut resp = HashMap::new();
     match task_manager.run_task(req.task_id.clone()) {
@@ -468,7 +527,9 @@ pub async fn run_task(task_manager: web::Data<Arc<TaskManager>>, req: web::Query
     }
 }
 
-pub async fn update_task(task_manager: web::Data<Arc<TaskManager>>, task_json: web::Json<TaskContent>, req: web::Query<UpdateTaskQuery>) -> impl Responder {
+pub async fn update_task(task_manager: web::Data<Arc<TaskManager>>,
+                         task_json: web::Json<TaskContent>, req: web::Query<UpdateTaskQuery>)
+                         -> impl Responder {
     println!("{}", req.task_id.clone());
     let mut resp = HashMap::new();
     let task = task_json.into_inner();
@@ -486,7 +547,38 @@ pub async fn update_task(task_manager: web::Data<Arc<TaskManager>>, task_json: w
     }
 }
 
-pub async fn add_task(task_manager: web::Data<Arc<TaskManager>>, task_json: web::Json<TaskContent>) -> impl Responder {
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct GetDownloadBodyReq {
+    task_id: String,
+}
+
+pub async fn get_download_body(task_manager: web::Data<Arc<TaskManager>>, req: web::Query<GetDownloadBodyReq>) -> impl Responder {
+    let mut resp = HashMap::new();
+    resp.insert("content", String::default());
+    resp.insert("url", String::default());
+    let task = task_manager.get_task(req.task_id.clone());
+    if let Some(info) = task {
+        let data = info.clone();
+        resp.insert("url", data.original.result_name.clone());
+        if let Some(contents) = get_file_contents(data.original.result_name) {
+            resp.insert("content", contents.clone());
+        }
+    }
+    return HttpResponse::Ok().json(resp);
+}
+
+fn get_file_contents(file_name: String) -> Option<String> {
+    if let Ok(mut f) = File::open(file_name.clone()) {
+        let mut contents = String::default();
+        if let Ok(data) = f.read_to_string(&mut contents) {
+            return Some(contents);
+        }
+    }
+    Some(String::default())
+}
+
+pub async fn add_task(task_manager: web::Data<Arc<TaskManager>>,
+                      task_json: web::Json<TaskContent>) -> impl Responder {
     let mut resp = HashMap::new();
     let task = task_json.into_inner();
     match task_manager.add_task(task) {
@@ -503,7 +595,8 @@ pub async fn add_task(task_manager: web::Data<Arc<TaskManager>>, task_json: web:
     }
 }
 
-pub async fn delete_task(task_manager: web::Data<Arc<TaskManager>>, path: web::Path<String>) -> impl Responder {
+pub async fn delete_task(task_manager: web::Data<Arc<TaskManager>>,
+                         path: web::Path<String>) -> impl Responder {
     let mut resp = HashMap::new();
     match task_manager.delete_task(path.into_inner().to_string()) {
         Ok(true) => {

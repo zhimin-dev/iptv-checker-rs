@@ -10,6 +10,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
+use crate::common::m3u::m3u::do_name_sort;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct M3uExtend {
@@ -230,7 +231,7 @@ impl M3uObjectList {
         self.debug = debug
     }
 
-    pub async fn check_data_new(&mut self, request_time: i32, _concurrent: i32) {
+    pub async fn check_data_new(&mut self, request_time: i32, _concurrent: i32, sort :bool) {
         let mut search_clarity = false;
         match &self.search_clarity {
             Some(_d) => search_clarity = true,
@@ -262,7 +263,8 @@ impl M3uObjectList {
                         if item.url == "" {
                             break;
                         }
-                        let result = set_one_item(debug, item, request_time, search_clarity);
+                        let result = set_one_item(debug, item,
+                                                  request_time, search_clarity);
                         match tx_clone.send(result) {
                             Ok(_) => {}
                             Err(e) => {}
@@ -297,6 +299,9 @@ impl M3uObjectList {
                 }
                 Err(_e) => {}
             }
+        }
+        if sort {
+            self.result_list = do_name_sort(self.result_list.clone());
         }
     }
 
@@ -349,12 +354,13 @@ fn set_one_item(
 ) -> M3uObject {
     let url = x.url.clone();
     let _log_url = url.clone();
-    let result = actix_rt::System::new().block_on(check_link_is_valid(
-        url,
-        request_time as u64,
-        search_clarity,
-        debug,
-    ));
+    let result =
+        actix_rt::System::new().block_on(check_link_is_valid(
+            url,
+            request_time as u64,
+            search_clarity,
+            debug,
+        ));
     if debug {
         println!("url is: {} result: {:?}", x.url.clone(), result);
     }
@@ -604,7 +610,8 @@ pub mod m3u {
     }
 
 
-    pub fn filter_by_keyword(list: Vec<M3uObject>, keyword_like: Vec<String>, keyword_dislike: Vec<String>) -> Vec<M3uObject> {
+    pub fn filter_by_keyword(list: Vec<M3uObject>, keyword_like: Vec<String>,
+                             keyword_dislike: Vec<String>) -> Vec<M3uObject> {
         if keyword_like.len() == 0 && keyword_dislike.len() == 0 {
             return list;
         }
@@ -633,7 +640,8 @@ pub mod m3u {
         save_list
     }
 
-    pub fn from_body_arr(str_arr: Vec<String>, keyword_like: Vec<String>, keyword_dislike: Vec<String>) -> M3uObjectList {
+    pub fn from_body_arr(str_arr: Vec<String>, keyword_like: Vec<String>,
+                         keyword_dislike: Vec<String>) -> M3uObjectList {
         let mut obj = M3uObjectList::new();
         let mut header = vec![];
         let mut list = vec![];
@@ -663,8 +671,18 @@ pub mod m3u {
                 None => {}
             };
         }
-        obj.set_list(filter_by_keyword(list, keyword_like, keyword_dislike));
+        let save_keyword = filter_by_keyword(list, keyword_like, keyword_dislike);
+        obj.set_list(save_keyword);
         return obj;
+    }
+
+    pub fn do_name_sort(list: Vec<M3uObject>) -> Vec<M3uObject> {
+        let mut new_list = list.clone();
+
+        new_list.sort_by(|a_value, b_value| {
+            a_value.search_name.cmp(&b_value.search_name)
+        });
+        return new_list;
     }
 
     pub async fn from_url(_url: String, timeout: u64) -> M3uObjectList {
@@ -681,7 +699,8 @@ pub mod m3u {
         return from_body(&contents);
     }
 
-    pub async fn from_arr(_url: Vec<String>, _timeout: u64, keyword_like: Vec<String>, keyword_dislike: Vec<String>) -> M3uObjectList {
+    pub async fn from_arr(_url: Vec<String>, _timeout: u64, keyword_like: Vec<String>,
+                          keyword_dislike: Vec<String>) -> M3uObjectList {
         let mut body_arr = vec![];
         for x in _url {
             if is_url(x.clone()) {
