@@ -145,7 +145,7 @@ pub async fn main() {
                          args.timeout as i32, true, args.timeout as i32,
                          args.concurrency,
                          args.keyword_like.to_owned(), args.keyword_dislike.to_owned(),
-                         args.sort).await.unwrap();
+                         args.sort, false).await.unwrap();
             }
         }
     }

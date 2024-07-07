@@ -208,6 +208,7 @@ pub mod check {
 pub async fn do_check(input_files: Vec<String>, output_file: String, timeout: i32,
                       print_result: bool, request_timeout: i32, concurrent: i32,
                       keyword_like: Vec<String>, keyword_dislike: Vec<String>, sort: bool,
+                      no_check: bool,
 ) -> Result<bool, Error> {
     let mut data =
         common::m3u::m3u::from_arr(input_files.to_owned(), timeout as u64,
@@ -219,7 +220,7 @@ pub async fn do_check(input_files: Vec<String>, output_file: String, timeout: i3
     if print_result {
         println!("输出文件: {}", output_file);
     }
-    data.check_data_new(request_timeout, concurrent, sort )
+    data.check_data_new(request_timeout, concurrent, sort, no_check)
         .await;
     data.output_file(output_file).await;
     if print_result {

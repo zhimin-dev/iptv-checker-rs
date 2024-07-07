@@ -4,7 +4,9 @@ use actix_files::NamedFile;
 use actix_web::{get, post, web, App, HttpResponse, HttpServer, Responder, Result};
 use serde::{Deserialize, Serialize};
 use std::time;
-use crate::common::task::{TaskManager, add_task, delete_task, list_task, update_task, run_task, get_download_body};
+use crate::common::task::{TaskManager, add_task, delete_task, list_task, update_task,
+                          run_task, get_download_body,
+                          system_tasks_export, system_tasks_import};
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
 use clokwerk::{Scheduler, TimeUnits};
@@ -218,7 +220,6 @@ pub async fn start_web(port: u16) {
             .service(check_url_is_available)
             .service(fetch_m3u_body)
             .service(system_status)
-            .service(system_status)
             .service(index)
             .service(upload)
             .service(
@@ -232,6 +233,8 @@ pub async fn start_web(port: u16) {
             .route("/tasks/update", web::post().to(update_task))
             .route("/tasks/add", web::post().to(add_task))
             .route("/tasks/get-download-body", web::get().to(get_download_body))
+            .route("/system/tasks/export", web::get().to(system_tasks_export))
+            .route("/system/tasks/import", web::post().to(system_tasks_import))
             .route("/tasks/delete/{id}", web::delete().to(delete_task))
             .service(fs::Files::new("/assets", "./web/assets"))
     })

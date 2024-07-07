@@ -73,17 +73,19 @@ pub struct TaskContent {
     // 运行类型
     run_type: RunTime,
     // 喜欢关键词
-    keyword_like: Option<Vec<String>>,
+    keyword_like: Vec<String>,
     // 不喜欢关键词
-    keyword_dislike: Option<Vec<String>>,
+    keyword_dislike: Vec<String>,
     // 下载远端文件
-    http_timeout: Option<i32>,
+    http_timeout: i32,
     // 检查时的超时配置
-    check_timeout: Option<i32>,
+    check_timeout: i32,
     // 是否支持排序
-    sort: Option<bool>,
+    sort: bool,
     // 并发数
-    concurrent: Option<i32>,
+    concurrent: i32,
+    // 是否不检查
+    no_check: bool,
 }
 
 const DEFAULT_TIMEOUT: i32 = 30000;
@@ -102,12 +104,13 @@ impl TaskContent {
             result_name: "".to_string(),
             md5: "".to_string(),
             run_type: RunTime::EveryDay,
-            keyword_like: None,
-            keyword_dislike: None,
-            http_timeout: None,
-            check_timeout: None,
-            sort: None,
-            concurrent: None,
+            keyword_like: vec![],
+            keyword_dislike: vec![],
+            http_timeout: 0,
+            check_timeout: 0,
+            sort: false,
+            concurrent: 1,
+            no_check: false,
         }
     }
 
@@ -130,75 +133,58 @@ impl TaskContent {
     }
 
     pub fn set_keyword_like(&mut self, like: Vec<String>) {
-        self.keyword_like = Some(like);
+        self.keyword_like = like;
     }
 
     pub fn set_keyword_dislike(&mut self, dislike: Vec<String>) {
-        self.keyword_dislike = Some(dislike);
+        self.keyword_dislike = dislike;
     }
 
     pub fn set_sort(&mut self, sort: bool) {
-        self.sort = Some(sort)
+        self.sort = sort
+    }
+
+    pub fn set_no_check(&mut self, no_check: bool) {
+        self.no_check = no_check
     }
 
     pub fn set_concurrent(&mut self, concurrent: i32) {
-        self.concurrent = Some(concurrent)
+        self.concurrent = concurrent
     }
 
     pub fn set_http_timeout(&mut self, timeout: i32) {
-        self.http_timeout = Some(timeout);
+        self.http_timeout = timeout
     }
 
     pub fn get_current(self) -> i32 {
         let default_val = DEFAULT_CONCURRENT;
-        match self.concurrent {
-            Some(n) => {
-                if n == 0 {
-                    default_val
-                } else {
-                    n
-                }
-            }
-            None => {
-                default_val
-            }
+        if self.concurrent == 0 {
+            default_val
+        } else {
+            self.concurrent
         }
     }
 
     pub fn get_http_timeout(self) -> i32 {
         let default_val = DEFAULT_TIMEOUT;
-        match self.http_timeout {
-            Some(n) => {
-                if n == 0 {
-                    default_val
-                } else {
-                    n
-                }
-            }
-            None => {
-                default_val
-            }
+        if self.http_timeout > 0 {
+            self.http_timeout
+        } else {
+            default_val
         }
     }
 
     pub fn get_check_timeout(self) -> i32 {
         let default_val = DEFAULT_TIMEOUT;
-        match self.check_timeout {
-            Some(n) => {
-                if n == 0 {
-                    default_val
-                } else {
-                    n
-                }
-            }
-            None => {
-                default_val
-            }
+        if self.check_timeout > 0 {
+            self.check_timeout
+        } else {
+            default_val
         }
     }
 
     pub fn set_check_timeout(&mut self, timeout: i32) {
-        self.check_timeout = Some(timeout);
+        self.check_timeout = timeout
     }
 
     pub fn set_run_type(&mut self, run_type: RunTime) {
@@ -278,20 +264,21 @@ impl Task {
         let urls = self.clone().original.get_urls();
         let out_out_file = self.clone().original.result_name;
         let mut keyword_like = vec![];
-        if self.clone().original.keyword_like.is_some() {
-            keyword_like = self.clone().original.keyword_like.unwrap()
+        if self.clone().original.keyword_like.len() > 0 {
+            keyword_like = self.clone().original.keyword_like
         }
         let mut keyword_dislike = vec![];
-        if self.clone().original.keyword_dislike.is_some() {
-            keyword_dislike = self.clone().original.keyword_dislike.unwrap()
+        if self.clone().original.keyword_dislike.len() > 0 {
+            keyword_dislike = self.clone().original.keyword_dislike
         }
         let mut sort = false;
-        if self.clone().original.sort.is_some() {
-            sort = self.clone().original.sort.unwrap();
+        if self.clone().original.sort {
+            sort = self.clone().original.sort;
         }
         let task_id = self.clone().id.clone();
         let http_timeout = self.clone().original.get_http_timeout();
         let concurrent = self.clone().original.get_current();
+        let no_check = self.clone().original.no_check;
         let check_timeout = self.clone().original.get_check_timeout();
         let mut rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -301,7 +288,7 @@ impl Task {
             println!("start taskId: {}", task_id);
             let _ = do_check(urls, out_out_file.clone(), http_timeout,
                              true, check_timeout, concurrent, keyword_like.clone(),
-                             keyword_dislike.clone(), sort).await;
+                             keyword_dislike.clone(), sort, no_check).await;
             println!("end taskId: {}", task_id);
         });
         self.task_info.task_status = TaskStatus::Pending;
@@ -336,23 +323,26 @@ impl TaskManager {
         if !task.result_name.is_empty() {
             ori.set_result_file_name(task.result_name)
         }
-        if task.http_timeout.is_some() {
-            ori.set_http_timeout(task.http_timeout.unwrap());
+        if task.http_timeout > 0 {
+            ori.set_http_timeout(task.http_timeout);
         }
-        if task.check_timeout.is_some() {
-            ori.set_check_timeout(task.check_timeout.unwrap());
+        if task.check_timeout > 0 {
+            ori.set_check_timeout(task.check_timeout);
         }
-        if task.keyword_like.is_some() {
-            ori.set_keyword_like(task.keyword_like.unwrap())
+        if task.keyword_like.len() > 0 {
+            ori.set_keyword_like(task.keyword_like)
         }
-        if task.keyword_dislike.is_some() {
-            ori.set_keyword_dislike(task.keyword_dislike.unwrap())
+        if task.keyword_dislike.len() > 0 {
+            ori.set_keyword_dislike(task.keyword_dislike)
         }
-        if task.sort.is_some() {
-            ori.set_sort(task.sort.unwrap());
+        if task.sort {
+            ori.set_sort(task.sort);
         }
-        if task.concurrent.is_some() {
-            ori.set_concurrent(task.concurrent.unwrap());
+        if task.no_check {
+            ori.set_no_check(task.sort);
+        }
+        if task.concurrent > 0 {
+            ori.set_concurrent(task.concurrent);
         }
         ori.set_run_type(task.run_type);
         ori.gen_md5();
@@ -363,6 +353,16 @@ impl TaskManager {
         drop(tasks); // 显式释放锁以防止死锁
         self.save_tasks()?;
         Ok(task.get_uuid())
+    }
+
+    pub fn import_task_from_data(&self, data_map: HashMap<String, Task>) -> Result<bool> {
+        let mut tasks = self.tasks.lock().unwrap();
+        for (k, v) in data_map {
+            tasks.insert(k, v.clone());
+        }
+        drop(tasks);
+        self.save_tasks()?;
+        Ok(true)
     }
 
     pub fn run_task(&self, id: String) -> Result<bool> {
@@ -400,23 +400,26 @@ impl TaskManager {
             if !pass_task.result_name.is_empty() {
                 ori.set_result_file_name(pass_task.result_name)
             }
-            if pass_task.http_timeout.is_some() {
-                ori.set_http_timeout(pass_task.http_timeout.unwrap());
+            if pass_task.http_timeout > 0 {
+                ori.set_http_timeout(pass_task.http_timeout);
             }
-            if pass_task.check_timeout.is_some() {
-                ori.set_check_timeout(pass_task.check_timeout.unwrap());
+            if pass_task.check_timeout > 0 {
+                ori.set_check_timeout(pass_task.check_timeout);
             }
-            if pass_task.keyword_like.is_some() {
-                ori.set_keyword_like(pass_task.keyword_like.unwrap())
+            if pass_task.keyword_like.len() > 0 {
+                ori.set_keyword_like(pass_task.keyword_like)
             }
-            if pass_task.keyword_dislike.is_some() {
-                ori.set_keyword_dislike(pass_task.keyword_dislike.unwrap())
+            if pass_task.keyword_dislike.len() > 0 {
+                ori.set_keyword_dislike(pass_task.keyword_dislike)
             }
-            if pass_task.sort.is_some() {
-                ori.set_sort(pass_task.sort.unwrap());
+            if pass_task.sort {
+                ori.set_sort(pass_task.sort);
             }
-            if pass_task.concurrent.is_some() {
-                ori.set_concurrent(pass_task.concurrent.unwrap());
+            if pass_task.no_check {
+                ori.set_no_check(pass_task.no_check);
+            }
+            if pass_task.concurrent != 0 {
+                ori.set_concurrent(pass_task.concurrent);
             }
             ori.set_run_type(pass_task.run_type);
             let mut task = Task::new();
@@ -552,6 +555,46 @@ pub struct GetDownloadBodyReq {
     task_id: String,
 }
 
+pub async fn system_tasks_export(task_manager: web::Data<Arc<TaskManager>>) -> impl Responder {
+    let data = get_task_from_file();
+    if let Ok(inner) = data {
+        HttpResponse::Ok().json(inner)
+    } else {
+        let mut resp = HashMap::new();
+        resp.insert("code", String::from("500"));
+        resp.insert("msg", String::from("导出失败"));
+        HttpResponse::InternalServerError().json(resp)
+    }
+}
+
+pub async fn system_tasks_import(task_manager: web::Data<Arc<TaskManager>>, req: web::Json<HashMap<String, Task>>) -> impl Responder {
+    let data = get_task_from_file();
+    let mut can_import = false;
+    if let Ok(inner) = data {
+        if inner.len() == 0 {
+            can_import = true
+        }
+    }
+    if !can_import {
+        let mut resp = HashMap::new();
+        resp.insert("code", String::from("500"));
+        resp.insert("msg", String::from("已有任务，无法再次导入"));
+        return HttpResponse::InternalServerError().json(resp);
+    }
+    let mut resp = HashMap::new();
+    if let Ok(save) = task_manager.import_task_from_data(req.into_inner()) {
+        return if save {
+            resp.insert("code", String::from("200"));
+            resp.insert("msg", String::from("成功"));
+            HttpResponse::InternalServerError().json(resp)
+        } else {
+            resp.insert("code", String::from("500"));
+            resp.insert("msg", String::from("导入失败"));
+            HttpResponse::InternalServerError().json(resp)
+        };
+    }
+}
+
 pub async fn get_download_body(task_manager: web::Data<Arc<TaskManager>>, req: web::Query<GetDownloadBodyReq>) -> impl Responder {
     let mut resp = HashMap::new();
     resp.insert("content", String::default());
@@ -644,4 +687,8 @@ fn load_tasks_from_file() -> Result<HashMap<String, Task>> {
     }
     let data = std::fs::read(FILE_PATH)?;
     Ok(serde_json::from_slice(&data)?)
+}
+
+pub fn get_task_from_file() -> Result<HashMap<String, Task>> {
+    return load_tasks_from_file();
 }
