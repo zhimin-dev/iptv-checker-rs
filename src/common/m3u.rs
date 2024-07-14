@@ -231,74 +231,78 @@ impl M3uObjectList {
         self.debug = debug
     }
 
-    pub async fn check_data_new(&mut self, request_time: i32, _concurrent: i32, sort :bool) {
+    pub async fn check_data_new(&mut self, request_time: i32, _concurrent: i32, sort :bool, no_check: bool) {
         let mut search_clarity = false;
         match &self.search_clarity {
             Some(_d) => search_clarity = true,
             None => {}
         }
-        let total = self.list.len();
-        println!("文件中源总数： {}", total);
-        let mut counter = M3uObjectListCounter::new();
-        counter.set_total(total as i32);
-        self.set_counter(counter);
-        let debug = self.debug;
+        if !no_check {
+            let total = self.list.len();
+            println!("文件中源总数： {}", total);
+            let mut counter = M3uObjectListCounter::new();
+            counter.set_total(total as i32);
+            self.set_counter(counter);
+            let debug = self.debug;
 
-        let data = self.list.clone();
-        let (tx, rx) = mpsc::channel();
-        let (data_tx, data_rx) = mpsc::channel();
-        let new_data_rx = Arc::new(Mutex::new(data_rx));
+            let data = self.list.clone();
+            let (tx, rx) = mpsc::channel();
+            let (data_tx, data_rx) = mpsc::channel();
+            let new_data_rx = Arc::new(Mutex::new(data_rx));
 
-        for _i in 0.._concurrent {
-            let tx_clone = tx.clone();
-            let data_rx_clone = Arc::clone(&new_data_rx);
+            for _i in 0.._concurrent {
+                let tx_clone = tx.clone();
+                let data_rx_clone = Arc::clone(&new_data_rx);
 
-            thread::spawn(move || loop {
-                match data_rx_clone.lock() {
-                    Ok(data) => {
-                        let item = {
-                            let rx_lock = data;
-                            rx_lock.recv().unwrap_or_else(|_| M3uObject::new())
-                        };
-                        if item.url == "" {
+                thread::spawn(move || loop {
+                    match data_rx_clone.lock() {
+                        Ok(data) => {
+                            let item = {
+                                let rx_lock = data;
+                                rx_lock.recv().unwrap_or_else(|_| M3uObject::new())
+                            };
+                            if item.url == "" {
+                                break;
+                            }
+                            let result = set_one_item(debug, item,
+                                                      request_time, search_clarity);
+                            match tx_clone.send(result) {
+                                Ok(_) => {}
+                                Err(e) => {}
+                            }
+                        }
+                        Err(e) => {
+                            println!("error ---{} ", e);
                             break;
                         }
-                        let result = set_one_item(debug, item,
-                                                  request_time, search_clarity);
-                        match tx_clone.send(result) {
-                            Ok(_) => {}
-                            Err(e) => {}
-                        }
                     }
-                    Err(e) => {
-                        println!("error ---{} ", e);
-                        break;
-                    }
-                }
-            });
-        }
-        for item in data {
-            data_tx.send(item).unwrap();
-        }
-        drop(tx); // 发送完成后关闭队列
+                });
+            }
+            for item in data {
+                data_tx.send(item).unwrap();
+            }
+            drop(tx); // 发送完成后关闭队列
 
-        counter.print_now_status();
-        let mut i = 0;
-        loop {
-            if i == counter.total {
-                break;
-            }
-            let result = rx.recv();
-            match result {
-                Ok(data) => {
-                    // 处理返回值
-                    self.result_list.push(data);
-                    counter.now_index_incr();
-                    counter.print_now_status();
-                    i += 1;
+            counter.print_now_status();
+            let mut i = 0;
+            loop {
+                if i == counter.total {
+                    break;
                 }
-                Err(_e) => {}
+                let result = rx.recv();
+                match result {
+                    Ok(data) => {
+                        // 处理返回值
+                        self.result_list.push(data);
+                        counter.now_index_incr();
+                        counter.print_now_status();
+                        i += 1;
+                    }
+                    Err(_e) => {}
+                }
             }
+        }else{
+            self.result_list = self.list.clone()
         }
         if sort {
             self.result_list = do_name_sort(self.result_list.clone());
