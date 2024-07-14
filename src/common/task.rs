@@ -80,11 +80,13 @@ pub struct TaskContent {
     http_timeout: i32,
     // 检查时的超时配置
     check_timeout: i32,
-    // 是否支持排序
-    sort: bool,
     // 并发数
     concurrent: i32,
+    // 是否支持排序
+    #[serde(default)]
+    sort: bool,
     // 是否不检查
+    #[serde(default)]
     no_check: bool,
 }
 
@@ -112,6 +114,44 @@ impl TaskContent {
             concurrent: 1,
             no_check: false,
         }
+    }
+
+    pub fn valid(&self) -> Result<TaskContent> {
+        let mut ori = TaskContent::new();
+        if self.urls.is_empty() {
+            return Err(Error::new(ErrorKind::Other, "参数错误"));
+        }
+        ori.set_urls(self.urls.clone());
+        if self.result_name.is_empty() {
+            return Err(Error::new(ErrorKind::Other, "参数错误"));
+        }
+        if !self.result_name.is_empty() {
+            ori.set_result_file_name(self.result_name.clone())
+        }
+        if self.http_timeout > 0 {
+            ori.set_http_timeout(self.http_timeout);
+        }
+        if self.check_timeout > 0 {
+            ori.set_check_timeout(self.check_timeout);
+        }
+        if self.keyword_like.len() > 0 {
+            ori.set_keyword_like(self.keyword_like.clone())
+        }
+        if self.keyword_dislike.len() > 0 {
+            ori.set_keyword_dislike(self.keyword_dislike.clone())
+        }
+        if self.sort {
+            ori.set_sort(self.sort);
+        }
+        if self.no_check {
+            ori.set_no_check(self.sort);
+        }
+        if self.concurrent > 0 {
+            ori.set_concurrent(self.concurrent);
+        }
+        ori.set_run_type(self.run_type.clone());
+        ori.gen_md5();
+        return Ok(ori);
     }
 
     pub fn get_urls(self) -> Vec<String> {
@@ -312,40 +352,7 @@ pub struct TaskManager {
 
 impl TaskManager {
     pub fn add_task(&self, task: TaskContent) -> Result<String> {
-        let mut ori = TaskContent::new();
-        if task.urls.is_empty() {
-            return Err(Error::new(ErrorKind::Other, "参数错误"));
-        }
-        ori.set_urls(task.urls);
-        if task.result_name.is_empty() {
-            return Err(Error::new(ErrorKind::Other, "参数错误"));
-        }
-        if !task.result_name.is_empty() {
-            ori.set_result_file_name(task.result_name)
-        }
-        if task.http_timeout > 0 {
-            ori.set_http_timeout(task.http_timeout);
-        }
-        if task.check_timeout > 0 {
-            ori.set_check_timeout(task.check_timeout);
-        }
-        if task.keyword_like.len() > 0 {
-            ori.set_keyword_like(task.keyword_like)
-        }
-        if task.keyword_dislike.len() > 0 {
-            ori.set_keyword_dislike(task.keyword_dislike)
-        }
-        if task.sort {
-            ori.set_sort(task.sort);
-        }
-        if task.no_check {
-            ori.set_no_check(task.sort);
-        }
-        if task.concurrent > 0 {
-            ori.set_concurrent(task.concurrent);
-        }
-        ori.set_run_type(task.run_type);
-        ori.gen_md5();
+        let ori = task.valid().unwrap();
         let mut task = Task::new();
         task.set_original(ori);
         let mut tasks = self.tasks.lock().unwrap();
@@ -355,14 +362,19 @@ impl TaskManager {
         Ok(task.get_uuid())
     }
 
-    pub fn import_task_from_data(&self, data_map: HashMap<String, Task>) -> Result<bool> {
+    pub fn import_task_from_data(&self, data_map: HashMap<String, Task>) -> bool {
         let mut tasks = self.tasks.lock().unwrap();
         for (k, v) in data_map {
-            tasks.insert(k, v.clone());
+            let id = v.id.clone();
+            if let None = tasks.get_mut(&id) {
+                tasks.insert(k, v.clone());
+            }
         }
         drop(tasks);
-        self.save_tasks()?;
-        Ok(true)
+        if let Ok(res) = self.save_tasks() {
+            return true;
+        }
+        return false;
     }
 
     pub fn run_task(&self, id: String) -> Result<bool> {
@@ -388,40 +400,8 @@ impl TaskManager {
     pub fn update_task(&self, id: String, pass_task: TaskContent) -> Result<bool> {
         let mut tasks = self.tasks.lock().unwrap();
         if let Some(mut task) = tasks.get_mut(&id) {
-            let mut task_info = task.clone().get_task_info();
-            let mut ori = task.original.clone();
-            if pass_task.urls.is_empty() {
-                return Err(Error::new(ErrorKind::Other, "参数错误"));
-            }
-            ori.set_urls(pass_task.urls.clone());
-            if pass_task.result_name.is_empty() {
-                return Err(Error::new(ErrorKind::Other, "参数错误"));
-            }
-            if !pass_task.result_name.is_empty() {
-                ori.set_result_file_name(pass_task.result_name)
-            }
-            if pass_task.http_timeout > 0 {
-                ori.set_http_timeout(pass_task.http_timeout);
-            }
-            if pass_task.check_timeout > 0 {
-                ori.set_check_timeout(pass_task.check_timeout);
-            }
-            if pass_task.keyword_like.len() > 0 {
-                ori.set_keyword_like(pass_task.keyword_like)
-            }
-            if pass_task.keyword_dislike.len() > 0 {
-                ori.set_keyword_dislike(pass_task.keyword_dislike)
-            }
-            if pass_task.sort {
-                ori.set_sort(pass_task.sort);
-            }
-            if pass_task.no_check {
-                ori.set_no_check(pass_task.no_check);
-            }
-            if pass_task.concurrent != 0 {
-                ori.set_concurrent(pass_task.concurrent);
-            }
-            ori.set_run_type(pass_task.run_type);
+            let task_info = task.clone().get_task_info();
+            let ori = pass_task.valid().unwrap();
             let mut task = Task::new();
             task.set_original(ori);
             task.set_id(id);
@@ -568,30 +548,15 @@ pub async fn system_tasks_export(task_manager: web::Data<Arc<TaskManager>>) -> i
 }
 
 pub async fn system_tasks_import(task_manager: web::Data<Arc<TaskManager>>, req: web::Json<HashMap<String, Task>>) -> impl Responder {
-    let data = get_task_from_file();
-    let mut can_import = false;
-    if let Ok(inner) = data {
-        if inner.len() == 0 {
-            can_import = true
-        }
-    }
-    if !can_import {
-        let mut resp = HashMap::new();
-        resp.insert("code", String::from("500"));
-        resp.insert("msg", String::from("已有任务，无法再次导入"));
-        return HttpResponse::InternalServerError().json(resp);
-    }
     let mut resp = HashMap::new();
-    if let Ok(save) = task_manager.import_task_from_data(req.into_inner()) {
-        return if save {
-            resp.insert("code", String::from("200"));
-            resp.insert("msg", String::from("成功"));
-            HttpResponse::InternalServerError().json(resp)
-        } else {
-            resp.insert("code", String::from("500"));
-            resp.insert("msg", String::from("导入失败"));
-            HttpResponse::InternalServerError().json(resp)
-        };
+    if task_manager.import_task_from_data(req.into_inner()) {
+        resp.insert("code", String::from("200"));
+        resp.insert("msg", String::from("成功"));
+        HttpResponse::Ok().json(resp)
+    } else {
+        resp.insert("code", String::from("500"));
+        resp.insert("msg", String::from("导入失败"));
+        HttpResponse::InternalServerError().json(resp)
     }
 }
 
