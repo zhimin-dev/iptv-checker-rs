@@ -683,10 +683,40 @@ pub mod m3u {
     pub fn do_name_sort(list: Vec<M3uObject>) -> Vec<M3uObject> {
         let mut new_list = list.clone();
 
-        new_list.sort_by(|a_value, b_value| {
-            a_value.search_name.cmp(&b_value.search_name)
+        // new_list.sort_by(|a_value, b_value| {
+        //     a_value.search_name.cmp(&b_value.search_name)
+        // });
+        // 自定义排序
+        new_list.sort_by(|a, b| {
+            // 提取前缀和数字部分
+            let (a_prefix, a_num) = extract_prefix_and_number(&a.search_name);
+            let (b_prefix, b_num) = extract_prefix_and_number(&b.search_name);
+
+            // 先比较前缀
+            let prefix_cmp = a_prefix.cmp(&b_prefix);
+            if prefix_cmp != std::cmp::Ordering::Equal {
+                return prefix_cmp;
+            }
+
+            // 如果前缀相同，再比较数字
+            a_num.cmp(&b_num)
         });
         return new_list;
+    }
+
+    // 提取前缀和数字的函数
+    fn extract_prefix_and_number(s: &str) -> (&str, Option<usize>) {
+        // 找到数字的起始位置
+        let numeric_start = s.find(|c: char| c.is_digit(10));
+
+        match numeric_start {
+            Some(index) => {
+                let prefix = &s[..index];
+                let number = s[index..].parse::<usize>().ok(); // 尝试将数字部分转为 usize
+                (prefix, number)
+            }
+            None => (s, None), // 如果没有找到数字，返回整个字符串作为前缀，数字部分为 None
+        }
     }
 
     pub async fn from_url(_url: String, timeout: u64) -> M3uObjectList {

@@ -144,7 +144,7 @@ impl TaskContent {
             ori.set_sort(self.sort);
         }
         if self.no_check {
-            ori.set_no_check(self.sort);
+            ori.set_no_check(self.no_check);
         }
         if self.concurrent > 0 {
             ori.set_concurrent(self.concurrent);
