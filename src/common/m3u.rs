@@ -1,3 +1,4 @@
+use std::fmt::format;
 use crate::common::check::check::check_link_is_valid;
 use crate::common::CheckDataStatus::{Failed, Success, Unchecked};
 use crate::common::SourceType::{Normal, Quota};
@@ -5,7 +6,7 @@ use crate::common::VideoType::Unknown;
 use actix_rt::time;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
-use std::io::{self, Write};
+use std::io::{self, BufRead, Read, Write};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -231,7 +232,7 @@ impl M3uObjectList {
         self.debug = debug
     }
 
-    pub async fn check_data_new(&mut self, request_time: i32, _concurrent: i32, sort :bool, no_check: bool) {
+    pub async fn check_data_new(&mut self, request_time: i32, _concurrent: i32, sort: bool, no_check: bool) {
         let mut search_clarity = false;
         match &self.search_clarity {
             Some(_d) => search_clarity = true,
@@ -301,7 +302,7 @@ impl M3uObjectList {
                     Err(_e) => {}
                 }
             }
-        }else{
+        } else {
             self.result_list = self.list.clone()
         }
         if sort {
@@ -311,7 +312,13 @@ impl M3uObjectList {
 
     pub async fn output_file(&mut self, output_file: String) {
         let mut lines: Vec<String> = vec![];
-        let mut counter = self.counter.unwrap();
+        let mut counter = M3uObjectListCounter::new();
+        match self.counter {
+            Some(data) => {
+                counter = data
+            }
+            None => {}
+        }
         for x in &self.result_list {
             if x.status == Success {
                 counter.incr_succ();
@@ -322,6 +329,14 @@ impl M3uObjectList {
             }
         }
         self.set_counter(counter);
+        // 生成.m3u 文件
+        self.generate_m3u_file(output_file.clone(), lines);
+        // 生成.txt 文件
+        self.generate_text_file(output_file.clone());
+        time::sleep(Duration::from_millis(500)).await;
+    }
+
+    pub fn generate_m3u_file(&mut self, output_file: String, lines: Vec<String>) {
         if lines.len() > 0 {
             let mut result_m3u_content: Vec<String> = vec![];
             match &self.header {
@@ -346,7 +361,22 @@ impl M3uObjectList {
             }
             let _ = fd.flush();
         }
-        time::sleep(Duration::from_millis(500)).await;
+    }
+
+    pub fn generate_text_file(&mut self, output_file: String) {
+        let txt_sub = output_file.replace(".m3u", ".txt");
+
+        // 打开文件 b 并准备写入
+        let mut file_b = File::create(txt_sub).unwrap();
+
+        // 逐行读取文件 a 的内容
+        for line in &self.result_list {
+            if line.status == Success {
+                let txt = format!("{},{}", line.name, line.url);
+                // 将每一行写入文件 b
+                writeln!(file_b, "{}", txt).unwrap();
+            }
+        }
     }
 }
 
