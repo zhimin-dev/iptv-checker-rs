@@ -144,14 +144,15 @@ impl TaskContent {
             ori.set_sort(self.sort);
         }
         if self.no_check {
-            ori.set_no_check(self.sort);
+            ori.set_no_check(self.no_check);
         }
         if self.concurrent > 0 {
             ori.set_concurrent(self.concurrent);
         }
         ori.set_run_type(self.run_type.clone());
         ori.gen_md5();
-        return Ok(ori);
+
+        Ok(ori)
     }
 
     pub fn get_urls(self) -> Vec<String> {
@@ -472,6 +473,7 @@ impl TaskManager {
                 for (key, value) in data.into_iter() {
                     list.push(value);
                 }
+                list.sort_by(|a, b| a.create_time.cmp(&b.create_time));
                 return Ok(list);
             }
             Err(e) => {
