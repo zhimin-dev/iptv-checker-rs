@@ -303,6 +303,8 @@ impl M3uObjectList {
                 }
             }
         } else {
+            let total = self.list.len();
+            println!("文件中源总数： {}", total);
             self.result_list = self.list.clone()
         }
         if sort {

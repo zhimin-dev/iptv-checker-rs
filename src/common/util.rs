@@ -22,20 +22,29 @@ pub fn parse_normal_str(_body: String) -> M3uObjectList {
     let mut m3u_ext = M3uExt { x_tv_url: vec![] };
     let mut index = 1;
     let mut one_m3u = Vec::new();
+    let mut save_mode = false;
     for x in exp_line {
         if x.starts_with("#EXTM3U") {
             m3u_ext = parse_m3u_header(x.to_owned());
         } else {
-            one_m3u.push(x);
-            if is_url(x.to_string()) {
-                let item = parse_one_m3u(one_m3u.clone(), index);
-                match item {
-                    Some(data) => {
-                        index += 1;
-                        list.push(data);
-                        one_m3u = Vec::new();
+            if x.starts_with("#EXTINF") {
+                save_mode = true;
+                one_m3u.push(x);
+            } else {
+                if save_mode {
+                    one_m3u.push(x);
+                    if is_url(x.to_string()) {
+                        let item = parse_one_m3u(one_m3u.clone(), index);
+                        match item {
+                            Some(data) => {
+                                index += 1;
+                                list.push(data);
+                                one_m3u = Vec::new();
+                            }
+                            None => {}
+                        }
+                        save_mode = false
                     }
-                    None => {}
                 }
             }
         }
@@ -119,7 +128,7 @@ pub fn parse_quota_str(_body: String) -> M3uObjectList {
             }
             None => {}
         }
-        if !name.is_empty()&& !url.is_empty() {
+        if !name.is_empty() && !url.is_empty() {
             if !is_url(url.clone()) {
                 now_group = name.to_string();
             } else {

@@ -224,8 +224,11 @@ pub async fn do_check(input_files: Vec<String>, output_file: String, timeout: i3
         .await;
     data.output_file(output_file).await;
     if print_result {
-        let status_string = data.print_result();
-        println!("\n{}\n解析完成----", status_string);
+        if !no_check {
+            let status_string = data.print_result();
+            println!("\n{}", status_string);
+        }
+        println!("解析完成----")
     }
     Ok(true)
 }

@@ -74,6 +74,10 @@ pub struct CheckArgs {
     /// 频道排序
     #[arg(long = "sort", default_value_t = false)]
     sort: bool,
+
+    /// 是否不需要检查
+    #[arg(long = "no_check", default_value_t = false)]
+    no_check: bool,
 }
 
 #[derive(Parser)]
@@ -145,7 +149,7 @@ pub async fn main() {
                          args.timeout as i32, true, args.timeout as i32,
                          args.concurrency,
                          args.keyword_like.to_owned(), args.keyword_dislike.to_owned(),
-                         args.sort, false).await.unwrap();
+                         args.sort, args.no_check).await.unwrap();
             }
         }
     }
