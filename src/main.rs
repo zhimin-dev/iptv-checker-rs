@@ -1,11 +1,13 @@
 mod common;
 mod utils;
 mod web;
+mod search;
 
 use clap::{arg, Args as clapArgs, Parser, Subcommand};
 use std::env;
 use tempfile::tempdir;
-use crate::common::do_check;
+use crate::common::{do_check};
+use crate::search::{do_search};
 
 const DEFAULT_HTTP_PORT: u16 = 8089;
 
@@ -15,6 +17,19 @@ enum Commands {
     Web(WebArgs),
     /// 检查相关命令
     Check(CheckArgs),
+    /// 搜索相关命令
+    Fetch(FetchArgs),
+}
+
+#[derive(clapArgs)]
+pub struct FetchArgs {
+    /// 搜索频道名称,如果有别名，用英文逗号分隔
+    #[arg(long = "search", default_value_t = String::from(""))]
+    search: String,
+
+    /// 是否需要检测
+    #[arg(long = "check", default_value_t = false)]
+    check: bool,
 }
 
 #[derive(clapArgs)]
@@ -97,7 +112,7 @@ fn get_pid_file() -> String {
             return a.to_owned();
         }
     }
-    return String::default();
+    String::default()
 }
 
 async fn start_daemonize_web(pid_name: &String, port: u16) {
@@ -150,6 +165,19 @@ pub async fn main() {
                          args.concurrency,
                          args.keyword_like.to_owned(), args.keyword_dislike.to_owned(),
                          args.sort, args.no_check).await.unwrap();
+            }
+        }
+        Commands::Fetch(args) => {
+            if args.search.len() > 0 {
+                let data = do_search(args.search.clone(), args.check).await;
+                match data {
+                    Ok(data) => {
+                        println!("{:?}", data)
+                    }
+                    Err(e) => {
+                        println!("获取失败---{}", e)
+                    }
+                }
             }
         }
     }

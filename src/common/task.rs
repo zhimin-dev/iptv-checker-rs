@@ -401,11 +401,12 @@ impl TaskManager {
     pub fn update_task(&self, id: String, pass_task: TaskContent) -> Result<bool> {
         let mut tasks = self.tasks.lock().unwrap();
         if let Some(mut task) = tasks.get_mut(&id) {
-            let task_info = task.clone().get_task_info();
+            let mut task_info = task.clone().get_task_info();
             let ori = pass_task.valid().unwrap();
             let mut task = Task::new();
             task.set_original(ori);
             task.set_id(id);
+            task_info.set_run_type(pass_task.run_type);
             task.set_task_info(task_info);
             tasks.insert(task.get_uuid(), task.clone());
             drop(tasks);

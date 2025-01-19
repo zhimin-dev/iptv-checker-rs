@@ -6,7 +6,8 @@ use crate::common::VideoType::Unknown;
 use actix_rt::time;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
-use std::io::{self, BufRead, Read, Write};
+use std::io::{self, BufRead, Error, Read, Write};
+use std::net::IpAddr;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -110,12 +111,28 @@ impl M3uObject {
         self.name = name
     }
 
+    pub fn get_url(&self) -> String {
+        self.url.clone()
+    }
+
     pub fn set_search_name(&mut self, search_name: String) {
         self.search_name = search_name.to_lowercase()
     }
 
     pub fn set_raw(&mut self, raw: String) {
         self.raw = raw
+    }
+
+    pub fn generate_raw(&mut self) {
+        let mut tv_id = "".to_string();
+        let mut tv_logo = "".to_string();
+        let mut group_title = "".to_string();
+        if self.extend.is_some() {
+            tv_id = format!(" tvg-id=\"{}\"", self.extend.clone().unwrap().tv_id.clone());
+            tv_logo = format!(" tvg-logo=\"{}\"", self.extend.clone().unwrap().tv_id.clone());
+            group_title = format!(" group-title=\"{}\"", self.extend.clone().unwrap().tv_id.clone());
+        }
+        self.raw = format!("#EXTINF:-1 {}{}{},{}\n{}", tv_id, tv_logo, group_title, self.name, self.url);
     }
 
     pub fn set_extend(&mut self, extend: M3uExtend) {
@@ -232,6 +249,71 @@ impl M3uObjectList {
         self.debug = debug
     }
 
+    pub async fn search(&self, search_name: String, full_match: bool, ipv4: bool,
+                        ipv6: bool, exclude_url: Vec<String>, exclude_host: Vec<String>) -> Result<Vec<M3uObject>, Error> {
+        let mut list = vec![];
+        let s_name = search_name.clone();
+        let exp_list: Vec<&str> = s_name.split(",").collect();
+        println!("query params ----{:?} search data count --- {}", exp_list, self.list.len());
+        for v in self.list.clone() {
+            let mut is_save = false;
+            for e in exp_list.clone() {
+                if full_match {
+                    if v.search_name.eq(e.to_string().as_str()) {
+                        is_save = true;
+                    }
+                } else {
+                    if v.search_name.contains(e.to_string().as_str()) {
+                        is_save = true;
+                    }
+                }
+            }
+            // let mut now_ip_type = 0;
+            // match v.url.clone().parse::<IpAddr>() {
+            //     Ok(IpAddr::V4(_)) => {
+            //         now_ip_type = 1; // ipv4
+            //     }
+            //     Ok(IpAddr::V6(_)) => {
+            //         now_ip_type = 2; // ipv6
+            //     }
+            //     _ => {}
+            // }
+            // if now_ip_type == 0 {
+            //     continue;
+            // }
+            // if now_ip_type == 1 && ipv4 {
+            //     is_save = true
+            // } else if now_ip_type == 2 && ipv6 {
+            //     is_save = true
+            // }
+            // for ex_url in exclude_url.clone() {
+            //     if v.url.clone().to_lowercase().eq(&ex_url.clone().to_lowercase()) {
+            //         is_save = false
+            //     }
+            // }
+            // for ex_host in exclude_host.clone() {
+            //     // 解析 URL
+            //     let url = url::Url::parse(&*v.clone().url);
+            //     match url {
+            //         Ok(url) => {
+            //             // 获取主机部分
+            //             if let Some(host) = url.host_str() {
+            //                 if ex_host.clone().eq(&host.to_string()) {
+            //                     is_save = false;
+            //                 }
+            //             }
+            //         }
+            //         _ => {}
+            //     }
+            // }
+            if is_save {
+                list.push(v.clone());
+            }
+        }
+
+        Ok(list)
+    }
+
     pub async fn check_data_new(&mut self, request_time: i32, _concurrent: i32, sort: bool, no_check: bool) {
         let mut search_clarity = false;
         match &self.search_clarity {
@@ -332,13 +414,39 @@ impl M3uObjectList {
         }
         self.set_counter(counter);
         // 生成.m3u 文件
-        self.generate_m3u_file(output_file.clone(), lines);
+        self.generate_m3u_file_from_giving_list(output_file.clone(), lines);
         // 生成.txt 文件
         self.generate_text_file(output_file.clone());
         time::sleep(Duration::from_millis(500)).await;
     }
 
-    pub fn generate_m3u_file(&mut self, output_file: String, lines: Vec<String>) {
+    pub fn generate_m3u_file(&mut self, output_file: String) {
+        if self.list.len() > 0 {
+            let mut result_m3u_content: Vec<String> = vec![];
+            match &self.header {
+                None => result_m3u_content.push(String::from("#EXTM3U")),
+                Some(data) => {
+                    if data.x_tv_url.len() > 0 {
+                        let exp = data.x_tv_url.join(",");
+                        let header_line = format!("#EXTM3U x-tvg-url=\"{}\"", exp);
+                        result_m3u_content.push(header_line.to_owned());
+                    } else {
+                        result_m3u_content.push(String::from("#EXTM3U"))
+                    }
+                }
+            }
+            for x in self.list.clone() {
+                result_m3u_content.push(x.raw.clone());
+            }
+            let mut fd = File::create(output_file.to_owned()).unwrap();
+            for x in result_m3u_content {
+                let _ = fd.write(format!("{}\n", x).as_bytes());
+            }
+            let _ = fd.flush();
+        }
+    }
+
+    pub fn generate_m3u_file_from_giving_list(&mut self, output_file: String, lines: Vec<String>) {
         if lines.len() > 0 {
             let mut result_m3u_content: Vec<String> = vec![];
             match &self.header {
