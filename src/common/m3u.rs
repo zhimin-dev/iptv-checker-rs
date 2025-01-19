@@ -115,6 +115,10 @@ impl M3uObject {
         self.url.clone()
     }
 
+    pub fn get_name(&self) -> String {
+        self.name.clone()
+    }
+
     pub fn set_search_name(&mut self, search_name: String) {
         self.search_name = search_name.to_lowercase()
     }

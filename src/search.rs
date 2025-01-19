@@ -419,7 +419,7 @@ pub async fn do_search(search_name: String, check: bool) -> Result<Vec<String>, 
             let mut m3u_data = load_m3u_data().expect("load m3u data failed");
             let search_list = m3u_data.search(search_name.clone(), false, true, false, vec![], vec![]).await.expect("Failed to search");
             for v in search_list {
-                println!("search url -= {}", v.clone().get_url());
+                println!("search -{} - {}", v.clone().get_name(), v.clone().get_url());
             }
             // 将内存中的数据搜索出来
             // let list = search_channel(m3u_data, check).await.expect("Failed to get search channel");
