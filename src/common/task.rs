@@ -1,13 +1,13 @@
+use crate::common::do_check;
 use actix_web::{web, HttpResponse, Responder};
+use md5;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{Read, Write, Result, Error, ErrorKind};
+use std::io::{Error, ErrorKind, Read, Result, Write};
 use std::sync::{Arc, Mutex};
-use uuid::Uuid;
-use md5;
 use std::time::{SystemTime, UNIX_EPOCH};
-use crate::common::do_check;
+use uuid::Uuid;
 
 const FILE_PATH: &str = "tasks.json";
 
@@ -28,6 +28,7 @@ pub struct TaskInfo {
     task_status: TaskStatus,
 }
 
+#[warn(private_interfaces)]
 #[derive(Debug, Deserialize, Serialize, Clone)]
 enum RunTime {
     EveryDay,
@@ -256,7 +257,8 @@ pub struct Task {
 
 fn now() -> u64 {
     let now = SystemTime::now();
-    return now.duration_since(UNIX_EPOCH)
+    return now
+        .duration_since(UNIX_EPOCH)
         .expect("Time went backwards")
         .as_secs();
 }
@@ -321,15 +323,25 @@ impl Task {
         let concurrent = self.clone().original.get_current();
         let no_check = self.clone().original.no_check;
         let check_timeout = self.clone().original.get_check_timeout();
-        let mut rt = tokio::runtime::Builder::new_current_thread()
+        let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
         rt.block_on(async {
             println!("start taskId: {}", task_id);
-            let _ = do_check(urls, out_out_file.clone(), http_timeout,
-                             true, check_timeout, concurrent, keyword_like.clone(),
-                             keyword_dislike.clone(), sort, no_check).await;
+            let _ = do_check(
+                urls,
+                out_out_file.clone(),
+                http_timeout,
+                true,
+                check_timeout,
+                concurrent,
+                keyword_like.clone(),
+                keyword_dislike.clone(),
+                sort,
+                no_check,
+            )
+            .await;
             println!("end taskId: {}", task_id);
         });
         self.task_info.task_status = TaskStatus::Pending;
@@ -380,7 +392,7 @@ impl TaskManager {
 
     pub fn run_task(&self, id: String) -> Result<bool> {
         let mut tasks = self.tasks.lock().unwrap();
-        if let Some(mut task) = tasks.get_mut(&id) {
+        if let Some(task) = tasks.get_mut(&id) {
             task.task_info.set_next_run_time(now() as i32);
             drop(tasks);
             self.save_tasks()?;
@@ -400,7 +412,7 @@ impl TaskManager {
 
     pub fn update_task(&self, id: String, pass_task: TaskContent) -> Result<bool> {
         let mut tasks = self.tasks.lock().unwrap();
-        if let Some(mut task) = tasks.get_mut(&id) {
+        if let Some(task) = tasks.get_mut(&id) {
             let mut task_info = task.clone().get_task_info();
             let ori = pass_task.valid().unwrap();
             let mut task = Task::new();
@@ -455,7 +467,7 @@ impl TaskManager {
         }
     }
 
-    pub fn update_task_info(&self, id: String, mut task_info: TaskInfo) -> Result<bool> {
+    pub fn update_task_info(&self, id: String, task_info: TaskInfo) -> Result<bool> {
         let mut tasks = self.tasks.lock().unwrap();
         if let Some(task) = tasks.get_mut(&id) {
             task.set_task_info(task_info);
@@ -471,19 +483,16 @@ impl TaskManager {
         return match load_tasks_from_file() {
             Ok(data) => {
                 let mut list = vec![];
-                for (key, value) in data.into_iter() {
+                for (_key, value) in data.into_iter() {
                     list.push(value);
                 }
                 list.sort_by(|a, b| a.create_time.cmp(&b.create_time));
                 return Ok(list);
             }
-            Err(e) => {
-                Err(e)
-            }
+            Err(e) => Err(e),
         };
     }
 }
-
 
 #[derive(Serialize, Deserialize)]
 pub struct UpdateTaskQuery {
@@ -495,32 +504,40 @@ pub struct RunTaskQuery {
     task_id: String,
 }
 
-pub async fn run_task(task_manager: web::Data<Arc<TaskManager>>,
-                      req: web::Query<RunTaskQuery>) -> impl Responder {
+pub async fn run_task(
+    task_manager: web::Data<Arc<TaskManager>>,
+    req: web::Query<RunTaskQuery>,
+) -> impl Responder {
     println!("{}", req.task_id.clone());
     let mut resp = HashMap::new();
     match task_manager.run_task(req.task_id.clone()) {
-        Ok(id) => {
+        Ok(_) => {
             resp.insert("code", String::from("200"));
             resp.insert("data", req.task_id.to_string());
-            HttpResponse::Ok().content_type("application/json").json(resp)
+            HttpResponse::Ok()
+                .content_type("application/json")
+                .json(resp)
         }
         Err(err) => {
             resp.insert("code", String::from("500"));
             resp.insert("msg", String::from(err.to_string()));
-            HttpResponse::Ok().content_type("application/json").json(resp)
+            HttpResponse::Ok()
+                .content_type("application/json")
+                .json(resp)
         }
     }
 }
 
-pub async fn update_task(task_manager: web::Data<Arc<TaskManager>>,
-                         task_json: web::Json<TaskContent>, req: web::Query<UpdateTaskQuery>)
-                         -> impl Responder {
+pub async fn update_task(
+    task_manager: web::Data<Arc<TaskManager>>,
+    task_json: web::Json<TaskContent>,
+    req: web::Query<UpdateTaskQuery>,
+) -> impl Responder {
     println!("{}", req.task_id.clone());
     let mut resp = HashMap::new();
     let task = task_json.into_inner();
     match task_manager.update_task(req.task_id.clone(), task) {
-        Ok(id) => {
+        Ok(_) => {
             resp.insert("code", String::from("200"));
             resp.insert("data", req.task_id.to_string());
             HttpResponse::Ok().json(resp)
@@ -538,7 +555,7 @@ pub struct GetDownloadBodyReq {
     task_id: String,
 }
 
-pub async fn system_tasks_export(task_manager: web::Data<Arc<TaskManager>>) -> impl Responder {
+pub async fn system_tasks_export(_: web::Data<Arc<TaskManager>>) -> impl Responder {
     let data = get_task_from_file();
     if let Ok(inner) = data {
         HttpResponse::Ok().json(inner)
@@ -550,7 +567,10 @@ pub async fn system_tasks_export(task_manager: web::Data<Arc<TaskManager>>) -> i
     }
 }
 
-pub async fn system_tasks_import(task_manager: web::Data<Arc<TaskManager>>, req: web::Json<HashMap<String, Task>>) -> impl Responder {
+pub async fn system_tasks_import(
+    task_manager: web::Data<Arc<TaskManager>>,
+    req: web::Json<HashMap<String, Task>>,
+) -> impl Responder {
     let mut resp = HashMap::new();
     if task_manager.import_task_from_data(req.into_inner()) {
         resp.insert("code", String::from("200"));
@@ -563,7 +583,10 @@ pub async fn system_tasks_import(task_manager: web::Data<Arc<TaskManager>>, req:
     }
 }
 
-pub async fn get_download_body(task_manager: web::Data<Arc<TaskManager>>, req: web::Query<GetDownloadBodyReq>) -> impl Responder {
+pub async fn get_download_body(
+    task_manager: web::Data<Arc<TaskManager>>,
+    req: web::Query<GetDownloadBodyReq>,
+) -> impl Responder {
     let mut resp = HashMap::new();
     resp.insert("content", String::default());
     resp.insert("url", String::default());
@@ -581,15 +604,17 @@ pub async fn get_download_body(task_manager: web::Data<Arc<TaskManager>>, req: w
 fn get_file_contents(file_name: String) -> Option<String> {
     if let Ok(mut f) = File::open(file_name.clone()) {
         let mut contents = String::default();
-        if let Ok(data) = f.read_to_string(&mut contents) {
+        if let Ok(_) = f.read_to_string(&mut contents) {
             return Some(contents);
         }
     }
     Some(String::default())
 }
 
-pub async fn add_task(task_manager: web::Data<Arc<TaskManager>>,
-                      task_json: web::Json<TaskContent>) -> impl Responder {
+pub async fn add_task(
+    task_manager: web::Data<Arc<TaskManager>>,
+    task_json: web::Json<TaskContent>,
+) -> impl Responder {
     let mut resp = HashMap::new();
     let task = task_json.into_inner();
     match task_manager.add_task(task) {
@@ -606,8 +631,10 @@ pub async fn add_task(task_manager: web::Data<Arc<TaskManager>>,
     }
 }
 
-pub async fn delete_task(task_manager: web::Data<Arc<TaskManager>>,
-                         path: web::Path<String>) -> impl Responder {
+pub async fn delete_task(
+    task_manager: web::Data<Arc<TaskManager>>,
+    path: web::Path<String>,
+) -> impl Responder {
     let mut resp = HashMap::new();
     match task_manager.delete_task(path.into_inner().to_string()) {
         Ok(true) => {
@@ -647,9 +674,9 @@ fn save_tasks_to_file(tasks: &HashMap<String, Task>) -> Result<()> {
 
 fn load_tasks_from_file() -> Result<HashMap<String, Task>> {
     match std::fs::read(FILE_PATH) {
-        Err(e) => {
-            let mut data = File::create(FILE_PATH).unwrap();
-            data.write_all(b"{}").unwrap()
+        Err(_) => {
+            let mut data = File::create(FILE_PATH)?;
+            data.write_all(b"{}")?
         }
         _ => {}
     }

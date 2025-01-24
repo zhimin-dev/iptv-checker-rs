@@ -8,11 +8,11 @@ pub async fn get_url_body(_url: String, timeout: u64) -> Result<String, Error> {
         .danger_accept_invalid_certs(true)
         .build()
         .unwrap();
-    return client.get(_url.to_owned()).send().await?.text().await;
+    client.get(_url.to_owned()).send().await?.text().await
 }
 
 pub fn check_body_is_m3u8_format(_body: String) -> bool {
-    return _body.starts_with("#EXTM3U");
+    _body.starts_with("#EXTM3U")
 }
 
 pub fn parse_normal_str(_body: String) -> M3uObjectList {

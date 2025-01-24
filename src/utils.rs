@@ -3,8 +3,8 @@ use rand::Rng;
 use std::fs;
 use std::fs::File;
 use std::io::{Error, ErrorKind, Read};
+use std::net::IpAddr;
 use std::process::Command;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 pub fn get_out_put_filename(output_file: String) -> String {
     let mut filename = output_file.clone();

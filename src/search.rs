@@ -1,12 +1,12 @@
+use crate::common::m3u::m3u::from_body_arr;
+use crate::common::{M3uObject, M3uObjectList};
+use crate::utils::create_folder;
+use regex::Regex;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fmt::{format, Error};
+use std::fmt::Error;
 use std::fs;
 use std::io::Write;
-use crate::utils::create_folder;
-use serde::{Deserialize, Serialize};
-use regex::{Regex};
-use crate::common::{M3uObject, M3uObjectList};
-use crate::common::m3u::m3u::from_body_arr;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GithubPageProps {
@@ -63,7 +63,13 @@ pub struct GithubInfo {
 }
 
 impl GithubInfo {
-    pub fn new(content_type: String, path: String, name: String, download_url: String, extension: String) -> GithubInfo {
+    pub fn new(
+        content_type: String,
+        path: String,
+        name: String,
+        download_url: String,
+        extension: String,
+    ) -> GithubInfo {
         GithubInfo {
             content_type,
             path,
@@ -74,8 +80,11 @@ impl GithubInfo {
     }
 }
 
-pub fn parse_github_sub_page_body_to_m3u_link(body: &str, include_files: Vec<String>,
-                                              valid_extensions: Vec<String>) -> Result<Vec<GithubInfo>, Error> {
+pub fn parse_github_sub_page_body_to_m3u_link(
+    body: &str,
+    include_files: Vec<String>,
+    valid_extensions: Vec<String>,
+) -> Result<Vec<GithubInfo>, Error> {
     let regex = Regex::new(r#"(?m)<script type="application\/json" data-target="react-app.embeddedData">(.+?)<\/script>"#).unwrap();
     let result = regex.captures_iter(body);
 
@@ -84,7 +93,8 @@ pub fn parse_github_sub_page_body_to_m3u_link(body: &str, include_files: Vec<Str
         if mat.len() > 1 {
             let reg_text = mat.get(1).unwrap().as_str();
             if reg_text.contains("defaultBranch") {
-                let json_pro: serde_json::error::Result<GithubSubPageProps> = serde_json::from_str(reg_text);
+                let json_pro: serde_json::error::Result<GithubSubPageProps> =
+                    serde_json::from_str(reg_text);
                 match json_pro {
                     Ok(props) => {
                         for value in props.payload.tree.items.iter() {
@@ -101,7 +111,13 @@ pub fn parse_github_sub_page_body_to_m3u_link(body: &str, include_files: Vec<Str
                                 for ext in &valid_extensions {
                                     if value.path.ends_with(ext) {
                                         let download_url = format!("https://raw.githubusercontent.com/{}/{}/refs/heads/{}/{}", props.payload.repo.owner_login, props.payload.repo.name, props.payload.repo.default_branch, value.path);
-                                        urls.push(GithubInfo::new(value.content_type.clone(), value.path.clone(), value.name.clone(), download_url, ext.to_string()))
+                                        urls.push(GithubInfo::new(
+                                            value.content_type.clone(),
+                                            value.path.clone(),
+                                            value.name.clone(),
+                                            download_url,
+                                            ext.to_string(),
+                                        ))
                                     }
                                 }
                             }
@@ -115,7 +131,11 @@ pub fn parse_github_sub_page_body_to_m3u_link(body: &str, include_files: Vec<Str
 
     Ok(urls)
 }
-pub fn parse_github_home_page_body_to_m3u_link(body: &str, include_files: Vec<String>, valid_extensions: Vec<String>) -> Result<Vec<GithubInfo>, Error> {
+pub fn parse_github_home_page_body_to_m3u_link(
+    body: &str,
+    include_files: Vec<String>,
+    valid_extensions: Vec<String>,
+) -> Result<Vec<GithubInfo>, Error> {
     let regex = Regex::new(r#"(?m)<script type="application\/json" data-target="react-partial.embeddedData">(.+?)<\/script>"#).unwrap();
     let result = regex.captures_iter(body);
 
@@ -124,7 +144,8 @@ pub fn parse_github_home_page_body_to_m3u_link(body: &str, include_files: Vec<St
         if mat.len() > 1 {
             let reg_text = mat.get(1).unwrap().as_str();
             if reg_text.contains("defaultBranch") {
-                let json_pro: serde_json::error::Result<GithubPageProps> = serde_json::from_str(reg_text);
+                let json_pro: serde_json::error::Result<GithubPageProps> =
+                    serde_json::from_str(reg_text);
                 match json_pro {
                     Ok(props) => {
                         for value in props.props.initial_payload.tree.items.iter() {
@@ -141,7 +162,13 @@ pub fn parse_github_home_page_body_to_m3u_link(body: &str, include_files: Vec<St
                                 for ext in &valid_extensions {
                                     if value.path.ends_with(ext) {
                                         let download_url = format!("https://raw.githubusercontent.com/{}/{}/refs/heads/{}/{}", props.props.initial_payload.repo.owner_login, props.props.initial_payload.repo.name, props.props.initial_payload.repo.default_branch, value.path);
-                                        urls.push(GithubInfo::new(value.content_type.clone(), value.path.clone(), value.name.clone(), download_url, ext.to_string()))
+                                        urls.push(GithubInfo::new(
+                                            value.content_type.clone(),
+                                            value.path.clone(),
+                                            value.name.clone(),
+                                            download_url,
+                                            ext.to_string(),
+                                        ))
                                     }
                                 }
                             }
@@ -156,22 +183,34 @@ pub fn parse_github_home_page_body_to_m3u_link(body: &str, include_files: Vec<St
     Ok(urls)
 }
 
-async fn fetch_github_home_page(url: String, include_files: Vec<String>, valid_extensions: Vec<String>) -> Vec<GithubInfo> {
+async fn fetch_github_home_page(
+    url: String,
+    include_files: Vec<String>,
+    valid_extensions: Vec<String>,
+) -> Vec<GithubInfo> {
     let body = get_url_body(url).await.expect("Failed to get body");
-    match parse_github_home_page_body_to_m3u_link(&body, include_files.clone(), valid_extensions.clone()) {
-        Ok(list) => {
-            list
-        }
+    match parse_github_home_page_body_to_m3u_link(
+        &body,
+        include_files.clone(),
+        valid_extensions.clone(),
+    ) {
+        Ok(list) => list,
         Err(_) => vec![],
     }
 }
 
-async fn fetch_github_sub_page(url: String, include_files: Vec<String>, valid_extensions: Vec<String>) -> Vec<GithubInfo> {
+async fn fetch_github_sub_page(
+    url: String,
+    include_files: Vec<String>,
+    valid_extensions: Vec<String>,
+) -> Vec<GithubInfo> {
     let body = get_url_body(url).await.expect("Failed to get body");
-    match parse_github_sub_page_body_to_m3u_link(&body, include_files.clone(), valid_extensions.clone()) {
-        Ok(list) => {
-            list
-        }
+    match parse_github_sub_page_body_to_m3u_link(
+        &body,
+        include_files.clone(),
+        valid_extensions.clone(),
+    ) {
+        Ok(list) => list,
         Err(_) => vec![],
     }
 }
@@ -212,7 +251,6 @@ fn epg_live_stream_html_parse(html: &str) -> Vec<EpgM3u8Info> {
 
             let mut links = Vec::new(); // 存储链接
 
-
             for link_match in link_regex.captures_iter(cell_content) {
                 if link_match.len() < 2 {
                     continue;
@@ -221,7 +259,9 @@ fn epg_live_stream_html_parse(html: &str) -> Vec<EpgM3u8Info> {
             }
 
             // 处理没有链接的普通文本
-            let text_without_links = link_regex.replace_all(cell_content, "").to_string()
+            let text_without_links = link_regex
+                .replace_all(cell_content, "")
+                .to_string()
                 .replace(&['<', '>'][..], "")
                 .trim()
                 .to_string();
@@ -320,7 +360,8 @@ async fn init_search_data() -> Result<(), Error> {
             if fetch_values.urls.len() > 0 {
                 let list = fetch_epg_page(fetch_values.urls[0].clone()).await;
                 // 将list转换成m3u文件
-                let save_status = epg_list_to_m3u_file(list, format!("./static/input/search/100-{}.m3u", i));
+                let save_status =
+                    epg_list_to_m3u_file(list, format!("./static/input/search/100-{}.m3u", i));
                 match save_status {
                     Ok(()) => {
                         println!("file save success");
@@ -333,13 +374,19 @@ async fn init_search_data() -> Result<(), Error> {
             }
         } else if fetch_values.parse_type.eq("github-home-page") {
             for url in fetch_values.urls {
-                let m3u_and_txt_files = fetch_github_home_page(url.clone(), fetch_values.include_files.clone(), config.valid_extensions.clone()).await;
+                let m3u_and_txt_files = fetch_github_home_page(
+                    url.clone(),
+                    fetch_values.include_files.clone(),
+                    config.valid_extensions.clone(),
+                )
+                .await;
                 println!("{:?}", m3u_and_txt_files);
                 // 下载m3u文件
                 for _url in m3u_and_txt_files {
                     let save_name = format!("./static/input/search/200-{}{}", i, _url.extension);
                     i += 1;
-                    let save_status = download_target_files(_url.download_url, save_name.to_string()).await;
+                    let save_status =
+                        download_target_files(_url.download_url, save_name.to_string()).await;
                     match save_status {
                         Ok(_) => {
                             println!("file save success");
@@ -352,13 +399,19 @@ async fn init_search_data() -> Result<(), Error> {
             }
         } else if fetch_values.parse_type.eq("github-sub-page") {
             for url in fetch_values.urls {
-                let m3u_and_txt_files = fetch_github_sub_page(url.clone(), fetch_values.include_files.clone(), config.valid_extensions.clone()).await;
+                let m3u_and_txt_files = fetch_github_sub_page(
+                    url.clone(),
+                    fetch_values.include_files.clone(),
+                    config.valid_extensions.clone(),
+                )
+                .await;
                 println!("{:?}", m3u_and_txt_files);
                 // 下载m3u文件
                 for _url in m3u_and_txt_files {
                     let save_name = format!("./static/input/search/300-{}{}", i, _url.extension);
                     i += 1;
-                    let save_status = download_target_files(_url.download_url, save_name.to_string()).await;
+                    let save_status =
+                        download_target_files(_url.download_url, save_name.to_string()).await;
                     match save_status {
                         Ok(()) => {
                             println!("file save success");
@@ -374,14 +427,16 @@ async fn init_search_data() -> Result<(), Error> {
     Ok(())
 }
 
-
 async fn download_target_files(_url: String, save_path: String) -> Result<(), Error> {
-    let contents = crate::common::util::get_url_body(_url.clone(), 20000).await.expect("Failed to get body");
+    let contents = crate::common::util::get_url_body(_url.clone(), 20000)
+        .await
+        .expect("Failed to get body");
     // 创建一个新文件，如果文件已存在，则会覆盖它
     let mut file = std::fs::File::create(save_path).expect("file create failed"); // 使用 ? 运算符处理可能的错误
 
     // 将字符串内容写入文件
-    file.write_all(contents.as_bytes()).expect("file save filed"); // 也可以使用 write 方法
+    file.write_all(contents.as_bytes())
+        .expect("file save filed"); // 也可以使用 write 方法
     Ok(())
 }
 
@@ -413,11 +468,15 @@ fn read_search_configs() -> Result<ConfigSearch, Error> {
     Ok(config_list)
 }
 
-pub async fn do_search(search_name: String, check: bool) -> Result<Vec<String>, Error> {
+pub async fn do_search(search_name: String, _check: bool) -> Result<Vec<String>, Error> {
+    println!("check {}", _check);
     match init_search_data().await {
         Ok(()) => {
-            let mut m3u_data = load_m3u_data().expect("load m3u data failed");
-            let search_list = m3u_data.search(search_name.clone(), false, true, false, vec![], vec![]).await.expect("Failed to search");
+            let m3u_data = load_m3u_data().expect("load m3u data failed");
+            let search_list = m3u_data
+                .search(search_name.clone(), false, true, false, vec![], vec![])
+                .await
+                .expect("Failed to search");
             for v in search_list {
                 println!("search -{} - {}", v.clone().get_name(), v.clone().get_url());
             }
@@ -428,9 +487,7 @@ pub async fn do_search(search_name: String, check: bool) -> Result<Vec<String>, 
             // 返回数据
             Ok(vec![])
         }
-        _ => {
-            Ok(vec![search_name])
-        }
+        _ => Ok(vec![search_name]),
     }
 }
 
@@ -463,12 +520,14 @@ fn load_m3u_data() -> std::io::Result<M3uObjectList> {
 }
 
 async fn search_channel(search_name: String, check: bool) -> Result<Vec<String>, Error> {
+    println!("check {}", check);
     let mut list = vec![];
     list.push(search_name);
     Ok(list)
 }
 
 async fn generate_channel_thumbnail(channel_list: Vec<String>) -> Result<Vec<String>, Error> {
-    let mut list = vec![];
+    println!("channel_list len {}", channel_list.len());
+    let list = vec![];
     Ok(list)
 }

@@ -1,28 +1,19 @@
 use crate::common::check;
+use crate::common::task::{
+    add_task, delete_task, get_download_body, list_task, run_task, system_tasks_export,
+    system_tasks_import, update_task, TaskManager,
+};
 use actix_files as fs;
 use actix_files::NamedFile;
-use actix_web::{get, post, web, App, HttpResponse, HttpServer, Responder, Result};
-use serde::{Deserialize, Serialize};
-use std::time;
-use crate::common::task::{TaskManager, add_task, delete_task, list_task, update_task,
-                          run_task, get_download_body,
-                          system_tasks_export, system_tasks_import};
-use std::sync::{Arc, Mutex};
-use std::collections::HashMap;
+use actix_multipart::form::{tempfile::TempFile, MultipartForm};
+use actix_web::{get, post, web, App, HttpResponse, HttpServer, Responder};
 use clokwerk::{Scheduler, TimeUnits};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time;
 use std::time::Duration;
-use actix_web::web::Redirect;
-use futures::{StreamExt, TryStreamExt};
-use std::io::Write;
-use std::fs::File;
-use actix_multipart::{
-    form::{
-        tempfile::{TempFile, TempFileConfig},
-        MultipartForm,
-    },
-    Multipart,
-};
 
 #[derive(Debug, Deserialize, Serialize)]
 struct TaskDel {
@@ -34,16 +25,12 @@ struct TaskDelResp {
     result: bool, //是否成功
 }
 
-
 pub async fn check_ipv6() -> bool {
-    let result =
-        reqwest::get("http://[2606:2800:220:1:248:1893:25c8:1946]").await;
+    let result = reqwest::get("http://[2606:2800:220:1:248:1893:25c8:1946]").await;
 
     match result {
-        Ok(_) => {
-            true
-        }
-        Err(e) => {
+        Ok(_) => true,
+        Err(_) => {
             // 处理错误，根据错误类型返回更探针对性的信息也可以
             // HttpResponse::Ok().body(format!("IPv6 might not be supported: {}", e))
             false
@@ -63,8 +50,7 @@ async fn check_url_is_available(req: web::Query<CheckUrlIsAvailableRequest>) -> 
     if let Some(i) = req.timeout {
         timeout = i;
     }
-    let res = check::check::check_link_is_valid(req.url.to_owned(),
-                                                timeout as u64, true, true);
+    let res = check::check::check_link_is_valid(req.url.to_owned(), timeout as u64, true);
     match res.await {
         Ok(data) => {
             let obj = serde_json::to_string(&data).unwrap();
@@ -139,7 +125,9 @@ async fn system_status() -> impl Responder {
         output: format!("{}{}", VIEW_BASE_DIR, "upload".to_string()),
     };
     let obj = serde_json::to_string(&system_status).unwrap();
-    return HttpResponse::Ok().append_header(("Content-Type", "application/json")).body(obj);
+    return HttpResponse::Ok()
+        .append_header(("Content-Type", "application/json"))
+        .body(obj);
 }
 
 #[get("/")]
@@ -161,9 +149,7 @@ struct UploadResponse {
 }
 
 #[post("/media/upload")]
-async fn upload(
-    MultipartForm(form): MultipartForm<UploadFormReq>,
-) -> impl Responder {
+async fn upload(MultipartForm(form): MultipartForm<UploadFormReq>) -> impl Responder {
     let path = format!("static/input/{}", form.file.file_name.unwrap());
     log::info!("saving to {path}");
     form.file.file.persist(path.clone()).unwrap();
@@ -172,7 +158,9 @@ async fn upload(
         url: path.clone().to_string(),
     };
     let obj = serde_json::to_string(&resp).unwrap();
-    return HttpResponse::Ok().append_header(("Content-Type", "application/json")).body(obj);
+    return HttpResponse::Ok()
+        .append_header(("Content-Type", "application/json"))
+        .body(obj);
 }
 
 pub async fn start_web(port: u16) {
@@ -191,14 +179,12 @@ pub async fn start_web(port: u16) {
     // 创建一个新线程来运行定时任务
     let scheduler_thread = {
         let scheduler = Arc::clone(&scheduler);
-        thread::spawn(move || {
-            loop {
-                {
-                    let mut scheduler = scheduler.lock().unwrap();
-                    scheduler.run_pending();
-                }
-                thread::sleep(Duration::from_secs(30));
+        thread::spawn(move || loop {
+            {
+                let mut scheduler = scheduler.lock().unwrap();
+                scheduler.run_pending();
             }
+            thread::sleep(Duration::from_secs(30));
         })
     };
     let data_clone = Arc::clone(&data);
@@ -209,7 +195,9 @@ pub async fn start_web(port: u16) {
             let tasks = data_clone.list_task().unwrap();
             for mut task in tasks {
                 task.run();
-                data_clone.update_task_info(task.get_uuid(), task.get_task_info()).unwrap();
+                data_clone
+                    .update_task_info(task.get_uuid(), task.get_task_info())
+                    .unwrap();
             }
         });
     }
@@ -222,10 +210,7 @@ pub async fn start_web(port: u16) {
             .service(system_status)
             .service(index)
             .service(upload)
-            .service(
-                fs::Files::new("/static", VIEW_BASE_DIR.to_owned())
-                    .show_files_listing(),
-            )
+            .service(fs::Files::new("/static", VIEW_BASE_DIR.to_owned()).show_files_listing())
             .app_data(web::Data::new(data_clone_for_http_server))
             .app_data(web::Data::new(scheduler.clone()))
             .route("/tasks/list", web::get().to(list_task))
@@ -238,11 +223,11 @@ pub async fn start_web(port: u16) {
             .route("/tasks/delete/{id}", web::delete().to(delete_task))
             .service(fs::Files::new("/assets", "./web/assets"))
     })
-        .bind(("0.0.0.0", port))
-        .expect("Failed to bind address")
-        .run()
-        .await
-        .expect("failed to run server");
+    .bind(("0.0.0.0", port))
+    .expect("Failed to bind address")
+    .run()
+    .await
+    .expect("failed to run server");
 
     scheduler_thread.join().unwrap();
 }

@@ -1,18 +1,16 @@
-use std::fmt::format;
 use crate::common::check::check::check_link_is_valid;
+use crate::common::m3u::m3u::do_name_sort;
 use crate::common::CheckDataStatus::{Failed, Success, Unchecked};
 use crate::common::SourceType::{Normal, Quota};
 use crate::common::VideoType::Unknown;
 use actix_rt::time;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
-use std::io::{self, BufRead, Error, Read, Write};
-use std::net::IpAddr;
+use std::io::{self, Error, Write};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
-use crate::common::m3u::m3u::do_name_sort;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct M3uExtend {
@@ -26,7 +24,7 @@ pub struct M3uExtend {
     //国家
     tv_id: String,
     //电视id
-    user_agent: String,  // user-agent
+    user_agent: String, // user-agent
 }
 
 impl M3uExtend {
@@ -133,10 +131,19 @@ impl M3uObject {
         let mut group_title = "".to_string();
         if self.extend.is_some() {
             tv_id = format!(" tvg-id=\"{}\"", self.extend.clone().unwrap().tv_id.clone());
-            tv_logo = format!(" tvg-logo=\"{}\"", self.extend.clone().unwrap().tv_id.clone());
-            group_title = format!(" group-title=\"{}\"", self.extend.clone().unwrap().tv_id.clone());
+            tv_logo = format!(
+                " tvg-logo=\"{}\"",
+                self.extend.clone().unwrap().tv_id.clone()
+            );
+            group_title = format!(
+                " group-title=\"{}\"",
+                self.extend.clone().unwrap().tv_id.clone()
+            );
         }
-        self.raw = format!("#EXTINF:-1 {}{}{},{}\n{}", tv_id, tv_logo, group_title, self.name, self.url);
+        self.raw = format!(
+            "#EXTINF:-1 {}{}{},{}\n{}",
+            tv_id, tv_logo, group_title, self.name, self.url
+        );
     }
 
     pub fn set_extend(&mut self, extend: M3uExtend) {
@@ -253,12 +260,23 @@ impl M3uObjectList {
         self.debug = debug
     }
 
-    pub async fn search(&self, search_name: String, full_match: bool, ipv4: bool,
-                        ipv6: bool, exclude_url: Vec<String>, exclude_host: Vec<String>) -> Result<Vec<M3uObject>, Error> {
+    pub async fn search(
+        &self,
+        search_name: String,
+        full_match: bool,
+        ipv4: bool,
+        ipv6: bool,
+        exclude_url: Vec<String>,
+        exclude_host: Vec<String>,
+    ) -> Result<Vec<M3uObject>, Error> {
         let mut list = vec![];
         let s_name = search_name.clone();
         let exp_list: Vec<&str> = s_name.split(",").collect();
-        println!("query params ----{:?} search data count --- {}", exp_list, self.list.len());
+        println!(
+            "query params ----{:?} search data count --- {}",
+            exp_list,
+            self.list.len()
+        );
         for v in self.list.clone() {
             let mut is_save = false;
             for e in exp_list.clone() {
@@ -318,7 +336,13 @@ impl M3uObjectList {
         Ok(list)
     }
 
-    pub async fn check_data_new(&mut self, request_time: i32, _concurrent: i32, sort: bool, no_check: bool) {
+    pub async fn check_data_new(
+        &mut self,
+        request_time: i32,
+        _concurrent: i32,
+        sort: bool,
+        no_check: bool,
+    ) {
         let mut search_clarity = false;
         match &self.search_clarity {
             Some(_d) => search_clarity = true,
@@ -351,12 +375,8 @@ impl M3uObjectList {
                             if item.url == "" {
                                 break;
                             }
-                            let result = set_one_item(debug, item,
-                                                      request_time, search_clarity);
-                            match tx_clone.send(result) {
-                                Ok(_) => {}
-                                Err(e) => {}
-                            }
+                            let result = set_one_item(debug, item, request_time, search_clarity);
+                            tx_clone.send(result).unwrap()
                         }
                         Err(e) => {
                             println!("error ---{} ", e);
@@ -402,9 +422,7 @@ impl M3uObjectList {
         let mut lines: Vec<String> = vec![];
         let mut counter = M3uObjectListCounter::new();
         match self.counter {
-            Some(data) => {
-                counter = data
-            }
+            Some(data) => counter = data,
             None => {}
         }
         for x in &self.result_list {
@@ -502,13 +520,11 @@ fn set_one_item(
 ) -> M3uObject {
     let url = x.url.clone();
     let _log_url = url.clone();
-    let result =
-        actix_rt::System::new().block_on(check_link_is_valid(
-            url,
-            request_time as u64,
-            search_clarity,
-            debug,
-        ));
+    let result = actix_rt::System::new().block_on(check_link_is_valid(
+        url,
+        request_time as u64,
+        search_clarity,
+    ));
     if debug {
         println!("url is: {} result: {:?}", x.url.clone(), result);
     }
@@ -564,7 +580,7 @@ pub enum CheckDataStatus {
     //未检查
     Success,
     //检查成功
-    Failed,    //检查失败，包含超时、无效
+    Failed, //检查失败，包含超时、无效
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -706,7 +722,7 @@ impl AudioInfo {
 pub enum SourceType {
     Normal,
     //m3u标准文件
-    Quota,  //名称,url格式
+    Quota, //名称,url格式
 }
 
 #[allow(dead_code)]
@@ -757,9 +773,11 @@ pub mod m3u {
         };
     }
 
-
-    pub fn filter_by_keyword(list: Vec<M3uObject>, keyword_like: Vec<String>,
-                             keyword_dislike: Vec<String>) -> Vec<M3uObject> {
+    pub fn filter_by_keyword(
+        list: Vec<M3uObject>,
+        keyword_like: Vec<String>,
+        keyword_dislike: Vec<String>,
+    ) -> Vec<M3uObject> {
         if keyword_like.len() == 0 && keyword_dislike.len() == 0 {
             return list;
         }
@@ -788,8 +806,11 @@ pub mod m3u {
         save_list
     }
 
-    pub fn from_body_arr(str_arr: Vec<String>, keyword_like: Vec<String>,
-                         keyword_dislike: Vec<String>) -> M3uObjectList {
+    pub fn from_body_arr(
+        str_arr: Vec<String>,
+        keyword_like: Vec<String>,
+        keyword_dislike: Vec<String>,
+    ) -> M3uObjectList {
         let mut obj = M3uObjectList::new();
         let mut header = vec![];
         let mut list = vec![];
@@ -877,17 +898,19 @@ pub mod m3u {
         return from_body(&contents);
     }
 
-    pub async fn from_arr(_url: Vec<String>, _timeout: u64, keyword_like: Vec<String>,
-                          keyword_dislike: Vec<String>) -> M3uObjectList {
+    pub async fn from_arr(
+        _url: Vec<String>,
+        _timeout: u64,
+        keyword_like: Vec<String>,
+        keyword_dislike: Vec<String>,
+    ) -> M3uObjectList {
         let mut body_arr = vec![];
         for x in _url {
             if is_url(x.clone()) {
                 match get_url_body(x.clone(), _timeout).await {
-                    Ok(data) => {
-                        body_arr.push(data)
-                    }
+                    Ok(data) => body_arr.push(data),
                     Err(e) => {
-                        println!("url can not be open : {}", x.clone())
+                        println!("url can not be open : {}, error: {}", x.clone(), e)
                     }
                 }
             } else {
@@ -902,7 +925,7 @@ pub mod m3u {
                         body_arr.push(contents);
                     }
                     Err(e) => {
-                        println!("file {} not exists", x)
+                        println!("file {} not exists, e {}", x, e)
                     }
                 }
             }

@@ -1,7 +1,7 @@
-use std::fmt::Error;
 use crate::common::{AudioInfo, VideoInfo};
-use serde::{Deserialize, Serialize};
 use crate::{common, utils};
+use serde::{Deserialize, Serialize};
+use std::fmt::Error;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CheckUrlIsAvailableResponse {
@@ -116,8 +116,7 @@ pub mod check {
             .arg("-show_format")
             .arg("-show_streams")
             .arg(_url.to_owned())
-            .output()
-            .unwrap();
+            .output()?;
         if prob_result.status.success() {
             let res_data: Ffprobe =
                 serde_json::from_str(String::from_utf8(prob_result.stdout).unwrap().as_str())
@@ -145,14 +144,13 @@ pub mod check {
         }
         let error_str = String::from_utf8_lossy(&prob_result.stderr);
         println!("{} ffprobe error {:?}", _url.to_owned(), prob_result.stderr);
-        return Err(Error::new(ErrorKind::Other, error_str.to_string()));
+        Err(Error::new(ErrorKind::Other, error_str.to_string()))
     }
 
     pub async fn check_link_is_valid(
         _url: String,
         timeout: u64,
         need_video_info: bool,
-        debug: bool,
     ) -> Result<CheckUrlIsAvailableResponse, Error> {
         let client = reqwest::Client::builder()
             .timeout(time::Duration::from_millis(timeout))
@@ -160,60 +158,48 @@ pub mod check {
             .build()
             .unwrap();
         let curr_timestamp = Utc::now().timestamp_millis();
-        let check_data = client.get(_url.to_owned()).send().await;
-        return match check_data {
-            Ok(res) => {
-                if res.status().is_success() {
-                    let delay = Utc::now().timestamp_millis() - curr_timestamp;
-                    if need_video_info {
-                        let ffmpeg_res =
-                            get_link_info(_url.to_owned(), timeout);
-                        match ffmpeg_res {
-                            Ok(mut data) => {
-                                data.set_delay(delay as i32);
-                                return Ok(data);
-                            }
-                            Err(e) => return Err(e),
-                        };
-                    } else {
-                        return match res.text().await {
-                            Ok(_body) => {
-                                return if check_body_is_m3u8_format(_body.clone()) {
-                                    let mut body: CheckUrlIsAvailableResponse =
-                                        CheckUrlIsAvailableResponse::new();
-                                    body.set_delay(delay as i32);
-                                    Ok(body)
-                                } else {
-                                    Err(Error::new(ErrorKind::Other, "not a m3u8 file"))
-                                };
-                            }
-                            Err(e) => {
-                                Err(Error::new(ErrorKind::Other, e.to_string()))
-                            }
-                        };
-                    }
+        let res = client.get(_url.to_owned()).send().await.unwrap();
+        if res.status().is_success() {
+            let delay = Utc::now().timestamp_millis() - curr_timestamp;
+            if need_video_info {
+                let mut data = get_link_info(_url.to_owned(), timeout).unwrap();
+                data.set_delay(delay as i32);
+                Ok(data)
+            } else {
+                let _body = res.text().await.unwrap();
+                if check_body_is_m3u8_format(_body.clone()) {
+                    let mut body: CheckUrlIsAvailableResponse = CheckUrlIsAvailableResponse::new();
+                    body.set_delay(delay as i32);
+                    Ok(body)
+                } else {
+                    Err(Error::new(ErrorKind::Other, "not a m3u8 file"))
                 }
-                Err(Error::new(ErrorKind::Other, "status is not 200"))
             }
-            Err(e) => {
-                if debug {
-                    println!("http request error : {}", e);
-                }
-                Err(Error::new(ErrorKind::Other, e))
-            }
-        };
+        } else {
+            Err(Error::new(ErrorKind::Other, "status is not 200"))
+        }
     }
 }
 
-pub async fn do_check(input_files: Vec<String>, output_file: String, timeout: i32,
-                      print_result: bool, request_timeout: i32, concurrent: i32,
-                      keyword_like: Vec<String>, keyword_dislike: Vec<String>, sort: bool,
-                      no_check: bool,
+pub async fn do_check(
+    input_files: Vec<String>,
+    output_file: String,
+    timeout: i32,
+    print_result: bool,
+    request_timeout: i32,
+    concurrent: i32,
+    keyword_like: Vec<String>,
+    keyword_dislike: Vec<String>,
+    sort: bool,
+    no_check: bool,
 ) -> Result<bool, Error> {
-    let mut data =
-        common::m3u::m3u::from_arr(input_files.to_owned(), timeout as u64,
-                                   keyword_like.to_owned(), keyword_dislike.to_owned())
-            .await;
+    let mut data = common::m3u::m3u::from_arr(
+        input_files.to_owned(),
+        timeout as u64,
+        keyword_like.to_owned(),
+        keyword_dislike.to_owned(),
+    )
+    .await;
     let mut output_file = utils::get_out_put_filename(output_file.clone());
     // 拼接目录
     output_file = format!("{}{}", "./", output_file);

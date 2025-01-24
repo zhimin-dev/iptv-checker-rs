@@ -1,13 +1,15 @@
 mod common;
+mod live;
+mod search;
 mod utils;
 mod web;
-mod search;
 
+use crate::common::do_check;
+use crate::live::do_ob;
+use crate::search::do_search;
 use clap::{arg, Args as clapArgs, Parser, Subcommand};
 use std::env;
 use tempfile::tempdir;
-use crate::common::{do_check};
-use crate::search::{do_search};
 
 const DEFAULT_HTTP_PORT: u16 = 8089;
 
@@ -19,6 +21,8 @@ enum Commands {
     Check(CheckArgs),
     /// 搜索相关命令
     Fetch(FetchArgs),
+    /// 转播相关命令
+    Ob(ObArgs),
 }
 
 #[derive(clapArgs)]
@@ -30,6 +34,13 @@ pub struct FetchArgs {
     /// 是否需要检测
     #[arg(long = "check", default_value_t = false)]
     check: bool,
+}
+
+#[derive(clapArgs)]
+pub struct ObArgs {
+    /// 需要转播的链接
+    #[arg(short = 'i', long = "input-url")]
+    input_url: String,
 }
 
 #[derive(clapArgs)]
@@ -61,7 +72,6 @@ pub struct CheckArgs {
     // /// [待实现]支持sdr、hd、fhd、uhd、fuhd搜索
     // #[arg(short = 's', long = "search_clarity", default_value_t = String::from(""))]
     // search_clarity: String,
-
     /// 输出文件，如果不指定，则默认生成一个随机文件名
     #[arg(short = 'o', long = "output-file", default_value_t = String::from(""))]
     output_file: String,
@@ -160,11 +170,20 @@ pub async fn main() {
         Commands::Check(args) => {
             if args.input_file.len() > 0 {
                 println!("您输入的文件地址是: {}", args.input_file.join(","));
-                do_check(args.input_file.to_owned(), args.output_file.clone(),
-                         args.timeout as i32, true, args.timeout as i32,
-                         args.concurrency,
-                         args.keyword_like.to_owned(), args.keyword_dislike.to_owned(),
-                         args.sort, args.no_check).await.unwrap();
+                do_check(
+                    args.input_file.to_owned(),
+                    args.output_file.clone(),
+                    args.timeout as i32,
+                    true,
+                    args.timeout as i32,
+                    args.concurrency,
+                    args.keyword_like.to_owned(),
+                    args.keyword_dislike.to_owned(),
+                    args.sort,
+                    args.no_check,
+                )
+                .await
+                .unwrap();
             }
         }
         Commands::Fetch(args) => {
@@ -177,6 +196,17 @@ pub async fn main() {
                     Err(e) => {
                         println!("获取失败---{}", e)
                     }
+                }
+            }
+        }
+        Commands::Ob(args) => {
+            let data = do_ob(args.input_url.clone());
+            match data {
+                Ok(_url) => {
+                    println!("url - {}", _url.clone())
+                }
+                Err(e) => {
+                    print!("ob error - {}", e);
                 }
             }
         }
