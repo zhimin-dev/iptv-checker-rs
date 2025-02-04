@@ -1,9 +1,11 @@
 use crate::common::check::check::check_link_is_valid;
 use crate::common::m3u::m3u::do_name_sort;
+use crate::common::util::{check_url_host_ip_type, match_ipv6_format, IpAddress};
 use crate::common::CheckDataStatus::{Failed, Success, Unchecked};
 use crate::common::SourceType::{Normal, Quota};
 use crate::common::VideoType::Unknown;
 use actix_rt::time;
+use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{self, Error, Write};
@@ -256,18 +258,18 @@ impl M3uObjectList {
         self.counter = Some(counter)
     }
 
-    pub fn set_debug_mod(&mut self, debug: bool) {
-        self.debug = debug
-    }
+    // pub fn set_debug_mod(&mut self, debug: bool) {
+    //     self.debug = debug
+    // }
 
     pub async fn search(
         &self,
         search_name: String,
         full_match: bool,
-        ipv4: bool,
-        ipv6: bool,
-        exclude_url: Vec<String>,
-        exclude_host: Vec<String>,
+        _ipv4: bool,
+        _ipv6: bool,
+        _exclude_url: Vec<String>,
+        _exclude_host: Vec<String>,
     ) -> Result<Vec<M3uObject>, Error> {
         let mut list = vec![];
         let s_name = search_name.clone();
@@ -290,16 +292,17 @@ impl M3uObjectList {
                     }
                 }
             }
-            // let mut now_ip_type = 0;
-            // match v.url.clone().parse::<IpAddr>() {
-            //     Ok(IpAddr::V4(_)) => {
-            //         now_ip_type = 1; // ipv4
-            //     }
-            //     Ok(IpAddr::V6(_)) => {
-            //         now_ip_type = 2; // ipv6
-            //     }
-            //     _ => {}
-            // }
+            let mut now_ip_type;
+            let is_ipv6_format = match_ipv6_format(v.url.as_str());
+            if is_ipv6_format {
+                println!("------111");
+                now_ip_type = 2
+            } else {
+                now_ip_type = 1
+            }
+            if now_ip_type == 2 {
+                println!("now ip type {}, host: {}", now_ip_type, v.url.clone());
+            }
             // if now_ip_type == 0 {
             //     continue;
             // }
@@ -332,8 +335,13 @@ impl M3uObjectList {
                 list.push(v.clone());
             }
         }
+        let mut seen = HashSet::new();
+        let unique_list: Vec<M3uObject> = list
+            .into_iter()
+            .filter(|p| seen.insert(p.url.clone()))
+            .collect();
 
-        Ok(list)
+        Ok(unique_list)
     }
 
     pub async fn check_data_new(
@@ -567,8 +575,8 @@ impl From<String> for M3uObjectList {
         };
         let source_type = m3u::check_source_type(_str.to_owned());
         return match source_type {
-            Some(Normal) => m3u::body_normal(_str.clone()),
-            Some(Quota) => m3u::body_quota(_str.clone()),
+            Some(Normal) => m3u::body_normal(_str.clone(), false),
+            Some(Quota) => m3u::body_quota(_str.clone(), false),
             None => empty_data,
         };
     }
@@ -754,24 +762,28 @@ pub mod m3u {
         return None;
     }
 
-    pub(crate) fn body_normal(_body: String) -> M3uObjectList {
-        println!("您输入是：标准格式m3u格式文件");
+    pub(crate) fn body_normal(_body: String, not_show_input_type: bool) -> M3uObjectList {
+        if !not_show_input_type {
+            println!("您输入是：标准格式m3u格式文件");
+        }
         parse_normal_str(_body)
     }
 
-    pub(crate) fn body_quota(_body: String) -> M3uObjectList {
-        println!("您输入是：非标准格式m3u格式文件，尝试解析中");
+    pub(crate) fn body_quota(_body: String, not_show_input_type: bool) -> M3uObjectList {
+        if !not_show_input_type {
+            println!("您输入是：非标准格式m3u格式文件，尝试解析中");
+        }
         parse_quota_str(_body)
     }
 
-    pub fn from_body(_str: &String) -> M3uObjectList {
-        let source_type = check_source_type(_str.to_owned());
-        return match source_type {
-            Some(Normal) => body_normal(_str.clone()),
-            Some(Quota) => body_quota(_str.clone()),
-            None => M3uObjectList::new(),
-        };
-    }
+    // pub fn from_body(_str: &String) -> M3uObjectList {
+    //     let source_type = check_source_type(_str.to_owned());
+    //     return match source_type {
+    //         Some(Normal) => body_normal(_str.clone()),
+    //         Some(Quota) => body_quota(_str.clone()),
+    //         None => M3uObjectList::new(),
+    //     };
+    // }
 
     pub fn filter_by_keyword(
         list: Vec<M3uObject>,
@@ -810,6 +822,7 @@ pub mod m3u {
         str_arr: Vec<String>,
         keyword_like: Vec<String>,
         keyword_dislike: Vec<String>,
+        now_show_input_top: bool,
     ) -> M3uObjectList {
         let mut obj = M3uObjectList::new();
         let mut header = vec![];
@@ -818,7 +831,7 @@ pub mod m3u {
             let source_type = check_source_type(_str.to_owned());
             match source_type {
                 Some(Normal) => {
-                    let nor_data = body_normal(_str.clone());
+                    let nor_data = body_normal(_str.clone(), now_show_input_top);
                     list.extend(nor_data.clone().get_list());
                     match nor_data.get_header() {
                         Some(d) => {
@@ -828,7 +841,7 @@ pub mod m3u {
                     }
                 }
                 Some(Quota) => {
-                    let quo_data = body_quota(_str.clone());
+                    let quo_data = body_quota(_str.clone(), now_show_input_top);
                     list.extend(quo_data.clone().get_list());
                     match quo_data.get_header() {
                         Some(d) => {
@@ -884,19 +897,19 @@ pub mod m3u {
         }
     }
 
-    pub async fn from_url(_url: String, timeout: u64) -> M3uObjectList {
-        let url_body = get_url_body(_url, timeout)
-            .await
-            .expect("can not open this url");
-        return from_body(&url_body);
-    }
+    // pub async fn from_url(_url: String, timeout: u64) -> M3uObjectList {
+    //     let url_body = get_url_body(_url, timeout)
+    //         .await
+    //         .expect("can not open this url");
+    //     return from_body(&url_body);
+    // }
 
-    pub fn from_file(_file: String) -> M3uObjectList {
-        let mut data = File::open(_file).expect("file not exists");
-        let mut contents = String::from("");
-        data.read_to_string(&mut contents).unwrap();
-        return from_body(&contents);
-    }
+    // pub fn from_file(_file: String) -> M3uObjectList {
+    //     let mut data = File::open(_file).expect("file not exists");
+    //     let mut contents = String::from("");
+    //     data.read_to_string(&mut contents).unwrap();
+    //     return from_body(&contents);
+    // }
 
     pub async fn from_arr(
         _url: Vec<String>,
@@ -930,6 +943,6 @@ pub mod m3u {
                 }
             }
         }
-        from_body_arr(body_arr, keyword_like, keyword_dislike)
+        from_body_arr(body_arr, keyword_like, keyword_dislike, false)
     }
 }

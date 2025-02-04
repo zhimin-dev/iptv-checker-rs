@@ -477,6 +477,7 @@ pub async fn do_search(search_name: String, _check: bool) -> Result<Vec<String>,
                 .search(search_name.clone(), false, true, false, vec![], vec![])
                 .await
                 .expect("Failed to search");
+            println!("result count:{}", search_list.len());
             for v in search_list {
                 println!("search -{} - {}", v.clone().get_name(), v.clone().get_url());
             }
@@ -515,7 +516,7 @@ fn load_m3u_data() -> std::io::Result<M3uObjectList> {
         let content = fs::read_to_string(format!("{}{}", p, file_name.clone()))?;
         contents.push(content)
     }
-    let result = from_body_arr(contents, vec![], vec![]);
+    let result = from_body_arr(contents, vec![], vec![], true);
     Ok(result)
 }
 

@@ -1,6 +1,14 @@
 use crate::common::{M3uExt, M3uExtend, M3uObject, M3uObjectList};
 use reqwest::Error;
+use std::io;
+use std::net::{IpAddr};
 use url::Url;
+
+#[derive(Debug)]
+pub enum IpAddress {
+    Ipv4Addr,
+    Ipv6Addr,
+}
 
 pub async fn get_url_body(_url: String, timeout: u64) -> Result<String, Error> {
     let client = reqwest::Client::builder()
@@ -13,6 +21,76 @@ pub async fn get_url_body(_url: String, timeout: u64) -> Result<String, Error> {
 
 pub fn check_body_is_m3u8_format(_body: String) -> bool {
     _body.starts_with("#EXTM3U")
+}
+
+pub fn match_ipv6_format(s: &str) -> bool {
+    // 检查是否包含 IPv6 地址的典型特征：冒号
+    if !s.contains(':') {
+        return false;
+    }
+
+    // 如果包含方括号，则去掉方括号
+    let s = if s.starts_with('[') && s.ends_with(']') {
+        &s[1..s.len() - 1]
+    } else {
+        s
+    };
+
+    // 解析 URL
+    let parsed_url = Url::parse(s).unwrap();
+    // 提取主机部分
+    let host = parsed_url.host_str().unwrap();
+    // 解析为 IP 地址
+    host.parse::<std::net::Ipv6Addr>().is_ok()
+}
+
+pub fn check_url_host_ip_type(url_str: &str) -> io::Result<Option<IpAddress>> {
+    // 解析 URL
+    let parsed_url = Url::parse(url_str).unwrap();
+    // 提取主机部分
+    let host = parsed_url.host_str().unwrap();
+    // 解析为 IP 地址
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        match ip {
+            IpAddr::V4(_) => Ok(Some(IpAddress::Ipv4Addr)),
+            IpAddr::V6(_) => Ok(Some(IpAddress::Ipv6Addr)),
+        }
+    } else {
+        Ok(None)
+    }
+    // match Url::parse(url_str) {
+    //     Ok(url) => {
+    //         // 提取主机部分
+    //         let host = url.host_str().unwrap();
+    //
+    //         // 尝试解析主机地址
+    //         match host.to_socket_addrs() {
+    //             Ok(addresses) => {
+    //                 for address in addresses {
+    //                     match address {
+    //                         std::net::SocketAddr::V4(_) => {
+    //                             return Some(IpAddress::Ipv4Addr);
+    //                         },
+    //                         std::net::SocketAddr::V6(_) => {
+    //                             return Some(IpAddress::Ipv6Addr);
+    //                         },
+    //                         _ => {
+    //                             return  None;
+    //                         },
+    //                     }
+    //                 }
+    //             }
+    //             Err(e) => {
+    //                 println!("Failed to resolve host: {}", e);
+    //                 None
+    //             }
+    //         }
+    //     }
+    //     Err(e) => {
+    //         println!("Invalid URL: {}", e);
+    //         None
+    //     }
+    // }
 }
 
 pub fn parse_normal_str(_body: String) -> M3uObjectList {

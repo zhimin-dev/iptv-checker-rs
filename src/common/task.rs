@@ -50,9 +50,9 @@ impl TaskInfo {
         self.run_type = run_type
     }
 
-    pub fn set_status(&mut self, stats: TaskStatus) {
-        self.task_status = stats
-    }
+    // pub fn set_status(&mut self, stats: TaskStatus) {
+    //     self.task_status = stats
+    // }
 
     pub fn set_next_run_time(&mut self, time: i32) {
         self.next_run_time = time
@@ -384,10 +384,10 @@ impl TaskManager {
             }
         }
         drop(tasks);
-        if let Ok(res) = self.save_tasks() {
+        if let Ok(_) = self.save_tasks() {
             return true;
         }
-        return false;
+        false
     }
 
     pub fn run_task(&self, id: String) -> Result<bool> {
@@ -455,17 +455,17 @@ impl TaskManager {
         save_tasks_to_file(&*tasks)
     }
 
-    pub fn update_task_status(&self, id: String, status: TaskStatus) -> Result<bool> {
-        let mut tasks = self.tasks.lock().unwrap();
-        if let Some(task) = tasks.get_mut(&id) {
-            task.task_info.set_status(status);
-            drop(tasks);
-            self.save_tasks()?;
-            Ok(true)
-        } else {
-            Ok(false)
-        }
-    }
+    // pub fn update_task_status(&self, id: String, status: TaskStatus) -> Result<bool> {
+    //     let mut tasks = self.tasks.lock().unwrap();
+    //     if let Some(task) = tasks.get_mut(&id) {
+    //         task.task_info.set_status(status);
+    //         drop(tasks);
+    //         self.save_tasks()?;
+    //         Ok(true)
+    //     } else {
+    //         Ok(false)
+    //     }
+    // }
 
     pub fn update_task_info(&self, id: String, task_info: TaskInfo) -> Result<bool> {
         let mut tasks = self.tasks.lock().unwrap();

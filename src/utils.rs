@@ -3,7 +3,6 @@ use rand::Rng;
 use std::fs;
 use std::fs::File;
 use std::io::{Error, ErrorKind, Read};
-use std::net::IpAddr;
 use std::process::Command;
 
 pub fn get_out_put_filename(output_file: String) -> String {
@@ -14,17 +13,13 @@ pub fn get_out_put_filename(output_file: String) -> String {
     filename
 }
 
-pub fn convert_string_to_err(s: String) -> Result<(), String> {
-    Err(s)
-}
-
-pub fn check_ip_address(ip: &str) -> Result<&'static str, &'static str> {
-    match ip.parse::<IpAddr>() {
-        Ok(IpAddr::V4(_)) => Ok("IPv4"),
-        Ok(IpAddr::V6(_)) => Ok("IPv6"),
-        Err(_) => Err("Invalid IP address format"),
-    }
-}
+// pub fn check_ip_address(ip: &str) -> Result<&'static str, &'static str> {
+//     match ip.parse::<IpAddr>() {
+//         Ok(IpAddr::V4(_)) => Ok("IPv4"),
+//         Ok(IpAddr::V6(_)) => Ok("IPv6"),
+//         Err(_) => Err("Invalid IP address format"),
+//     }
+// }
 
 fn get_random_output_filename() -> String {
     let rng = rand::thread_rng();
