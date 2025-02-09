@@ -1,11 +1,15 @@
 mod common;
+mod live;
+mod search;
 mod utils;
 mod web;
 
+use crate::common::do_check;
+use crate::live::do_ob;
+use crate::search::{clear_search_folder, do_search};
 use clap::{arg, Args as clapArgs, Parser, Subcommand};
 use std::env;
 use tempfile::tempdir;
-use crate::common::do_check;
 
 const DEFAULT_HTTP_PORT: u16 = 8089;
 
@@ -15,6 +19,32 @@ enum Commands {
     Web(WebArgs),
     /// 检查相关命令
     Check(CheckArgs),
+    /// 搜索相关命令
+    Fetch(FetchArgs),
+    /// 转播相关命令
+    Ob(ObArgs),
+}
+
+#[derive(clapArgs)]
+pub struct FetchArgs {
+    /// 搜索频道名称,如果有别名，用英文逗号分隔
+    #[arg(long = "search", default_value_t = String::from(""))]
+    search: String,
+
+    /// 是否需要生成缩略图
+    #[arg(long = "thumbnail", default_value_t = false)]
+    thumbnail: bool,
+
+    /// 清理资源池
+    #[arg(long = "clear", default_value_t = false)]
+    clear: bool,
+}
+
+#[derive(clapArgs)]
+pub struct ObArgs {
+    /// 需要转播的链接
+    #[arg(short = 'i', long = "input-url")]
+    input_url: String,
 }
 
 #[derive(clapArgs)]
@@ -46,7 +76,6 @@ pub struct CheckArgs {
     // /// [待实现]支持sdr、hd、fhd、uhd、fuhd搜索
     // #[arg(short = 's', long = "search_clarity", default_value_t = String::from(""))]
     // search_clarity: String,
-
     /// 输出文件，如果不指定，则默认生成一个随机文件名
     #[arg(short = 'o', long = "output-file", default_value_t = String::from(""))]
     output_file: String,
@@ -74,6 +103,18 @@ pub struct CheckArgs {
     /// 频道排序
     #[arg(long = "sort", default_value_t = false)]
     sort: bool,
+
+    /// 是否不需要检查
+    #[arg(long = "no_check", default_value_t = false)]
+    no_check: bool,
+
+    /// 去掉无用的字段
+    #[arg(long = "rename", default_value_t = false)]
+    rename: bool,
+
+    /// 使用ffmpeg检查
+    #[arg(long = "ffmpeg_check", default_value_t = false)]
+    ffmpeg_check: bool,
 }
 
 #[derive(Parser)]
@@ -93,7 +134,7 @@ fn get_pid_file() -> String {
             return a.to_owned();
         }
     }
-    return String::default();
+    String::default()
 }
 
 async fn start_daemonize_web(pid_name: &String, port: u16) {
@@ -141,11 +182,54 @@ pub async fn main() {
         Commands::Check(args) => {
             if args.input_file.len() > 0 {
                 println!("您输入的文件地址是: {}", args.input_file.join(","));
-                do_check(args.input_file.to_owned(), args.output_file.clone(),
-                         args.timeout as i32, true, args.timeout as i32,
-                         args.concurrency,
-                         args.keyword_like.to_owned(), args.keyword_dislike.to_owned(),
-                         args.sort, false).await.unwrap();
+                do_check(
+                    args.input_file.to_owned(),
+                    args.output_file.clone(),
+                    args.timeout as i32,
+                    true,
+                    args.timeout as i32,
+                    args.concurrency,
+                    args.keyword_like.to_owned(),
+                    args.keyword_dislike.to_owned(),
+                    args.sort,
+                    args.no_check,
+                    args.rename,
+                    args.ffmpeg_check,
+                )
+                    .await
+                    .unwrap();
+            }
+        }
+        Commands::Fetch(args) => {
+            if args.clear {
+                if let Ok(_) = clear_search_folder() {
+                    println!("clear success 😄")
+                } else {
+                    println!("clear failed 😞")
+                }
+            } else {
+                if args.search.len() > 0 {
+                    let data = do_search(args.search.clone(), args.thumbnail).await;
+                    match data {
+                        Ok(data) => {
+                            println!("{:?}", data)
+                        }
+                        Err(e) => {
+                            println!("获取失败---{}", e)
+                        }
+                    }
+                }
+            }
+        }
+        Commands::Ob(args) => {
+            let data = do_ob(args.input_url.clone());
+            match data {
+                Ok(_url) => {
+                    println!("url - {}", _url.clone())
+                }
+                Err(e) => {
+                    print!("ob error - {}", e);
+                }
             }
         }
     }

@@ -4,6 +4,7 @@ use std::fs;
 use std::fs::File;
 use std::io::{Error, ErrorKind, Read};
 use std::process::Command;
+use regex::Regex;
 
 pub fn get_out_put_filename(output_file: String) -> String {
     let mut filename = output_file.clone();
@@ -13,9 +14,13 @@ pub fn get_out_put_filename(output_file: String) -> String {
     filename
 }
 
-pub fn convert_string_to_err(s: String) -> Result<(), String> {
-    Err(s)
-}
+// pub fn check_ip_address(ip: &str) -> Result<&'static str, &'static str> {
+//     match ip.parse::<IpAddr>() {
+//         Ok(IpAddr::V4(_)) => Ok("IPv4"),
+//         Ok(IpAddr::V6(_)) => Ok("IPv6"),
+//         Err(_) => Err("Invalid IP address format"),
+//     }
+// }
 
 fn get_random_output_filename() -> String {
     let rng = rand::thread_rng();
@@ -48,8 +53,41 @@ pub fn file_exists(file_path: &String) -> bool {
     }
 }
 
+pub fn remove_other_char(str: String) -> String {
+    let regex = Regex::new(r"(?m)(\d+\s)?\[\w+\]").unwrap();
+    // result will be an iterator over tuples containing the start and end indices for each match in the string
+    let result = regex.captures_iter(&str);
+
+    for mat in result {
+        if mat.len() >= 1 {
+            return str.replace(mat.get(0).unwrap().as_str(), "");
+        }
+    }
+    str
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::utils::{get_random_output_filename, remove_other_char};
+
+    #[tokio::test]
+    async fn test_str() {
+        println!("{}", remove_other_char("213123 [HD]这是".to_string()));
+        println!("{}", remove_other_char("[HD]这是".to_string()));
+        println!("{}", remove_other_char("[HD]cctv".to_string()));
+    }
+}
+
+pub fn folder_exists(file_path: &String) -> bool {
+    if let Ok(metadata) = fs::metadata(file_path) {
+        metadata.is_dir()
+    } else {
+        false
+    }
+}
+
 // 如果pid文件存在，需要将之前的pid删除，然后才能启动新的pid
-pub fn check_pid_exits(pid_name:&String) {
+pub fn check_pid_exits(pid_name: &String) {
     if file_exists(pid_name) {
         let num = read_pid_num(pid_name).expect("获取pid失败");
         let has_process = check_process(num).expect("检查pid失败");
@@ -67,7 +105,7 @@ fn kill_process(pid: u32) {
         .expect("Failed to execute command");
 }
 
-pub fn read_pid_num(pid_name:&String ) -> Result<u32, Error> {
+pub fn read_pid_num(pid_name: &String) -> Result<u32, Error> {
     match read_pid_contents(pid_name.clone()) {
         Ok(contents) => {
             let mut n_contents = contents;
@@ -78,5 +116,13 @@ pub fn read_pid_num(pid_name:&String ) -> Result<u32, Error> {
             }
         }
         Err(e) => Err(e),
+    }
+}
+
+pub fn create_folder(folder_name: &String) -> Result<(), Error> {
+    if !folder_exists(folder_name) {
+        fs::create_dir(folder_name)
+    } else {
+        Ok(())
     }
 }
