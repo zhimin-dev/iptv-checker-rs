@@ -6,7 +6,7 @@ mod web;
 
 use crate::common::do_check;
 use crate::live::do_ob;
-use crate::search::do_search;
+use crate::search::{clear_search_folder, do_search};
 use clap::{arg, Args as clapArgs, Parser, Subcommand};
 use std::env;
 use tempfile::tempdir;
@@ -31,9 +31,13 @@ pub struct FetchArgs {
     #[arg(long = "search", default_value_t = String::from(""))]
     search: String,
 
-    /// 是否需要检测
-    #[arg(long = "check", default_value_t = false)]
-    check: bool,
+    /// 是否需要生成缩略图
+    #[arg(long = "thumbnail", default_value_t = false)]
+    thumbnail: bool,
+
+    /// 清理资源池
+    #[arg(long = "clear", default_value_t = false)]
+    clear: bool,
 }
 
 #[derive(clapArgs)]
@@ -103,6 +107,10 @@ pub struct CheckArgs {
     /// 是否不需要检查
     #[arg(long = "no_check", default_value_t = false)]
     no_check: bool,
+
+    /// 去掉无用的字段
+    #[arg(long = "rename", default_value_t = false)]
+    rename: bool,
 }
 
 #[derive(Parser)]
@@ -181,20 +189,29 @@ pub async fn main() {
                     args.keyword_dislike.to_owned(),
                     args.sort,
                     args.no_check,
+                    args.rename,
                 )
-                .await
-                .unwrap();
+                    .await
+                    .unwrap();
             }
         }
         Commands::Fetch(args) => {
-            if args.search.len() > 0 {
-                let data = do_search(args.search.clone(), args.check).await;
-                match data {
-                    Ok(data) => {
-                        println!("{:?}", data)
-                    }
-                    Err(e) => {
-                        println!("获取失败---{}", e)
+            if args.clear {
+                if let Ok(_) = clear_search_folder() {
+                    println!("clear success 😄")
+                } else {
+                    println!("clear failed 😞")
+                }
+            } else {
+                if args.search.len() > 0 {
+                    let data = do_search(args.search.clone(), args.thumbnail).await;
+                    match data {
+                        Ok(data) => {
+                            println!("{:?}", data)
+                        }
+                        Err(e) => {
+                            println!("获取失败---{}", e)
+                        }
                     }
                 }
             }

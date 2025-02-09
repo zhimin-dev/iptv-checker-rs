@@ -1,12 +1,16 @@
 use crate::common::m3u::m3u::from_body_arr;
-use crate::common::{M3uObject, M3uObjectList};
-use crate::utils::create_folder;
+use crate::common::{M3uExtend, M3uObject, M3uObjectList};
+use crate::utils::{create_folder, folder_exists};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fmt::Error;
+use std::fmt::{format, Error};
 use std::fs;
 use std::io::Write;
+use crate::common::check::check::{check_link_is_valid, get_link_info};
+use crate::common::CheckDataStatus::{Failed, Success};
+use crate::common::cmd::capture_stream_pic;
+use crate::common::task::md5_str;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GithubPageProps {
@@ -379,7 +383,7 @@ async fn init_search_data() -> Result<(), Error> {
                     fetch_values.include_files.clone(),
                     config.valid_extensions.clone(),
                 )
-                .await;
+                    .await;
                 println!("{:?}", m3u_and_txt_files);
                 // 下载m3u文件
                 for _url in m3u_and_txt_files {
@@ -404,7 +408,7 @@ async fn init_search_data() -> Result<(), Error> {
                     fetch_values.include_files.clone(),
                     config.valid_extensions.clone(),
                 )
-                .await;
+                    .await;
                 println!("{:?}", m3u_and_txt_files);
                 // 下载m3u文件
                 for _url in m3u_and_txt_files {
@@ -422,6 +426,25 @@ async fn init_search_data() -> Result<(), Error> {
                     }
                 }
             }
+        } else if fetch_values.parse_type.eq("raw-source") {
+            for url in fetch_values.urls {
+                let mut ext = ".m3u";
+                if url.contains(".txt") {
+                    ext = ".txt"
+                }
+                let save_name = format!("./static/input/search/400-{}{}", i, ext);
+                i += 1;
+                let save_status =
+                    download_target_files(url.clone(), save_name.to_string()).await;
+                match save_status {
+                    Ok(()) => {
+                        println!("file save success");
+                    }
+                    Err(e) => {
+                        println!("file save failed: {}", e);
+                    }
+                }
+            }
         }
     }
     Ok(())
@@ -432,7 +455,7 @@ async fn download_target_files(_url: String, save_path: String) -> Result<(), Er
         .await
         .expect("Failed to get body");
     // 创建一个新文件，如果文件已存在，则会覆盖它
-    let mut file = std::fs::File::create(save_path).expect("file create failed"); // 使用 ? 运算符处理可能的错误
+    let mut file = fs::File::create(save_path).expect("file create failed");
 
     // 将字符串内容写入文件
     file.write_all(contents.as_bytes())
@@ -468,31 +491,30 @@ fn read_search_configs() -> Result<ConfigSearch, Error> {
     Ok(config_list)
 }
 
-pub async fn do_search(search_name: String, _check: bool) -> Result<Vec<String>, Error> {
-    println!("check {}", _check);
+pub async fn do_search(search_name: String, thumbnail: bool) -> Result<Vec<M3uObject>, Error> {
     match init_search_data().await {
         Ok(()) => {
             let m3u_data = load_m3u_data().expect("load m3u data failed");
-            let search_list = m3u_data
+            let mut search_list = m3u_data
                 .search(search_name.clone(), false, true, false, vec![], vec![])
                 .await
                 .expect("Failed to search");
             println!("result count:{}", search_list.len());
-            for v in search_list {
-                println!("search -{} - {}", v.clone().get_name(), v.clone().get_url());
+            let mut res_list;
+            if thumbnail {
+                // 通过ffmpeg生成缩略图以及其他信息
+                res_list = generate_channel_thumbnail(search_list.clone()).await;
+            } else {
+                res_list = search_list
             }
-            // 将内存中的数据搜索出来
-            // let list = search_channel(m3u_data, check).await.expect("Failed to get search channel");
-            // // 通过ffmpeg生成缩略图以及其他信息
-            // let t_list = generate_channel_thumbnail(list).await.expect("Failed to generate channel thumbnail");
             // 返回数据
-            Ok(vec![])
+            Ok(res_list)
         }
-        _ => Ok(vec![search_name]),
+        _ => Ok(vec![]),
     }
 }
 
-fn clear_search_folder() -> std::io::Result<()> {
+pub fn clear_search_folder() -> std::io::Result<()> {
     let p = "./static/input/search/";
     fs::remove_dir_all(p)?;
     println!("Deleted directory: {}", p);
@@ -516,7 +538,7 @@ fn load_m3u_data() -> std::io::Result<M3uObjectList> {
         let content = fs::read_to_string(format!("{}{}", p, file_name.clone()))?;
         contents.push(content)
     }
-    let result = from_body_arr(contents, vec![], vec![], true);
+    let result = from_body_arr(contents, vec![], vec![], true, true);
     Ok(result)
 }
 
@@ -527,8 +549,46 @@ async fn search_channel(search_name: String, check: bool) -> Result<Vec<String>,
     Ok(list)
 }
 
-async fn generate_channel_thumbnail(channel_list: Vec<String>) -> Result<Vec<String>, Error> {
+use chrono::{Local, Datelike};
+
+fn generate_channel_thumbnail_folder_name() -> String {
+    // 获取当前本地时间
+    let now = Local::now();
+
+    // 获取年、月、日
+    let year = now.year();
+    let month = now.month();
+    let day = now.day();
+    let folder = format!("./static/output/thumbnail/{}{}{}/", year, month, day);
+    if !folder_exists(&folder) {
+        fs::create_dir_all(folder.clone()).unwrap()
+    }
+    folder
+}
+
+async fn generate_channel_thumbnail(mut channel_list: Vec<M3uObject>) -> Vec<M3uObject> {
     println!("channel_list len {}", channel_list.len());
-    let list = vec![];
-    Ok(list)
+    for v in &mut channel_list {
+        // if v.get_status() == Success {
+        let img_url = format!("{}/{}.jpeg", generate_channel_thumbnail_folder_name(), md5_str(v.get_url()));
+        let succ = capture_stream_pic(v.get_url(), img_url.clone());
+        if succ {
+            let mut extend;
+            match v.get_extend() {
+                None => {
+                    extend = M3uExtend::new();
+                }
+                Some(data) => {
+                    extend = data.clone()
+                }
+            }
+            extend.set_thumbnail(img_url);
+            v.set_status(Success);
+            v.set_extend(extend);
+        } else {
+            v.set_status(Failed);
+        }
+        // }
+    }
+    channel_list
 }

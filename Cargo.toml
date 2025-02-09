@@ -18,7 +18,7 @@ chrono = "0.4.31"
 openssl = { version = "0.10.61", features = ["vendored"] }
 clap = { version = "4.4.11", features = ["derive"] }
 time = "0.3.30"
-tokio = "1.35.0"
+tokio = { version = "1.35.0", features = ["full", "macros"] }
 nix = "0.27.1"
 log = "0.4.20"
 url = "2.5.0"
@@ -30,6 +30,8 @@ uuid = { version = "0.8", features = ["v4"] }
 md5 = "0.7.0"
 clokwerk = { version = "0.3.5" }
 actix-multipart = "0.6.1"
+bytes = "1.8.0"
+byteorder = "1.5.0"
 
 [target.'cfg(windows)'.dependencies]
 # 只在Windows平台上使用的依赖项

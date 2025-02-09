@@ -13,20 +13,19 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
+use crate::utils::remove_other_char;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct M3uExtend {
-    group_title: String,
-    //group title
-    tv_logo: String,
-    //台标
-    tv_language: String,
-    //语言
-    tv_country: String,
-    //国家
-    tv_id: String,
-    //电视id
+    group_title: String, //group title
+    tv_logo: String, //台标
+    tv_language: String, //语言
+    tv_country: String, //国家
+    tv_id: String, //电视id
     user_agent: String, // user-agent
+    thumbnail: Option<String>, //缩略图
+    video_width: u32, //视频宽
+    video_height: u32, // 视频高
 }
 
 impl M3uExtend {
@@ -38,6 +37,9 @@ impl M3uExtend {
             tv_country: "".to_string(),
             tv_id: "".to_string(),
             user_agent: "".to_string(),
+            thumbnail: None,
+            video_width: 0,
+            video_height: 0,
         }
     }
 
@@ -47,6 +49,10 @@ impl M3uExtend {
 
     pub fn set_tv_logo(&mut self, tv_logo: String) {
         self.tv_logo = tv_logo
+    }
+
+    pub fn set_thumbnail(&mut self, thumbnail: String) {
+        self.thumbnail = Some(thumbnail)
     }
 
     pub fn set_tv_language(&mut self, tv_language: String) {
@@ -101,6 +107,22 @@ impl M3uObject {
 
     pub fn set_index(&mut self, index: i32) {
         self.index = index;
+    }
+
+    pub fn get_status(&self) -> CheckDataStatus {
+        self.status.clone()
+    }
+
+    pub fn get_extend(&self) -> Option<M3uExtend> {
+        self.extend.clone()
+    }
+
+    pub fn rename_name(&mut self) {
+        let name = self.name.clone();
+        let rename = remove_other_char(self.search_name.clone());
+        self.search_name = rename.clone();
+        self.name = rename.clone();
+        self.raw = self.raw.replace(name.clone().as_str(), rename.clone().as_str());
     }
 
     pub fn set_url(&mut self, url: String) {
@@ -243,6 +265,8 @@ impl M3uObjectList {
     pub fn get_list(self) -> Vec<M3uObject> {
         self.list
     }
+
+    pub fn rename(mut self) {}
 
     pub fn get_header(self) -> Option<M3uExt> {
         self.header
@@ -418,12 +442,16 @@ impl M3uObjectList {
             }
         } else {
             let total = self.list.len();
+            for item in &mut self.list {
+                item.set_status(Success);
+            }
             println!("文件中源总数： {}", total);
             self.result_list = self.list.clone()
         }
         if sort {
             self.result_list = do_name_sort(self.result_list.clone());
         }
+        println!("result_list----{}", self.result_list.len());
     }
 
     pub async fn output_file(&mut self, output_file: String) {
@@ -741,6 +769,7 @@ pub mod m3u {
     use core::option::Option;
     use std::fs::File;
     use std::io::Read;
+    use crate::utils::remove_other_char;
 
     pub fn check_source_type(_body: String) -> Option<SourceType> {
         if _body.starts_with("#EXTM3U") {
@@ -786,11 +815,20 @@ pub mod m3u {
     // }
 
     pub fn filter_by_keyword(
-        list: Vec<M3uObject>,
+        mut list: Vec<M3uObject>,
         keyword_like: Vec<String>,
         keyword_dislike: Vec<String>,
+        rename: bool,
     ) -> Vec<M3uObject> {
+        if rename {
+            println!("处理rename--start");
+            for item in &mut list {
+                item.rename_name();
+            }
+            println!("处理rename--end");
+        }
         if keyword_like.len() == 0 && keyword_dislike.len() == 0 {
+            println!("-----len {}", list.len());
             return list;
         }
         let mut save_list = vec![];
@@ -815,6 +853,7 @@ pub mod m3u {
                 save_list.push(i);
             }
         }
+        println!("-----len {}", save_list.len());
         save_list
     }
 
@@ -823,6 +862,7 @@ pub mod m3u {
         keyword_like: Vec<String>,
         keyword_dislike: Vec<String>,
         now_show_input_top: bool,
+        rename: bool,
     ) -> M3uObjectList {
         let mut obj = M3uObjectList::new();
         let mut header = vec![];
@@ -853,7 +893,8 @@ pub mod m3u {
                 None => {}
             };
         }
-        let save_keyword = filter_by_keyword(list, keyword_like, keyword_dislike);
+        let save_keyword = filter_by_keyword(list, keyword_like, keyword_dislike, rename);
+        println!("save_keyword -----len {}", save_keyword.len());
         obj.set_list(save_keyword);
         return obj;
     }
@@ -916,6 +957,7 @@ pub mod m3u {
         _timeout: u64,
         keyword_like: Vec<String>,
         keyword_dislike: Vec<String>,
+        rename: bool,
     ) -> M3uObjectList {
         let mut body_arr = vec![];
         for x in _url {
@@ -943,6 +985,6 @@ pub mod m3u {
                 }
             }
         }
-        from_body_arr(body_arr, keyword_like, keyword_dislike, false)
+        from_body_arr(body_arr, keyword_like, keyword_dislike, false, rename)
     }
 }

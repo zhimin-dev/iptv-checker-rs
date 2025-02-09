@@ -4,6 +4,7 @@ use std::fs;
 use std::fs::File;
 use std::io::{Error, ErrorKind, Read};
 use std::process::Command;
+use regex::Regex;
 
 pub fn get_out_put_filename(output_file: String) -> String {
     let mut filename = output_file.clone();
@@ -49,6 +50,31 @@ pub fn file_exists(file_path: &String) -> bool {
         metadata.is_file()
     } else {
         false
+    }
+}
+
+pub fn remove_other_char(str: String) -> String {
+    let regex = Regex::new(r"(?m)(\d+\s)?\[\w+\]").unwrap();
+    // result will be an iterator over tuples containing the start and end indices for each match in the string
+    let result = regex.captures_iter(&str);
+
+    for mat in result {
+        if mat.len() >= 1 {
+            return str.replace(mat.get(0).unwrap().as_str(), "");
+        }
+    }
+    str
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::utils::{get_random_output_filename, remove_other_char};
+
+    #[tokio::test]
+    async fn test_str() {
+        println!("{}", remove_other_char("213123 [HD]这是".to_string()));
+        println!("{}", remove_other_char("[HD]这是".to_string()));
+        println!("{}", remove_other_char("[HD]cctv".to_string()));
     }
 }
 

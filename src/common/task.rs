@@ -89,12 +89,14 @@ pub struct TaskContent {
     // 是否不检查
     #[serde(default)]
     no_check: bool,
+    #[serde(default)]
+    rename: bool,
 }
 
 const DEFAULT_TIMEOUT: i32 = 30000;
 const DEFAULT_CONCURRENT: i32 = 30;
 
-fn md5_str(input: String) -> String {
+pub fn md5_str(input: String) -> String {
     let digest = md5::compute(input);
 
     format!("{:x}", digest)
@@ -114,6 +116,7 @@ impl TaskContent {
             sort: false,
             concurrent: 1,
             no_check: false,
+            rename: false,
         }
     }
 
@@ -323,6 +326,7 @@ impl Task {
         let concurrent = self.clone().original.get_current();
         let no_check = self.clone().original.no_check;
         let check_timeout = self.clone().original.get_check_timeout();
+        let rename = self.clone().original.rename;
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -340,8 +344,9 @@ impl Task {
                 keyword_dislike.clone(),
                 sort,
                 no_check,
+                rename,
             )
-            .await;
+                .await;
             println!("end taskId: {}", task_id);
         });
         self.task_info.task_status = TaskStatus::Pending;
