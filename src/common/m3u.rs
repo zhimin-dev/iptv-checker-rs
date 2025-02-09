@@ -374,6 +374,7 @@ impl M3uObjectList {
         _concurrent: i32,
         sort: bool,
         no_check: bool,
+        ffmpeg_check: bool,
     ) {
         let mut search_clarity = false;
         match &self.search_clarity {
@@ -407,7 +408,7 @@ impl M3uObjectList {
                             if item.url == "" {
                                 break;
                             }
-                            let result = set_one_item(debug, item, request_time, search_clarity);
+                            let result = set_one_item(debug, item, request_time, search_clarity, ffmpeg_check);
                             tx_clone.send(result).unwrap()
                         }
                         Err(e) => {
@@ -451,7 +452,6 @@ impl M3uObjectList {
         if sort {
             self.result_list = do_name_sort(self.result_list.clone());
         }
-        println!("result_list----{}", self.result_list.len());
     }
 
     pub async fn output_file(&mut self, output_file: String) {
@@ -553,6 +553,7 @@ fn set_one_item(
     mut x: M3uObject,
     request_time: i32,
     search_clarity: bool,
+    ffmpeg_check: bool,
 ) -> M3uObject {
     let url = x.url.clone();
     let _log_url = url.clone();
@@ -560,6 +561,7 @@ fn set_one_item(
         url,
         request_time as u64,
         search_clarity,
+        ffmpeg_check,
     ));
     if debug {
         println!("url is: {} result: {:?}", x.url.clone(), result);
@@ -612,19 +614,15 @@ impl From<String> for M3uObjectList {
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
 pub enum CheckDataStatus {
-    Unchecked,
-    //未检查
-    Success,
-    //检查成功
+    Unchecked, //未检查
+    Success, //检查成功
     Failed, //检查失败，包含超时、无效
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct OtherStatus {
-    video: Option<VideoInfo>,
-    //视频信息
-    audio: Option<AudioInfo>,
-    //音频信息
+    video: Option<VideoInfo>, //视频信息
+    audio: Option<AudioInfo>, //音频信息
     network: Option<NetworkInfo>, //网路状态信息
 }
 
@@ -821,14 +819,11 @@ pub mod m3u {
         rename: bool,
     ) -> Vec<M3uObject> {
         if rename {
-            println!("处理rename--start");
             for item in &mut list {
                 item.rename_name();
             }
-            println!("处理rename--end");
         }
         if keyword_like.len() == 0 && keyword_dislike.len() == 0 {
-            println!("-----len {}", list.len());
             return list;
         }
         let mut save_list = vec![];
@@ -853,7 +848,6 @@ pub mod m3u {
                 save_list.push(i);
             }
         }
-        println!("-----len {}", save_list.len());
         save_list
     }
 
@@ -894,7 +888,6 @@ pub mod m3u {
             };
         }
         let save_keyword = filter_by_keyword(list, keyword_like, keyword_dislike, rename);
-        println!("save_keyword -----len {}", save_keyword.len());
         obj.set_list(save_keyword);
         return obj;
     }

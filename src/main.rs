@@ -111,6 +111,10 @@ pub struct CheckArgs {
     /// 去掉无用的字段
     #[arg(long = "rename", default_value_t = false)]
     rename: bool,
+
+    /// 使用ffmpeg检查
+    #[arg(long = "ffmpeg_check", default_value_t = false)]
+    ffmpeg_check: bool,
 }
 
 #[derive(Parser)]
@@ -190,6 +194,7 @@ pub async fn main() {
                     args.sort,
                     args.no_check,
                     args.rename,
+                    args.ffmpeg_check,
                 )
                     .await
                     .unwrap();

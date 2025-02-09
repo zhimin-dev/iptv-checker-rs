@@ -50,7 +50,7 @@ async fn check_url_is_available(req: web::Query<CheckUrlIsAvailableRequest>) -> 
     if let Some(i) = req.timeout {
         timeout = i;
     }
-    let res = check::check::check_link_is_valid(req.url.to_owned(), timeout as u64, true);
+    let res = check::check::check_link_is_valid(req.url.to_owned(), timeout as u64, true, false);
     match res.await {
         Ok(data) => {
             let obj = serde_json::to_string(&data).unwrap();

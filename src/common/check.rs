@@ -145,7 +145,7 @@ pub mod check {
             return Ok(body);
         }
         let error_str = String::from_utf8_lossy(&prob_result.stderr);
-        println!("{} ffprobe error {:?}", _url.to_owned(), prob_result.stderr);
+        // println!("{} ffprobe error {:?}", _url.to_owned(), prob_result.stderr);
         Err(Error::new(ErrorKind::Other, error_str.to_string()))
     }
 
@@ -153,7 +153,19 @@ pub mod check {
         _url: String,
         timeout: u64,
         need_video_info: bool,
+        ffmpeg_check: bool,
     ) -> Result<CheckUrlIsAvailableResponse, Error> {
+        if ffmpeg_check {
+            let res = get_link_info(_url.to_owned(), timeout * 1000);
+            return match res {
+                Ok(res) => {
+                    Ok(res)
+                }
+                Err(e) => {
+                    Err(Error::new(ErrorKind::Other, format!("status is not 200 {}", e)))
+                }
+            };
+        }
         let client = reqwest::Client::builder()
             .timeout(time::Duration::from_millis(timeout))
             .danger_accept_invalid_certs(true)
@@ -164,7 +176,7 @@ pub mod check {
         if res.status().is_success() {
             let delay = Utc::now().timestamp_millis() - curr_timestamp;
             if need_video_info {
-                let mut data = get_link_info(_url.to_owned(), timeout).unwrap();
+                let mut data = get_link_info(_url.to_owned(), timeout * 1000).unwrap();
                 data.set_delay(delay as i32);
                 Ok(data)
             } else {
@@ -195,6 +207,7 @@ pub async fn do_check(
     sort: bool,
     no_check: bool,
     rename: bool,
+    ffmpeg_check: bool,
 ) -> Result<bool, Error> {
     let mut data = common::m3u::m3u::from_arr(
         input_files.to_owned(),
@@ -210,7 +223,7 @@ pub async fn do_check(
     if print_result {
         println!("输出文件: {}", output_file);
     }
-    data.check_data_new(request_timeout, concurrent, sort, no_check)
+    data.check_data_new(request_timeout, concurrent, sort, no_check, ffmpeg_check)
         .await;
     data.output_file(output_file).await;
     if print_result {
@@ -264,7 +277,7 @@ async fn check_rtmp_socket(address: &str) -> Result<bool, std::io::Error> {
     match stream.read_exact(&mut s0_packet).await {
         Ok(_) => {
             println!("接收 S0 包成功, 版本: 0x{:X}", s0_packet[0]);
-        },
+        }
         Err(e) => {
             eprintln!("接收 S0 包失败: {}", e);
             return Ok(false);
@@ -275,7 +288,7 @@ async fn check_rtmp_socket(address: &str) -> Result<bool, std::io::Error> {
     match stream.read_exact(&mut s1_packet).await {
         Ok(_) => {
             println!("接收 S1 包成功, 前 4 字节 (时间戳/时间): {:?}", &s1_packet[0..4]);
-        },
+        }
         Err(e) => {
             eprintln!("接收 S1 包失败: {}", e);
             return Ok(false);
@@ -286,7 +299,7 @@ async fn check_rtmp_socket(address: &str) -> Result<bool, std::io::Error> {
     match stream.read_exact(&mut s2_packet).await {
         Ok(_) => {
             println!("接收 S2 包成功, 前 4 字节: {:?}", &s2_packet[0..4]);
-        },
+        }
         Err(e) => {
             eprintln!("接收 S2 包失败: {}", e);
             return Ok(false);
@@ -411,7 +424,7 @@ mod tests {
                 } else {
                     println!("RTMP 路徑初步判斷為不存在");
                 }
-            },
+            }
             Err(e) => {
                 eprintln!("檢查過程中發生錯誤: {}", e);
                 println!("RTMP 路徑初步判斷為不存在 (發生錯誤)");

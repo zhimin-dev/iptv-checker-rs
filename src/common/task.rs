@@ -91,6 +91,9 @@ pub struct TaskContent {
     no_check: bool,
     #[serde(default)]
     rename: bool,
+
+    #[serde(default)]
+    ffmpeg_check: bool,
 }
 
 const DEFAULT_TIMEOUT: i32 = 30000;
@@ -117,6 +120,7 @@ impl TaskContent {
             concurrent: 1,
             no_check: false,
             rename: false,
+            ffmpeg_check: false,
         }
     }
 
@@ -327,6 +331,7 @@ impl Task {
         let no_check = self.clone().original.no_check;
         let check_timeout = self.clone().original.get_check_timeout();
         let rename = self.clone().original.rename;
+        let ffmpeg_check = self.clone().original.ffmpeg_check;
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -345,6 +350,7 @@ impl Task {
                 sort,
                 no_check,
                 rename,
+                ffmpeg_check,
             )
                 .await;
             println!("end taskId: {}", task_id);

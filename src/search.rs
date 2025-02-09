@@ -7,7 +7,6 @@ use std::collections::HashMap;
 use std::fmt::{format, Error};
 use std::fs;
 use std::io::Write;
-use crate::common::check::check::{check_link_is_valid, get_link_info};
 use crate::common::CheckDataStatus::{Failed, Success};
 use crate::common::cmd::capture_stream_pic;
 use crate::common::task::md5_str;
