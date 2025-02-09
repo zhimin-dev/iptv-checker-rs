@@ -157,6 +157,12 @@ impl TaskContent {
         if self.concurrent > 0 {
             ori.set_concurrent(self.concurrent);
         }
+        if self.ffmpeg_check {
+            ori.set_ffmpeg_check(self.ffmpeg_check);
+        }
+        if self.rename {
+            ori.set_rename(self.rename);
+        }
         ori.set_run_type(self.run_type.clone());
         ori.gen_md5();
 
@@ -199,6 +205,14 @@ impl TaskContent {
 
     pub fn set_concurrent(&mut self, concurrent: i32) {
         self.concurrent = concurrent
+    }
+
+    pub fn set_ffmpeg_check(&mut self, ffmpeg_check: bool) {
+        self.ffmpeg_check = ffmpeg_check
+    }
+
+    pub fn set_rename(&mut self, rename: bool) {
+        self.rename = rename
     }
 
     pub fn set_http_timeout(&mut self, timeout: i32) {
