@@ -103,6 +103,7 @@ pub mod check {
     use std::io::{Error, ErrorKind};
     use std::process::Command;
     use std::time;
+    use url::Url;
 
     pub fn get_link_info(_url: String, timeout: u64) -> Result<CheckUrlIsAvailableResponse, Error> {
         let mut ffprobe = Command::new("ffprobe");
@@ -114,39 +115,47 @@ pub mod check {
         if timeout > 0 {
             prob = prob.arg("-timeout").arg(timeout.to_string());
         }
-        let prob_result = prob
+        let prob_resp = prob
             .arg("-show_format")
             .arg("-show_streams")
             .arg(_url.to_owned())
-            .output()?;
-        if prob_result.status.success() {
-            let res_data: Ffprobe =
-                serde_json::from_str(String::from_utf8(prob_result.stdout).unwrap().as_str())
-                    .expect("无法解析 JSON");
-            let mut body: CheckUrlIsAvailableResponse = CheckUrlIsAvailableResponse::new();
-            for one in res_data.streams.into_iter() {
-                if one.codec_type == "video" {
-                    let mut video = VideoInfo::new();
-                    if let Some(e) = one.width {
-                        video.set_width(e)
+            .output();
+        match prob_resp {
+            Ok(prob_result) => {
+                if prob_result.status.success() {
+                    let res_data: Ffprobe =
+                        serde_json::from_str(String::from_utf8(prob_result.stdout).unwrap().as_str())
+                            .expect("无法解析 JSON");
+                    let mut body: CheckUrlIsAvailableResponse = CheckUrlIsAvailableResponse::new();
+                    for one in res_data.streams.into_iter() {
+                        if one.codec_type == "video" {
+                            let mut video = VideoInfo::new();
+                            if let Some(e) = one.width {
+                                video.set_width(e)
+                            }
+                            if let Some(e) = one.height {
+                                video.set_height(e)
+                            }
+                            video.set_codec(one.codec_name);
+                            body.set_video(video);
+                        } else if one.codec_type == "audio" {
+                            let mut audio = AudioInfo::new();
+                            audio.set_codec(one.codec_name);
+                            audio.set_channels(one.channels.unwrap());
+                            body.set_audio(audio);
+                        }
                     }
-                    if let Some(e) = one.height {
-                        video.set_height(e)
-                    }
-                    video.set_codec(one.codec_name);
-                    body.set_video(video);
-                } else if one.codec_type == "audio" {
-                    let mut audio = AudioInfo::new();
-                    audio.set_codec(one.codec_name);
-                    audio.set_channels(one.channels.unwrap());
-                    body.set_audio(audio);
+                    return Ok(body);
+                } else {
+                    Err(Error::new(ErrorKind::Other, "ffmpeg error"))
                 }
             }
-            return Ok(body);
+            Err(e) => {
+                // let error_str = String::from_utf8_lossy(&prob_result.stderr);
+                // println!("{} ffprobe error {:?}", _url.to_owned(), prob_result.stderr);
+                Err(Error::new(ErrorKind::Other, format!("ffmpeg error:{}", e)))
+            }
         }
-        let error_str = String::from_utf8_lossy(&prob_result.stderr);
-        // println!("{} ffprobe error {:?}", _url.to_owned(), prob_result.stderr);
-        Err(Error::new(ErrorKind::Other, error_str.to_string()))
     }
 
     pub async fn check_link_is_valid(
@@ -166,31 +175,67 @@ pub mod check {
                 }
             };
         }
-        let client = reqwest::Client::builder()
-            .timeout(time::Duration::from_millis(timeout))
-            .danger_accept_invalid_certs(true)
-            .build()
-            .unwrap();
-        let curr_timestamp = Utc::now().timestamp_millis();
-        let res = client.get(_url.to_owned()).send().await.unwrap();
-        if res.status().is_success() {
-            let delay = Utc::now().timestamp_millis() - curr_timestamp;
-            if need_video_info {
-                let mut data = get_link_info(_url.to_owned(), timeout * 1000).unwrap();
-                data.set_delay(delay as i32);
-                Ok(data)
-            } else {
-                let _body = res.text().await.unwrap();
-                if check_body_is_m3u8_format(_body.clone()) {
-                    let mut body: CheckUrlIsAvailableResponse = CheckUrlIsAvailableResponse::new();
-                    body.set_delay(delay as i32);
-                    Ok(body)
-                } else {
-                    Err(Error::new(ErrorKind::Other, "not a m3u8 file"))
+        let parsed_info = Url::parse(&_url);
+        match parsed_info {
+            Ok(parsed_url) => {
+                if parsed_url.scheme() != "https" && parsed_url.scheme() != "http" {
+                    return Err(Error::new(ErrorKind::Other, "scheme not http, temporary not support"));
                 }
             }
-        } else {
-            Err(Error::new(ErrorKind::Other, "status is not 200"))
+            Err(e) => {
+                return Err(Error::new(ErrorKind::Other, format!("error {}", e)));
+            }
+        }
+        let client_resp = reqwest::Client::builder()
+            .timeout(time::Duration::from_millis(timeout))
+            .danger_accept_invalid_certs(true)
+            .build();
+        match client_resp {
+            Ok(client) => {
+                let curr_timestamp = Utc::now().timestamp_millis();
+                let http_res = client.get(_url.to_owned()).send().await;
+                match http_res {
+                    Ok(res) => {
+                        if res.status().is_success() {
+                            let delay = Utc::now().timestamp_millis() - curr_timestamp;
+                            if need_video_info {
+                                let mut ffmpeg_info = get_link_info(_url.to_owned(), timeout * 1000);
+                                match ffmpeg_info {
+                                    Ok(mut data) => {
+                                        data.set_delay(delay as i32);
+                                        Ok(data)
+                                    }
+                                    Err(err) => {
+                                        Err(Error::new(ErrorKind::Other, err.to_string()))
+                                    }
+                                }
+                            } else {
+                                let _body = res.text().await;
+                                match _body {
+                                    Ok(body) => {
+                                        if check_body_is_m3u8_format(body.clone()) {
+                                            let mut body: CheckUrlIsAvailableResponse = CheckUrlIsAvailableResponse::new();
+                                            body.set_delay(delay as i32);
+                                            Ok(body)
+                                        } else {
+                                            Err(Error::new(ErrorKind::Other, "not a m3u8 file"))
+                                        }
+                                    }
+                                    Err(e) => Err(Error::new(ErrorKind::Other, format!("{:?}", e))),
+                                }
+                            }
+                        } else {
+                            Err(Error::new(ErrorKind::Other, "status is not 200"))
+                        }
+                    }
+                    Err(e) => {
+                        return Err(Error::new(ErrorKind::Other, format!("error {}", e)));
+                    }
+                }
+            }
+            Err(e) => {
+                return Err(Error::new(ErrorKind::Other, format!("http client build error {}", e)));
+            }
         }
     }
 }
