@@ -89,9 +89,11 @@ pub struct Ffprobe {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct FfprobeStream {
+    #[serde(default)]
     codec_type: String,
     width: Option<i32>,
     height: Option<i32>,
+    #[serde(default)]
     codec_name: String,
     channels: Option<i32>,
 }
