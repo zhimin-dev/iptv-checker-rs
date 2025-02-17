@@ -53,10 +53,14 @@ pub fn file_exists(file_path: &String) -> bool {
     }
 }
 
+use lazy_static::lazy_static;
+
+lazy_static! {
+    static ref RE: Regex = Regex::new(r"(?m)(\d+\s)?\[\w+\]").unwrap(); // 仅编译一次
+}
+
 pub fn remove_other_char(str: String) -> String {
-    let regex = Regex::new(r"(?m)(\d+\s)?\[\w+\]").unwrap();
-    // result will be an iterator over tuples containing the start and end indices for each match in the string
-    let result = regex.captures_iter(&str);
+    let result = RE.captures_iter(&str);
 
     for mat in result {
         if mat.len() >= 1 {
