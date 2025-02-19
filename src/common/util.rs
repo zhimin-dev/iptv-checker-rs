@@ -3,6 +3,7 @@ use reqwest::Error;
 use std::io;
 use std::net::{IpAddr};
 use url::Url;
+use crate::utils::translator_t2s;
 
 #[derive(Debug)]
 pub enum IpAddress {
@@ -172,11 +173,12 @@ fn parse_one_m3u(_arr: Vec<&str>, index: i32) -> Option<M3uObject> {
         let name = exp.last().unwrap();
 
         let mut m3u_obj = M3uObject::new();
+        let simple_name = translator_t2s(&name.clone().to_string());
         m3u_obj.set_extend(extend);
         m3u_obj.set_index(index);
         m3u_obj.set_url(url.to_string());
         m3u_obj.set_name(name.to_string());
-        m3u_obj.set_search_name(name.to_string());
+        m3u_obj.set_search_name(simple_name);
         m3u_obj.set_raw(_arr.join("\n").to_string());
         return Some(m3u_obj);
     }
@@ -210,7 +212,7 @@ pub fn parse_quota_str(_body: String) -> M3uObjectList {
             if !is_url(url.clone()) {
                 now_group = name.to_string();
             } else {
-                let _name = name.clone();
+                let simple_name = translator_t2s(&name.to_string());
                 let mut m3u_obj = M3uObject::new();
                 let mut extend = M3uExtend::new();
                 extend.set_group_title(now_group.clone());
@@ -218,7 +220,7 @@ pub fn parse_quota_str(_body: String) -> M3uObjectList {
                 m3u_obj.set_index(index);
                 m3u_obj.set_url(url.to_string());
                 m3u_obj.set_name(name.to_string());
-                m3u_obj.set_search_name(name.to_string());
+                m3u_obj.set_search_name(simple_name.to_string());
                 m3u_obj.set_raw(x.replace('\r', "").to_owned());
                 index += 1;
                 list.push(m3u_obj)

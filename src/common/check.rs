@@ -165,6 +165,7 @@ pub mod check {
         timeout: u64,
         need_video_info: bool,
         ffmpeg_check: bool,
+        not_http_skip: bool,
     ) -> Result<CheckUrlIsAvailableResponse, Error> {
         if ffmpeg_check {
             let res = get_link_info(_url.to_owned(), timeout * 1000);
@@ -181,7 +182,11 @@ pub mod check {
         match parsed_info {
             Ok(parsed_url) => {
                 if parsed_url.scheme() != "https" && parsed_url.scheme() != "http" {
-                    return Err(Error::new(ErrorKind::Other, "scheme not http, temporary not support"));
+                    return if not_http_skip {
+                        Ok(CheckUrlIsAvailableResponse::new())
+                    } else {
+                        Err(Error::new(ErrorKind::Other, "scheme not http, temporary not support"))
+                    }
                 }
             }
             Err(e) => {
@@ -255,6 +260,8 @@ pub async fn do_check(
     no_check: bool,
     rename: bool,
     ffmpeg_check: bool,
+    same_save_num: i32,
+    not_http_skip: bool,
 ) -> Result<bool, Error> {
     let mut data = common::m3u::m3u::from_arr(
         input_files.to_owned(),
@@ -270,7 +277,7 @@ pub async fn do_check(
     if print_result {
         println!("输出文件: {}", output_file);
     }
-    data.check_data_new(request_timeout, concurrent, sort, no_check, ffmpeg_check)
+    data.check_data_new(request_timeout, concurrent, sort, no_check, ffmpeg_check, same_save_num, not_http_skip)
         .await;
     data.output_file(output_file).await;
     if print_result {

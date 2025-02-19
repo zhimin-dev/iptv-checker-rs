@@ -94,6 +94,11 @@ pub struct TaskContent {
 
     #[serde(default)]
     ffmpeg_check: bool,
+    #[serde(default)]
+    same_save_num:i32,
+
+    #[serde(default)]
+    not_http_skip:bool,
 }
 
 const DEFAULT_TIMEOUT: i32 = 30000;
@@ -121,6 +126,8 @@ impl TaskContent {
             no_check: false,
             rename: false,
             ffmpeg_check: false,
+            same_save_num:0,
+            not_http_skip: false,
         }
     }
 
@@ -346,6 +353,8 @@ impl Task {
         let check_timeout = self.clone().original.get_check_timeout();
         let rename = self.clone().original.rename;
         let ffmpeg_check = self.clone().original.ffmpeg_check;
+        let same_save_num = self.clone().original.same_save_num;
+        let not_http_skip = self.clone().original.not_http_skip;
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -365,6 +374,8 @@ impl Task {
                 no_check,
                 rename,
                 ffmpeg_check,
+                same_save_num,
+                not_http_skip,
             )
                 .await;
             println!("end taskId: {}", task_id);

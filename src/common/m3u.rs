@@ -1,5 +1,5 @@
 use crate::common::check::check::check_link_is_valid;
-use crate::common::m3u::m3u::do_name_sort;
+use crate::common::m3u::m3u::{do_name_sort, do_same_save};
 use crate::common::util::{check_url_host_ip_type, match_ipv6_format, IpAddress};
 use crate::common::CheckDataStatus::{Failed, Success, Unchecked};
 use crate::common::SourceType::{Normal, Quota};
@@ -375,6 +375,8 @@ impl M3uObjectList {
         sort: bool,
         no_check: bool,
         ffmpeg_check: bool,
+        same_save_num: i32,
+        not_http_skip: bool,
     ) {
         let mut search_clarity = false;
         match &self.search_clarity {
@@ -408,7 +410,7 @@ impl M3uObjectList {
                             if item.url == "" {
                                 break;
                             }
-                            let result = set_one_item(debug, item, request_time, search_clarity, ffmpeg_check);
+                            let result = set_one_item(debug, item, request_time, search_clarity, ffmpeg_check, not_http_skip);
                             tx_clone.send(result).unwrap()
                         }
                         Err(e) => {
@@ -451,6 +453,9 @@ impl M3uObjectList {
         }
         if sort {
             self.result_list = do_name_sort(self.result_list.clone());
+        }
+        if same_save_num > 0 {
+            self.result_list = do_same_save(self.result_list.clone(), same_save_num);
         }
     }
 
@@ -554,6 +559,7 @@ fn set_one_item(
     request_time: i32,
     search_clarity: bool,
     ffmpeg_check: bool,
+    not_http_skip: bool,
 ) -> M3uObject {
     let url = x.url.clone();
     let _log_url = url.clone();
@@ -562,6 +568,7 @@ fn set_one_item(
         request_time as u64,
         search_clarity,
         ffmpeg_check,
+        not_http_skip,
     ));
     if debug {
         println!("url is: {} result: {:?}", x.url.clone(), result);
@@ -765,6 +772,7 @@ pub mod m3u {
     use crate::common::SourceType::{Normal, Quota};
     use crate::common::{M3uObject, M3uObjectList, SourceType};
     use core::option::Option;
+    use std::collections::HashMap;
     use std::fs::File;
     use std::io::Read;
     use crate::utils::remove_other_char;
@@ -890,6 +898,33 @@ pub mod m3u {
         let save_keyword = filter_by_keyword(list, keyword_like, keyword_dislike, rename);
         obj.set_list(save_keyword);
         return obj;
+    }
+
+    pub fn do_same_save(list: Vec<M3uObject>, same_save_num: i32) -> Vec<M3uObject> {
+        let mut new_list = list.clone();
+
+        let mut hash_list: HashMap<String, Vec<M3uObject>> = HashMap::new();
+        for item in new_list {
+            let mut list = vec![];
+            let mut list_op = hash_list.get(&item.search_name.clone());
+            if list_op.is_some() {
+                list = list_op.unwrap().to_vec();
+            }
+            list.push(item.clone());
+            hash_list.insert(item.search_name.clone(), list);
+        }
+        let mut save_list = vec![];
+        for (key, items) in hash_list {
+            let mut i = 0;
+            for item in items {
+                if i >= same_save_num {
+                    continue;
+                }
+                save_list.push(item.clone());
+                i += 1;
+            }
+        }
+        save_list
     }
 
     pub fn do_name_sort(list: Vec<M3uObject>) -> Vec<M3uObject> {
