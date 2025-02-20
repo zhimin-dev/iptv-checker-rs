@@ -95,10 +95,10 @@ pub struct TaskContent {
     #[serde(default)]
     ffmpeg_check: bool,
     #[serde(default)]
-    same_save_num:i32,
+    same_save_num: i32,
 
     #[serde(default)]
-    not_http_skip:bool,
+    not_http_skip: bool,
 }
 
 const DEFAULT_TIMEOUT: i32 = 30000;
@@ -126,7 +126,7 @@ impl TaskContent {
             no_check: false,
             rename: false,
             ffmpeg_check: false,
-            same_save_num:0,
+            same_save_num: 0,
             not_http_skip: false,
         }
     }
@@ -170,6 +170,10 @@ impl TaskContent {
         if self.rename {
             ori.set_rename(self.rename);
         }
+        if self.not_http_skip {
+            ori.set_not_http_skip(self.not_http_skip);
+        }
+        ori.set_same_save_num(self.same_save_num);
         ori.set_run_type(self.run_type.clone());
         ori.gen_md5();
 
@@ -220,6 +224,14 @@ impl TaskContent {
 
     pub fn set_rename(&mut self, rename: bool) {
         self.rename = rename
+    }
+
+    pub fn set_not_http_skip(&mut self, not_http_skip: bool) {
+        self.not_http_skip = not_http_skip
+    }
+
+    pub fn set_same_save_num(&mut self, same_save_num: i32) {
+        self.same_save_num = same_save_num
     }
 
     pub fn set_http_timeout(&mut self, timeout: i32) {
