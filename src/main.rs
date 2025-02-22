@@ -115,6 +115,14 @@ pub struct CheckArgs {
     /// 使用ffmpeg检查
     #[arg(long = "ffmpeg_check", default_value_t = false)]
     ffmpeg_check: bool,
+
+    /// 如果名称相同，保存几个源，默认全部保存
+    #[arg(long = "same-save-num", default_value_t = 0)]
+    same_save_num: i32,
+
+    /// 如果非http，就跳过
+    #[arg(long = "not-http-skip", default_value_t = false)]
+    not_http_skip: bool,
 }
 
 #[derive(Parser)]
@@ -195,6 +203,8 @@ pub async fn main() {
                     args.no_check,
                     args.rename,
                     args.ffmpeg_check,
+                    args.same_save_num,
+                    args.not_http_skip,
                 )
                     .await
                     .unwrap();

@@ -5,6 +5,7 @@ use std::fs::File;
 use std::io::{Error, ErrorKind, Read};
 use std::process::Command;
 use regex::Regex;
+use opencc_rust::*;
 
 pub fn get_out_put_filename(output_file: String) -> String {
     let mut filename = output_file.clone();
@@ -53,10 +54,15 @@ pub fn file_exists(file_path: &String) -> bool {
     }
 }
 
+use lazy_static::lazy_static;
+
+lazy_static! {
+    static ref RE: Regex = Regex::new(r"(?m)(\d+\s)?\[\w+\]").unwrap(); // 仅编译一次
+    static ref Translator:OpenCC = OpenCC::new(DefaultConfig::T2S).unwrap();
+}
+
 pub fn remove_other_char(str: String) -> String {
-    let regex = Regex::new(r"(?m)(\d+\s)?\[\w+\]").unwrap();
-    // result will be an iterator over tuples containing the start and end indices for each match in the string
-    let result = regex.captures_iter(&str);
+    let result = RE.captures_iter(&str);
 
     for mat in result {
         if mat.len() >= 1 {
@@ -65,16 +71,21 @@ pub fn remove_other_char(str: String) -> String {
     }
     str
 }
+pub fn translator_t2s(str: &str) -> String {
+    Translator.convert(str)
+}
 
 #[cfg(test)]
 mod tests {
-    use crate::utils::{get_random_output_filename, remove_other_char};
+    use crate::utils::{get_random_output_filename, remove_other_char, translator_t2s};
 
     #[tokio::test]
     async fn test_str() {
         println!("{}", remove_other_char("213123 [HD]这是".to_string()));
         println!("{}", remove_other_char("[HD]这是".to_string()));
         println!("{}", remove_other_char("[HD]cctv".to_string()));
+
+        println!("{}", translator_t2s("FTV (民視) (720p) [Not 24/7]"));
     }
 }
 
