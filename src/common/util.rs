@@ -1,9 +1,9 @@
 use crate::common::{M3uExt, M3uExtend, M3uObject, M3uObjectList};
+use crate::utils::translator_t2s;
 use reqwest::Error;
 use std::io;
-use std::net::{IpAddr};
+use std::net::IpAddr;
 use url::Url;
-use crate::utils::translator_t2s;
 
 #[derive(Debug)]
 pub enum IpAddress {

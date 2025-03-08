@@ -1,5 +1,6 @@
 use crate::common::do_check;
 use actix_web::{web, HttpResponse, Responder};
+use log::{debug, info};
 use md5;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -372,7 +373,7 @@ impl Task {
             .build()
             .unwrap();
         rt.block_on(async {
-            println!("start taskId: {}", task_id);
+            debug!("start taskId: {}", task_id);
             let _ = do_check(
                 urls,
                 out_out_file.clone(),
@@ -390,7 +391,7 @@ impl Task {
                 not_http_skip,
             )
                 .await;
-            println!("end taskId: {}", task_id);
+            debug!("end taskId: {}", task_id);
         });
         self.task_info.task_status = TaskStatus::Pending;
         self.task_info.is_running = false;
@@ -556,7 +557,7 @@ pub async fn run_task(
     task_manager: web::Data<Arc<TaskManager>>,
     req: web::Query<RunTaskQuery>,
 ) -> impl Responder {
-    println!("{}", req.task_id.clone());
+    debug!("{}", req.task_id.clone());
     let mut resp = HashMap::new();
     match task_manager.run_task(req.task_id.clone()) {
         Ok(_) => {
@@ -581,7 +582,7 @@ pub async fn update_task(
     task_json: web::Json<TaskContent>,
     req: web::Query<UpdateTaskQuery>,
 ) -> impl Responder {
-    println!("{}", req.task_id.clone());
+    info!("{}", req.task_id.clone());
     let mut resp = HashMap::new();
     let task = task_json.into_inner();
     match task_manager.update_task(req.task_id.clone(), task) {

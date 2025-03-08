@@ -1,4 +1,7 @@
+use crate::common::cmd::capture_stream_pic;
 use crate::common::m3u::m3u::from_body_arr;
+use crate::common::task::md5_str;
+use crate::common::CheckDataStatus::{Failed, Success};
 use crate::common::{M3uExtend, M3uObject, M3uObjectList};
 use crate::utils::{create_folder, folder_exists};
 use regex::Regex;
@@ -7,9 +10,6 @@ use std::collections::HashMap;
 use std::fmt::{format, Error};
 use std::fs;
 use std::io::Write;
-use crate::common::CheckDataStatus::{Failed, Success};
-use crate::common::cmd::capture_stream_pic;
-use crate::common::task::md5_str;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GithubPageProps {
@@ -367,10 +367,10 @@ async fn init_search_data() -> Result<(), Error> {
                     epg_list_to_m3u_file(list, format!("./static/input/search/100-{}.m3u", i));
                 match save_status {
                     Ok(()) => {
-                        println!("file save success");
+                        info!("file save success");
                     }
                     Err(e) => {
-                        println!("file save failed: {}", e);
+                        error!("file save failed: {}", e);
                     }
                 }
                 i += 1;
@@ -383,7 +383,7 @@ async fn init_search_data() -> Result<(), Error> {
                     config.valid_extensions.clone(),
                 )
                     .await;
-                println!("{:?}", m3u_and_txt_files);
+                debug!("{:?}", m3u_and_txt_files);
                 // 下载m3u文件
                 for _url in m3u_and_txt_files {
                     let save_name = format!("./static/input/search/200-{}{}", i, _url.extension);
@@ -392,10 +392,10 @@ async fn init_search_data() -> Result<(), Error> {
                         download_target_files(_url.download_url, save_name.to_string()).await;
                     match save_status {
                         Ok(_) => {
-                            println!("file save success");
+                            info!("file save success");
                         }
                         Err(e) => {
-                            println!("file save failed: {}", e);
+                            error!("file save failed: {}", e);
                         }
                     }
                 }
@@ -408,7 +408,7 @@ async fn init_search_data() -> Result<(), Error> {
                     config.valid_extensions.clone(),
                 )
                     .await;
-                println!("{:?}", m3u_and_txt_files);
+                debug!("{:?}", m3u_and_txt_files);
                 // 下载m3u文件
                 for _url in m3u_and_txt_files {
                     let save_name = format!("./static/input/search/300-{}{}", i, _url.extension);
@@ -417,10 +417,10 @@ async fn init_search_data() -> Result<(), Error> {
                         download_target_files(_url.download_url, save_name.to_string()).await;
                     match save_status {
                         Ok(()) => {
-                            println!("file save success");
+                            info!("file save success");
                         }
                         Err(e) => {
-                            println!("file save failed: {}", e);
+                            error!("file save failed: {}", e);
                         }
                     }
                 }
@@ -437,10 +437,10 @@ async fn init_search_data() -> Result<(), Error> {
                     download_target_files(url.clone(), save_name.to_string()).await;
                 match save_status {
                     Ok(()) => {
-                        println!("file save success");
+                        info!("file save success");
                     }
                     Err(e) => {
-                        println!("file save failed: {}", e);
+                        error!("file save failed: {}", e);
                     }
                 }
             }
@@ -498,7 +498,7 @@ pub async fn do_search(search_name: String, thumbnail: bool) -> Result<Vec<M3uOb
                 .search(search_name.clone(), false, true, false, vec![], vec![])
                 .await
                 .expect("Failed to search");
-            println!("result count:{}", search_list.len());
+            debug!("result count:{}", search_list.len());
             let mut res_list;
             if thumbnail {
                 // 通过ffmpeg生成缩略图以及其他信息
@@ -516,7 +516,7 @@ pub async fn do_search(search_name: String, thumbnail: bool) -> Result<Vec<M3uOb
 pub fn clear_search_folder() -> std::io::Result<()> {
     let p = "./static/input/search/";
     fs::remove_dir_all(p)?;
-    println!("Deleted directory: {}", p);
+    info!("Deleted directory: {}", p);
     Ok(())
 }
 
@@ -542,13 +542,14 @@ fn load_m3u_data() -> std::io::Result<M3uObjectList> {
 }
 
 async fn search_channel(search_name: String, check: bool) -> Result<Vec<String>, Error> {
-    println!("check {}", check);
+    debug!("check {}", check);
     let mut list = vec![];
     list.push(search_name);
     Ok(list)
 }
 
-use chrono::{Local, Datelike};
+use chrono::{Datelike, Local};
+use log::{debug, error, info};
 
 fn generate_channel_thumbnail_folder_name() -> String {
     // 获取当前本地时间
@@ -566,7 +567,7 @@ fn generate_channel_thumbnail_folder_name() -> String {
 }
 
 async fn generate_channel_thumbnail(mut channel_list: Vec<M3uObject>) -> Vec<M3uObject> {
-    println!("channel_list len {}", channel_list.len());
+    debug!("channel_list len {}", channel_list.len());
     for v in &mut channel_list {
         // if v.get_status() == Success {
         let img_url = format!("{}/{}.jpeg", generate_channel_thumbnail_folder_name(), md5_str(v.get_url()));

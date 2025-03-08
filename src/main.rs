@@ -3,12 +3,18 @@ mod live;
 mod search;
 mod utils;
 mod web;
+mod middleware;
 
 use crate::common::do_check;
 use crate::live::do_ob;
 use crate::search::{clear_search_folder, do_search};
+use crate::utils::{create_folder, file_exists};
+use chrono::Local;
 use clap::{arg, Args as clapArgs, Parser, Subcommand};
+use log::{error, info, LevelFilter};
+use simplelog::{CombinedLogger, Config, WriteLogger};
 use std::env;
+use std::fs::File;
 use tempfile::tempdir;
 
 const DEFAULT_HTTP_PORT: u16 = 8089;
@@ -147,9 +153,20 @@ fn get_pid_file() -> String {
 
 async fn start_daemonize_web(pid_name: &String, port: u16) {
     utils::check_pid_exits(pid_name);
-    println!("start web server, port:{}", port);
+    info!("start web server, port:{}", port);
     // 启动 web 服务
     web::start_web(port).await;
+}
+
+fn init_folder() {
+    let folder = vec!["./static",
+                      "./static/input", "./static/input/live", "./static/input/search",
+                      "./static/output", "./static/output/thumbnail",
+                      "./static/logs"
+    ];
+    for f in folder {
+        create_folder(&f.to_string()).unwrap()
+    }
 }
 
 pub fn show_status() {
@@ -159,11 +176,11 @@ pub fn show_status() {
             Ok(num) => {
                 let has_process = utils::check_process(num).unwrap();
                 if has_process {
-                    println!("web server running at pid = {}", num)
+                    info!("web server running at pid = {}", num)
                 }
             }
             Err(e) => {
-                println!("{}", e)
+                error!("server start failed: {}", e)
             }
         }
     }
@@ -171,6 +188,7 @@ pub fn show_status() {
 
 #[actix_web::main]
 pub async fn main() {
+    init_folder();
     let pid_name = get_pid_file();
     let args = Args::parse();
     match args.command {
@@ -188,8 +206,16 @@ pub async fn main() {
             }
         }
         Commands::Check(args) => {
+            CombinedLogger::init(
+                vec![
+                    WriteLogger::new(
+                        LevelFilter::Debug,
+                        Config::default(),
+                        std::io::stdout()),
+                ]
+            ).unwrap();
             if args.input_file.len() > 0 {
-                println!("您输入的文件地址是: {}", args.input_file.join(","));
+                info!("您输入的文件地址是: {}", args.input_file.join(","));
                 do_check(
                     args.input_file.to_owned(),
                     args.output_file.clone(),
@@ -213,19 +239,19 @@ pub async fn main() {
         Commands::Fetch(args) => {
             if args.clear {
                 if let Ok(_) = clear_search_folder() {
-                    println!("clear success 😄")
+                    info!("clear success 😄")
                 } else {
-                    println!("clear failed 😞")
+                    error!("clear failed 😞")
                 }
             } else {
                 if args.search.len() > 0 {
                     let data = do_search(args.search.clone(), args.thumbnail).await;
                     match data {
                         Ok(data) => {
-                            println!("{:?}", data)
+                            info!("{:?}", data)
                         }
                         Err(e) => {
-                            println!("获取失败---{}", e)
+                            error!("获取失败---{}", e)
                         }
                     }
                 }
@@ -235,10 +261,10 @@ pub async fn main() {
             let data = do_ob(args.input_url.clone());
             match data {
                 Ok(_url) => {
-                    println!("url - {}", _url.clone())
+                    info!("url - {}", _url.clone())
                 }
                 Err(e) => {
-                    print!("ob error - {}", e);
+                    error!("ob error - {}", e);
                 }
             }
         }
