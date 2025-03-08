@@ -168,7 +168,7 @@ async fn upload(MultipartForm(form): MultipartForm<UploadFormReq>) -> impl Respo
 }
 
 pub async fn start_web(port: u16) {
-    let log_file = File::create(format!("./static/log/app-{}.log", Local::now().format("%Y%m%d%H:%M").to_string())).unwrap();
+    let log_file = File::create(format!("./static/logs/app-{}.log", Local::now().format("%Y%m%d%H:%M").to_string())).unwrap();
     let cb_logger = CombinedLogger::init(
         vec![
             WriteLogger::new(
