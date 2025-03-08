@@ -1,10 +1,10 @@
-use rand::distributions::Alphanumeric;
+use rand::distr::Alphanumeric;
 use rand::Rng;
+use regex::Regex;
 use std::fs;
 use std::fs::File;
 use std::io::{Error, ErrorKind, Read};
 use std::process::Command;
-use regex::Regex;
 // use opencc_rust::*;
 
 pub fn get_out_put_filename(output_file: String) -> String {
@@ -58,18 +58,33 @@ use lazy_static::lazy_static;
 
 lazy_static! {
     static ref RE: Regex = Regex::new(r"(?m)(\d+\s)?\[\w+\]").unwrap(); // 仅编译一次
+    static ref RegexPrefixNum:  Regex = Regex::new(r"^\d+\s*").unwrap();
     // static ref Translator:OpenCC = OpenCC::new(DefaultConfig::T2S).unwrap();
 }
 
 pub fn remove_other_char(str: String) -> String {
+    let mut res_str = str.to_string();
+    // 去掉前面的无用字符
     let result = RE.captures_iter(&str);
-
     for mat in result {
         if mat.len() >= 1 {
-            return str.replace(mat.get(0).unwrap().as_str(), "");
+            res_str = str.replace(mat.get(0).unwrap().as_str(), "");
         }
     }
-    str
+    let rename_channel_list: Vec<&str> = vec!["[geo-blocked]", "[ipv6]", "hevc", "50 fps", "[not 24/7]"];
+    // 去掉后面特殊字符
+    for change in rename_channel_list {
+        res_str = res_str.replace(change, "")
+    }
+    let binding = res_str.to_string();
+    // 去掉前面的无用数组
+    let pre_num_result = RegexPrefixNum.captures_iter(&binding);
+    for mat in pre_num_result {
+        if mat.len() >= 1 {
+            res_str = res_str.replace(mat.get(0).unwrap().as_str(), "");
+        }
+    }
+    res_str
 }
 pub fn translator_t2s(str: &str) -> String {
     // Translator.convert(str)
@@ -78,15 +93,13 @@ pub fn translator_t2s(str: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::utils::{get_random_output_filename, remove_other_char, translator_t2s};
-
     #[tokio::test]
     async fn test_str() {
-        println!("{}", remove_other_char("213123 [HD]这是".to_string()));
-        println!("{}", remove_other_char("[HD]这是".to_string()));
-        println!("{}", remove_other_char("[HD]cctv".to_string()));
-
-        println!("{}", translator_t2s("FTV (民視) (720p) [Not 24/7]"));
+        // println!("{}", remove_other_char("213123 [HD]这是".to_string()));
+        // println!("{}", remove_other_char("[HD]这是".to_string()));
+        // println!("{}", remove_other_char("[HD]cctv".to_string()));
+        //
+        // println!("{}", translator_t2s("FTV (民視) (720p) [Not 24/7]"));
     }
 }
 

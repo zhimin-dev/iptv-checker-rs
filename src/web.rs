@@ -9,7 +9,10 @@ use actix_multipart::form::{tempfile::TempFile, MultipartForm};
 use actix_web::{get, post, web, App, HttpResponse, HttpServer, Responder};
 use clokwerk::{Scheduler, TimeUnits};
 use serde::{Deserialize, Serialize};
+use simplelog::{CombinedLogger, Config, WriteLogger};
 use std::collections::HashMap;
+use std::fmt::format;
+use std::fs::File;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time;
@@ -58,7 +61,7 @@ async fn check_url_is_available(req: web::Query<CheckUrlIsAvailableRequest>) -> 
             return HttpResponse::Ok().body(obj);
         }
         Err(e) => {
-            println!("{}", e);
+            error!("check_url_is_available error {}", e);
             return HttpResponse::InternalServerError().body("{\"msg\":\"internal error\"}");
         }
     };
@@ -91,7 +94,7 @@ async fn fetch_m3u_body(req: web::Query<FetchM3uBodyRequest>) -> impl Responder 
                         return HttpResponse::Ok().body(text);
                     }
                     Err(e) => {
-                        println!("resp status error : {}", e);
+                        error!("resp status error : {}", e);
                         return HttpResponse::InternalServerError()
                             .body("{\"msg\":\"internal error, fetch body error\"}");
                     }
@@ -101,7 +104,7 @@ async fn fetch_m3u_body(req: web::Query<FetchM3uBodyRequest>) -> impl Responder 
                 .body("{\"msg\":\"internal error, status is not 200\"}");
         }
         Err(e) => {
-            println!("fetch error : {}", e);
+            error!("fetch error : {}", e);
             return HttpResponse::InternalServerError()
                 .body("{\"msg\":\"internal error, fetch error\"}");
         }
@@ -165,13 +168,34 @@ async fn upload(MultipartForm(form): MultipartForm<UploadFormReq>) -> impl Respo
 }
 
 pub async fn start_web(port: u16) {
+    let log_file = File::create(format!("./static/log/app-{}.log", Local::now().format("%Y%m%d%H:%M").to_string())).unwrap();
+    let cb_logger = CombinedLogger::init(
+        vec![
+            WriteLogger::new(
+                LevelFilter::Debug,
+                Config::default(),
+                log_file,
+            ),
+            WriteLogger::new(
+                LevelFilter::Debug,
+                Config::default(),
+                std::io::stdout()),
+        ]
+    );
+    match cb_logger {
+        Ok(cb_data) => {}
+        Err(e) => {
+            error!("cb_logger: {}",e)
+        }
+    }
+
     let data = Arc::new(TaskManager {
         tasks: Mutex::new(HashMap::new()),
     });
 
     // 尝试从文件加载任务
     if let Err(e) = data.load_tasks() {
-        eprintln!("Failed to load tasks: {}", e);
+        error!("Failed to load tasks: {}", e);
     }
 
     // 使用 Arc<Mutex<Scheduler>> 来共享 scheduler
@@ -223,12 +247,51 @@ pub async fn start_web(port: u16) {
             .route("/system/tasks/import", web::post().to(system_tasks_import))
             .route("/tasks/delete/{id}", web::delete().to(delete_task))
             .service(fs::Files::new("/assets", "./web/assets"))
+            .wrap(Logger::default())
     })
-    .bind(("0.0.0.0", port))
-    .expect("Failed to bind address")
-    .run()
-    .await
-    .expect("failed to run server");
+        .bind(("0.0.0.0", port))
+        .expect("Failed to bind address")
+        .run()
+        .await
+        .expect("failed to run server");
 
     scheduler_thread.join().unwrap();
+}
+
+use crate::middleware::Logging;
+use actix_web::middleware::Logger;
+use chrono::Local;
+use clap::ColorChoice;
+use env_logger::fmt::style::{Color, RgbColor};
+use env_logger::Env;
+use log::Level::Trace;
+use log::{error, info, LevelFilter};
+use std::io::Write;
+
+pub fn init_logger() {
+    let env = Env::default().filter_or("MY_LOG_LEVEL", "debug");
+    // 设置日志打印格式
+    env_logger::Builder::from_env(env).format(|buf, record| {
+        Ok({
+            // let level_color = match record.level() {
+            //     log::Level::Error => Color::Rgb(RgbColor(231,28,31)),
+            //     log::Level::Warn => Color::Rgb(RgbColor(209,223,17)),
+            //     log::Level::Info => Color::Rgb(RgbColor(39,165,0)),
+            //     log::Level::Debug | log::Level::Trace => Color::Rgb(RgbColor(117,90,179)),
+            // };
+
+            // let mut level_style = buf.default_level_style(Trace);
+            // level_style.set_color(level_color).set_bold(true);
+            //
+            // let mut style = buf.style();
+            // style.set_color(Color::Rgb(RgbColor(255,255,255))).set_dimmed(true);
+
+            write!(buf, "{} {} [ {} ] {}\n",
+                   Local::now().format("%Y-%m-%d %H:%M:%S"),
+                   record.level(),
+                   record.module_path().unwrap_or("<unnamed>"),
+                   record.args()).unwrap();
+        })
+    }).filter(None, LevelFilter::Debug).init();
+    info!("env_logger initialized.");
 }

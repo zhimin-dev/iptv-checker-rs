@@ -4,16 +4,17 @@ use crate::common::util::{check_url_host_ip_type, match_ipv6_format, IpAddress};
 use crate::common::CheckDataStatus::{Failed, Success, Unchecked};
 use crate::common::SourceType::{Normal, Quota};
 use crate::common::VideoType::Unknown;
+use crate::utils::remove_other_char;
 use actix_rt::time;
-use std::collections::HashSet;
+use log::{debug, error, info};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::{self, Error, Write};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
-use crate::utils::remove_other_char;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct M3uExtend {
@@ -298,7 +299,7 @@ impl M3uObjectList {
         let mut list = vec![];
         let s_name = search_name.clone();
         let exp_list: Vec<&str> = s_name.split(",").collect();
-        println!(
+        debug!(
             "query params ----{:?} search data count --- {}",
             exp_list,
             self.list.len()
@@ -319,13 +320,12 @@ impl M3uObjectList {
             let mut now_ip_type;
             let is_ipv6_format = match_ipv6_format(v.url.as_str());
             if is_ipv6_format {
-                println!("------111");
                 now_ip_type = 2
             } else {
                 now_ip_type = 1
             }
             if now_ip_type == 2 {
-                println!("now ip type {}, host: {}", now_ip_type, v.url.clone());
+                debug!("now ip type {}, host: {}", now_ip_type, v.url.clone());
             }
             // if now_ip_type == 0 {
             //     continue;
@@ -385,7 +385,7 @@ impl M3uObjectList {
         }
         if !no_check {
             let total = self.list.len();
-            println!("文件中源总数： {}", total);
+            info!("文件中源总数： {}", total);
             let mut counter = M3uObjectListCounter::new();
             counter.set_total(total as i32);
             self.set_counter(counter);
@@ -414,7 +414,7 @@ impl M3uObjectList {
                             tx_clone.send(result).unwrap()
                         }
                         Err(e) => {
-                            println!("error ---{} ", e);
+                            error!("check_data_new error ---{} ", e);
                             break;
                         }
                     }
@@ -448,7 +448,7 @@ impl M3uObjectList {
             for item in &mut self.list {
                 item.set_status(Success);
             }
-            println!("文件中源总数： {}", total);
+            info!("文件中源总数： {}", total);
             self.result_list = self.list.clone()
         }
         if sort {
@@ -571,7 +571,7 @@ fn set_one_item(
         not_http_skip,
     ));
     if debug {
-        println!("url is: {} result: {:?}", x.url.clone(), result);
+        debug!("url is: {} result: {:?}", x.url.clone(), result);
     }
     return match result {
         Ok(data) => {
@@ -771,11 +771,12 @@ pub mod m3u {
     use crate::common::util::{get_url_body, is_url, parse_normal_str, parse_quota_str};
     use crate::common::SourceType::{Normal, Quota};
     use crate::common::{M3uObject, M3uObjectList, SourceType};
+    use crate::utils::remove_other_char;
     use core::option::Option;
+    use log::{error, info};
     use std::collections::HashMap;
     use std::fs::File;
     use std::io::Read;
-    use crate::utils::remove_other_char;
 
     pub fn check_source_type(_body: String) -> Option<SourceType> {
         if _body.starts_with("#EXTM3U") {
@@ -799,14 +800,14 @@ pub mod m3u {
 
     pub(crate) fn body_normal(_body: String, not_show_input_type: bool) -> M3uObjectList {
         if !not_show_input_type {
-            println!("您输入是：标准格式m3u格式文件");
+            info!("您输入是：标准格式m3u格式文件");
         }
         parse_normal_str(_body)
     }
 
     pub(crate) fn body_quota(_body: String, not_show_input_type: bool) -> M3uObjectList {
         if !not_show_input_type {
-            println!("您输入是：非标准格式m3u格式文件，尝试解析中");
+            info!("您输入是：非标准格式m3u格式文件，尝试解析中");
         }
         parse_quota_str(_body)
     }
@@ -993,7 +994,7 @@ pub mod m3u {
                 match get_url_body(x.clone(), _timeout).await {
                     Ok(data) => body_arr.push(data),
                     Err(e) => {
-                        println!("url can not be open : {}, error: {}", x.clone(), e)
+                        error!("url can not be open : {}, error: {}", x.clone(), e)
                     }
                 }
             } else {
@@ -1008,7 +1009,7 @@ pub mod m3u {
                         body_arr.push(contents);
                     }
                     Err(e) => {
-                        println!("file {} not exists, e {}", x, e)
+                        error!("file {} not exists, e {}", x, e)
                     }
                 }
             }

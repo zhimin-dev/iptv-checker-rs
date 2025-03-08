@@ -1,5 +1,6 @@
 use crate::common::{AudioInfo, VideoInfo};
 use crate::{common, utils};
+use log::info;
 use serde::{Deserialize, Serialize};
 use std::fmt::Error;
 use std::net::ToSocketAddrs;
@@ -186,7 +187,7 @@ pub mod check {
                         Ok(CheckUrlIsAvailableResponse::new())
                     } else {
                         Err(Error::new(ErrorKind::Other, "scheme not http, temporary not support"))
-                    }
+                    };
                 }
             }
             Err(e) => {
@@ -275,7 +276,7 @@ pub async fn do_check(
     // 拼接目录
     output_file = format!("{}{}", "./", output_file);
     if print_result {
-        println!("输出文件: {}", output_file);
+        info!("输出文件: {}", output_file);
     }
     data.check_data_new(request_timeout, concurrent, sort, no_check, ffmpeg_check, same_save_num, not_http_skip)
         .await;
@@ -283,9 +284,9 @@ pub async fn do_check(
     if print_result {
         if !no_check {
             let status_string = data.print_result();
-            println!("\n{}", status_string);
+            info!("\n{}", status_string);
         }
-        println!("解析完成----")
+        info!("解析完成----")
     }
     Ok(true)
 }
@@ -461,7 +462,7 @@ async fn check_rtmp_path_exists(address: &str, app_name: &str, stream_name: &str
 // 测试模块
 #[cfg(test)]
 mod tests {
-    use crate::common::check::{check_rtmp_path_exists, check_rtmp_socket};
+    use crate::common::check::check_rtmp_path_exists;
 
     #[tokio::test]
     async fn test_valid_rtmp_url() {
