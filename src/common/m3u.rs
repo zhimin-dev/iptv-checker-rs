@@ -234,7 +234,7 @@ impl M3uObjectListCounter {
     }
 
     pub fn print_now_status(self) {
-        print!("\r检查进度: {}/{}", self.check_index, self.total);
+        info!("\r检查进度: {}/{}", self.check_index, self.total);
         io::stdout().flush().unwrap();
     }
 

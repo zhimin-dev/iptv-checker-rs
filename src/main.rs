@@ -86,8 +86,8 @@ pub struct CheckArgs {
     #[arg(short = 'o', long = "output-file", default_value_t = String::from(""))]
     output_file: String,
 
-    /// 超时时间，默认超时时间为28秒
-    #[arg(short = 't', long = "timeout", default_value_t = 28000)]
+    /// 超时时间，默认超时时间为10秒
+    #[arg(short = 't', long = "timeout", default_value_t = 10000)]
     timeout: u16,
 
     /// debug使用，可以看到相关的中间日志
@@ -111,7 +111,7 @@ pub struct CheckArgs {
     sort: bool,
 
     /// 是否不需要检查
-    #[arg(long = "no_check", default_value_t = false)]
+    #[arg(long = "no-check", default_value_t = false)]
     no_check: bool,
 
     /// 去掉无用的字段
@@ -119,7 +119,7 @@ pub struct CheckArgs {
     rename: bool,
 
     /// 使用ffmpeg检查
-    #[arg(long = "ffmpeg_check", default_value_t = false)]
+    #[arg(long = "ffmpeg-check", default_value_t = false)]
     ffmpeg_check: bool,
 
     /// 如果名称相同，保存几个源，默认全部保存

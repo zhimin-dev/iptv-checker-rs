@@ -106,18 +106,22 @@ pub mod check {
     use std::io::{Error, ErrorKind};
     use std::process::Command;
     use std::time;
+    use log::{debug, info};
     use url::Url;
 
     pub fn get_link_info(_url: String, timeout: u64) -> Result<CheckUrlIsAvailableResponse, Error> {
         let mut ffprobe = Command::new("ffprobe");
+        let mut timeout_int = timeout;
+        if timeout == 0 {
+            timeout_int = 20000000
+        }
         let mut prob = ffprobe
+            .arg("-timeout").
+            arg(timeout_int.to_string())
             .arg("-v")
             .arg("quiet")
             .arg("-print_format")
             .arg("json");
-        if timeout > 0 {
-            prob = prob.arg("-timeout").arg(timeout.to_string());
-        }
         let prob_resp = prob
             .arg("-show_format")
             .arg("-show_streams")

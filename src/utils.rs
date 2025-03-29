@@ -68,7 +68,7 @@ pub fn remove_other_char(str: String) -> String {
     let result = RE.captures_iter(&str);
     for mat in result {
         if mat.len() >= 1 {
-            res_str = str.replace(mat.get(0).unwrap().as_str(), "");
+            res_str = res_str.replace(mat.get(0).unwrap().as_str(), "");
         }
     }
     let rename_channel_list: Vec<&str> = vec!["[geo-blocked]", "[ipv6]", "hevc", "50 fps", "[not 24/7]"];
@@ -93,12 +93,17 @@ pub fn translator_t2s(str: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::utils::remove_other_char;
+
     #[tokio::test]
     async fn test_str() {
-        // println!("{}", remove_other_char("213123 [HD]这是".to_string()));
-        // println!("{}", remove_other_char("[HD]这是".to_string()));
-        // println!("{}", remove_other_char("[HD]cctv".to_string()));
-        //
+        println!("{}", remove_other_char("213123 [HD]这是1".to_string()));
+        println!("{}", remove_other_char("[HD]这是2".to_string()));
+        println!("{}", remove_other_char("[HD]cctv3".to_string()));
+        println!("{}", remove_other_char("[bd]cctv4".to_string()));
+        println!("{}", remove_other_char("2323 cctv5".to_string()));
+        println!("{}", remove_other_char("2323 cctv6[geo-blocked]".to_string()));
+
         // println!("{}", translator_t2s("FTV (民視) (720p) [Not 24/7]"));
     }
 }
