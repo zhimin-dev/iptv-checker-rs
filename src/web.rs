@@ -246,7 +246,7 @@ pub async fn start_web(port: u16) {
             .route("/system/tasks/export", web::get().to(system_tasks_export))
             .route("/system/tasks/import", web::post().to(system_tasks_import))
             .route("/tasks/delete/{id}", web::delete().to(delete_task))
-            .service(fs::Files::new("/assets", "./web/assets"))
+            .service(fs::Files::new("/", "./web/"))
             .wrap(Logger::default())
     })
         .bind(("0.0.0.0", port))
