@@ -444,6 +444,7 @@ impl M3uObjectList {
                 }
             }
         } else {
+            println!("no check----{}", no_check);
             let total = self.list.len();
             for item in &mut self.list {
                 item.set_status(Success);

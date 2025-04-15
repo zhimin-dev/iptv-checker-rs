@@ -110,6 +110,7 @@ pub mod check {
     use url::Url;
 
     pub fn get_link_info(_url: String, timeout: u64) -> Result<CheckUrlIsAvailableResponse, Error> {
+        debug!("ffmepg check start --- {}, timout: {}", _url.to_owned(), timeout);
         let mut ffprobe = Command::new("ffprobe");
         let mut timeout_int = timeout;
         if timeout == 0 {
@@ -118,8 +119,6 @@ pub mod check {
         let mut prob = ffprobe
             .arg("-timeout").
             arg(timeout_int.to_string())
-            .arg("-v")
-            .arg("quiet")
             .arg("-print_format")
             .arg("json");
         let prob_resp = prob
@@ -152,12 +151,15 @@ pub mod check {
                             body.set_audio(audio);
                         }
                     }
-                    return Ok(body);
+                    debug!("ffmepg check end --- {}, timout: {}", _url.to_owned(), timeout);
+                    Ok(body)
                 } else {
+                    debug!("ffmepg check error --- {}, timout: {}", _url.to_owned(), timeout);
                     Err(Error::new(ErrorKind::Other, "ffmpeg error"))
                 }
             }
             Err(e) => {
+                debug!("ffmepg check error --- {}, timout: {}, err {}", _url.to_owned(), timeout, e);
                 // let error_str = String::from_utf8_lossy(&prob_result.stderr);
                 // println!("{} ffprobe error {:?}", _url.to_owned(), prob_result.stderr);
                 Err(Error::new(ErrorKind::Other, format!("ffmpeg error:{}", e)))

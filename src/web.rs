@@ -169,16 +169,18 @@ async fn upload(MultipartForm(form): MultipartForm<UploadFormReq>) -> impl Respo
 
 pub async fn start_web(port: u16) {
     let log_file = File::create(format!("./static/logs/app-{}.log", Local::now().format("%Y%m%d%H:%M").to_string())).unwrap();
+    let log_config = Config::default();
+    // log_config.time_format = Local::now().format("%Y-%m-%dT%H:%M:%S").to_string().as();
     let cb_logger = CombinedLogger::init(
         vec![
             WriteLogger::new(
                 LevelFilter::Debug,
-                Config::default(),
+                log_config,
                 log_file,
             ),
             WriteLogger::new(
                 LevelFilter::Debug,
-                Config::default(),
+                log_config,
                 std::io::stdout()),
         ]
     );
