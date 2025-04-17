@@ -108,13 +108,72 @@ pub mod check {
     use std::time;
     use log::{debug, info};
     use url::Url;
+    use tokio::time::{timeout, Duration};
+    use std::time::Instant;
+
+
+    // 调用 ffprobe 并限制超时时间
+    pub async fn run_ffprobe_with_timeout(_url: String, timeout_mill_secs: u64) -> Result<CheckUrlIsAvailableResponse, Error> {
+        let duration = Duration::from_secs(1);
+        println!("start ffmepg check ----");
+
+        // 使用 tokio 超时函数限制异步任务执行时间
+        return timeout(duration, async move {
+            let mut ffprobe = Command::new("ffprobe");
+            let mut timeout_int = timeout_mill_secs;
+            if timeout_mill_secs == 0 {
+                timeout_int = 20000000;
+            }
+            let prob_result = ffprobe
+                .arg("-v")
+                .arg("quiet")
+                .arg("-print_format")
+                .arg("json")
+                .arg("-show_format")
+                .arg("-show_streams")
+                .arg("-timeout")
+                .arg(timeout_int.to_string())
+                .arg(_url.to_owned())
+                .output()?;
+            if prob_result.status.success() {
+                let res_data: Ffprobe =
+                    serde_json::from_str(String::from_utf8(prob_result.stdout).unwrap().as_str())
+                        .expect("无法解析 JSON");
+                let mut body: CheckUrlIsAvailableResponse = CheckUrlIsAvailableResponse::new();
+                for one in res_data.streams.into_iter() {
+                    if one.codec_type == "video" {
+                        let mut video = VideoInfo::new();
+                        if let Some(e) = one.width {
+                            video.set_width(e)
+                        }
+                        if let Some(e) = one.height {
+                            video.set_height(e)
+                        }
+                        video.set_codec(one.codec_name);
+                        body.set_video(video);
+                    } else if one.codec_type == "audio" {
+                        let mut audio = AudioInfo::new();
+                        audio.set_codec(one.codec_name);
+                        audio.set_channels(one.channels.unwrap());
+                        body.set_audio(audio);
+                    }
+                }
+                debug!("ffmepg check end --- {}, timout: {}", _url.to_owned(), timeout_int);
+                Ok(body)
+            } else {
+                debug!("ffmepg check error --- {}, timout: {}", _url.to_owned(), timeout_int);
+                Err(Error::new(ErrorKind::Other, "ffmepg check failed"))
+            }
+        })
+            .await?;
+    }
 
     pub fn get_link_info(_url: String, timeout: u64) -> Result<CheckUrlIsAvailableResponse, Error> {
         debug!("ffmepg check start --- {}, timout: {}", _url.to_owned(), timeout);
         let mut ffprobe = Command::new("ffprobe");
         let mut timeout_int = timeout;
         if timeout == 0 {
-            timeout_int = 20000000
+            timeout_int = 20000000;
         }
         let mut prob = ffprobe
             .arg("-timeout").
@@ -174,17 +233,24 @@ pub mod check {
         ffmpeg_check: bool,
         not_http_skip: bool,
     ) -> Result<CheckUrlIsAvailableResponse, Error> {
+        println!("start check_link_is_valid check -----");
+        let start_time = Instant::now();
         if ffmpeg_check {
-            let res = get_link_info(_url.to_owned(), timeout * 1000);
+            let res = run_ffprobe_with_timeout(_url.to_owned(), timeout * 1000).await;
             return match res {
                 Ok(res) => {
+                    let lduration = start_time.elapsed();
+                    println!("start check_link_is_valid end {}", lduration.subsec_millis());
                     Ok(res)
                 }
                 Err(e) => {
+                    let lduration = start_time.elapsed();
+                    println!("start check_link_is_valid end {}", lduration.subsec_millis());
                     Err(Error::new(ErrorKind::Other, format!("status is not 200 {}", e)))
                 }
             };
         }
+        println!("start web check -----");
         let parsed_info = Url::parse(&_url);
         match parsed_info {
             Ok(parsed_url) => {
@@ -213,7 +279,7 @@ pub mod check {
                         if res.status().is_success() {
                             let delay = Utc::now().timestamp_millis() - curr_timestamp;
                             if need_video_info {
-                                let mut ffmpeg_info = get_link_info(_url.to_owned(), timeout * 1000);
+                                let mut ffmpeg_info = run_ffprobe_with_timeout(_url.to_owned(), timeout * 1000).await;
                                 match ffmpeg_info {
                                     Ok(mut data) => {
                                         data.set_delay(delay as i32);
