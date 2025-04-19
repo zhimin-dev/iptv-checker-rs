@@ -445,7 +445,7 @@ impl M3uObjectList {
                 }
             }
         } else {
-            println!("no check----{}", no_check);
+            info!("no check----{}", no_check);
             let total = self.list.len();
             for item in &mut self.list {
                 item.set_status(Success);
@@ -563,7 +563,6 @@ fn set_one_item(
     ffmpeg_check: bool,
     not_http_skip: bool,
 ) -> M3uObject {
-    println!("start check -----");
     let start_time = Instant::now();
     let url = x.url.clone();
     let _log_url = url.clone();
@@ -577,8 +576,6 @@ fn set_one_item(
     if debug {
         debug!("url is: {} result: {:?}", x.url.clone(), result);
     }
-    let lduration = start_time.elapsed();
-    println!("end check---- {}", lduration.subsec_millis());
     return match result {
         Ok(data) => {
             let mut status = OtherStatus::new();
@@ -689,10 +686,10 @@ pub enum VideoType {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct VideoInfo {
-    width: i32,
-    height: i32,
-    codec: String,
-    video_type: VideoType,
+    pub width: i32,
+    pub height: i32,
+    pub codec: String,
+    pub video_type: VideoType,
 }
 
 impl VideoInfo {
