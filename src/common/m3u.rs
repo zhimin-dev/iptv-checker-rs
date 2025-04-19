@@ -14,7 +14,8 @@ use std::io::{self, Error, Write};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use tokio::time::{timeout};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct M3uExtend {
@@ -444,6 +445,7 @@ impl M3uObjectList {
                 }
             }
         } else {
+            info!("no check----{}", no_check);
             let total = self.list.len();
             for item in &mut self.list {
                 item.set_status(Success);
@@ -561,6 +563,7 @@ fn set_one_item(
     ffmpeg_check: bool,
     not_http_skip: bool,
 ) -> M3uObject {
+    let start_time = Instant::now();
     let url = x.url.clone();
     let _log_url = url.clone();
     let result = actix_rt::System::new().block_on(check_link_is_valid(
@@ -683,10 +686,10 @@ pub enum VideoType {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct VideoInfo {
-    width: i32,
-    height: i32,
-    codec: String,
-    video_type: VideoType,
+    pub width: i32,
+    pub height: i32,
+    pub codec: String,
+    pub video_type: VideoType,
 }
 
 impl VideoInfo {

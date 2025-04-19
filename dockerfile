@@ -1,0 +1,30 @@
+# 后端构建阶段
+FROM rust:latest as backend-builder
+# 设置工作目录
+WORKDIR /usr/src/app
+COPY . .
+# 构建最终的后端二进制文件
+RUN cargo build --release
+
+# 最终的镜像
+FROM ubuntu:latest
+# 设置工作目录
+WORKDIR /app
+
+RUN apt-get update -y
+# RUN apt-get install libc6 openssl libssl-dev build-essential curl -y
+RUN apt-get install openssl -y
+RUN apt-get install ffmpeg -y
+
+# 复制前端代码
+RUN mkdir -p ./static/input
+RUN mkdir -p ./static/output
+RUN mkdir -p ./static/logs
+# 复制后端构建结果
+COPY --from=backend-builder /usr/src/app/target/release/iptv-checker-rs ./iptv-checker-rs
+COPY --from=backend-builder /usr/src/app/web ./web
+# 暴露服务端口
+ENV WEB_PORT=8089
+EXPOSE $WEB_PORT
+# 启动服务
+CMD ./iptv-checker-rs web --port ${WEB_PORT} --start

@@ -100,26 +100,334 @@ pub struct FfprobeStream {
 }
 
 pub mod check {
+    use std::fmt::format;
     use crate::common::util::check_body_is_m3u8_format;
     use crate::common::{AudioInfo, CheckUrlIsAvailableResponse, Ffprobe, VideoInfo};
     use chrono::Utc;
-    use std::io::{Error, ErrorKind};
-    use std::process::Command;
+    use std::io::{Error, ErrorKind, Read};
     use std::time;
     use log::{debug, info};
     use url::Url;
+    use tokio::time::{timeout, Duration};
+    use std::time::Instant;
+    use std::sync::mpsc;
+    use std::thread;
+    use std::process::{Command, Child, Stdio, ExitStatus};
+    use std::sync::mpsc::{channel, Sender, Receiver};
+    use std::io::{self, BufReader, BufRead};
+    use tokio::select;
+    use std::sync::{Arc, Mutex};
+
+    pub async fn run_command_with_timeout_new(_url: String, timeout_mill_secs: u64) -> Result<CheckUrlIsAvailableResponse, Error> {
+        let timeout = Duration::from_millis(timeout_mill_secs);
+        let mut second = timeout_mill_secs / 1000;
+        if second < 1 {
+            second = 1
+        }
+
+        // 1. 配置 Command 并启用管道
+        let mut cmd = Command::new("ffprobe");
+        cmd.args(vec!["-v", "quiet", "-print_format", "json",
+                      "-show_format", "-show_streams", "-timeout", &second.to_string(), &_url.to_owned()]);
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+
+
+        // 启动子进程
+        let mut child = cmd.spawn().map_err(|e| format!("Failed to spawn command: {}", e)).unwrap();
+
+        // 2. 获取 stdout/stderr 管道的句柄 (必须在主线程获取)
+        //    使用 take() 获取所有权
+        let stdout_handle = child.stdout.take().ok_or("Failed to open stdout pipe".to_string()).unwrap();
+        let stderr_handle = child.stderr.take().ok_or("Failed to open stderr pipe".to_string()).unwrap();
+
+        // 3. 创建共享缓冲区
+        let stdout_buf = Arc::new(Mutex::new(Vec::new()));
+        let stderr_buf = Arc::new(Mutex::new(Vec::new()));
+
+        // 克隆 Arc 以便移动到线程中
+        let stdout_buf_clone = Arc::clone(&stdout_buf);
+        let stderr_buf_clone = Arc::clone(&stderr_buf);
+
+        // 4. 启动 stdout 读取线程
+        let stdout_thread = thread::spawn(move || {
+            // 使用 BufReader 可能效率稍高，但直接 read 也可以
+            let mut buffer = [0; 1024]; // 读取缓冲区
+            let mut handle = stdout_handle; // 移动所有权
+            loop {
+                match handle.read(&mut buffer) {
+                    Ok(0) => break, // EOF，管道关闭
+                    Ok(n) => {
+                        // 获取锁，写入数据
+                        let mut locked_buf = stdout_buf_clone.lock().unwrap();
+                        locked_buf.extend_from_slice(&buffer[..n]);
+                    }
+                    // 忽略 BrokenPipe，这通常发生在进程被 kill 时
+                    Err(ref e) if e.kind() == io::ErrorKind::BrokenPipe => break,
+                    Err(e) => {
+                        eprintln!("Error reading stdout: {}", e); // 记录错误
+                        break;
+                    }
+                }
+            }
+            // 可以在这里返回结果，或者像现在这样只写入共享数据
+        });
+
+        // 5. 启动 stderr 读取线程 (逻辑类似)
+        let stderr_thread = thread::spawn(move || {
+            let mut buffer = [0; 1024];
+            let mut handle = stderr_handle;
+            loop {
+                match handle.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        let mut locked_buf = stderr_buf_clone.lock().unwrap();
+                        locked_buf.extend_from_slice(&buffer[..n]);
+                    }
+                    Err(ref e) if e.kind() == io::ErrorKind::BrokenPipe => break,
+                    Err(e) => {
+                        eprintln!("Error reading stderr: {}", e);
+                        break;
+                    }
+                }
+            }
+        });
+
+        // 6. 主线程执行轮询和超时逻辑
+        let start = Instant::now();
+        let final_status: ExitStatus;
+        let mut timed_out = false;
+
+        loop {
+            match child.try_wait() {
+                // 进程已退出
+                Ok(Some(status)) => {
+                    // debug!("Process exited normally with status: {}", status);
+                    final_status = status;
+                    break; // 退出轮询循环
+                }
+                // 进程仍在运行
+                Ok(None) => {
+                    if start.elapsed() >= timeout {
+                        // 超时，尝试杀掉进程
+                        // debug!("Process timed out. Attempting to kill...");
+                        match child.kill() {
+                            Ok(_) => debug!("Process killed due to timeout."),
+                            Err(e) => debug!("Warning: Failed to kill process after timeout: {}", e), // 记录 kill 失败，但仍视为超时
+                        }
+                        timed_out = true;
+                        // 注意：即使 kill 成功，try_wait 可能不会立即返回 Some(status)
+                        // 我们需要一种方式来获取最终状态，或者直接认为超时失败
+                        // 稍微等待一下让系统处理 kill，然后再次 try_wait 或直接退出循环
+                        thread::sleep(Duration::from_millis(50)); // 短暂等待 kill 生效
+                        // 再次检查状态，如果还没退出就强制认为超时失败并退出
+                        final_status = child.try_wait()
+                            .map_err(|e| format!("Error checking status after kill: {}", e)).unwrap()
+                            .unwrap_or_else(|| {
+                                // 如果 kill 后进程仍然存在（可能权限不够或特殊情况），
+                                // 我们没有标准的 ExitStatus，可以构造一个或返回特定错误
+                                // 这里简单地认为超时失败
+                                debug!("Warning: Process did not exit immediately after kill signal.");
+                                // 返回一个模拟的状态码或错误可能更好，但这里我们继续，将在下面处理 timed_out 标志
+                                // 为了有 ExitStatus，我们这里可能需要等最后一次 wait
+                                // 或者直接 break 然后在后面处理 timed_out
+                                // ExitStatus::from_raw(1) // Unix-like, just an example
+                                // 为了简化，我们直接 break，后面用 timed_out 判断
+                                // （如果需要退出码，可能需要 child.wait()）
+                                ExitStatus::default() // Placeholder, won't be used if timed_out is true
+                            });
+
+                        break; // 退出轮询循环
+                    }
+                    // 未超时，进程仍在运行，短暂休眠
+                    thread::sleep(Duration::from_millis(100));
+                }
+                // try_wait 出错
+                Err(e) => {
+                    // 在返回前，仍然尝试 join 读取线程，避免线程泄漏
+                    stdout_thread.join().expect("Stdout thread panicked");
+                    stderr_thread.join().expect("Stderr thread panicked");
+                    return Err(Error::new(ErrorKind::Other, format!("Failed to wait on child process: {}", e)));
+                }
+            }
+        } // 结束轮询 loop
+
+        // 7. 等待读取线程结束
+        // join 会等待线程完成，并返回线程的 Result (如果线程 panic 会 Err)
+        stdout_thread.join().map_err(|_| "Stdout reader thread panicked".to_string()).unwrap();
+        stderr_thread.join().map_err(|_| "Stderr reader thread panicked".to_string()).unwrap();
+
+        // 8. 处理结果
+        if timed_out {
+            // 如果是超时，即使读取线程可能收集了一些数据，我们也返回超时错误
+            // 可以选择性地包含部分收集到的数据在错误信息里
+            // let stdout_data = stdout_buf.lock().unwrap().clone();
+            // let stderr_data = stderr_buf.lock().unwrap().clone();
+            // eprintln!("Partial Stdout collected before timeout: {}", String::from_utf8_lossy(&stdout_data));
+            // eprintln!("Partial Stderr collected before timeout: {}", String::from_utf8_lossy(&stderr_data));
+            return Err(Error::new(ErrorKind::Other, "Process timed out and was killed."));
+        } else {
+            // 正常结束，获取最终的输出
+            // MutexGuard 在 drop 时自动解锁
+            let stdout_data = stdout_buf.lock().unwrap().clone();
+            let stderr_data = stderr_buf.lock().unwrap().clone();
+            // eprintln!("Partial Stdout collected: {}", String::from_utf8_lossy(&stdout_data));
+            // eprintln!("Partial Stderr collected: {}", String::from_utf8_lossy(&stderr_data));
+
+            let raw_json_str = String::from_utf8_lossy(&stdout_data);
+            match serde_json::from_str::<Ffprobe>(&raw_json_str) {
+                Ok(res_data) => {
+                    let mut body: CheckUrlIsAvailableResponse = CheckUrlIsAvailableResponse::new();
+                    for one in res_data.streams.into_iter() {
+                        if one.codec_type == "video" {
+                            let mut video = VideoInfo::new();
+                            if let Some(e) = one.width {
+                                video.set_width(e)
+                            }
+                            if let Some(e) = one.height {
+                                video.set_height(e)
+                            }
+                            video.set_codec(one.codec_name);
+                            body.set_video(video);
+                        } else if one.codec_type == "audio" {
+                            let mut audio = AudioInfo::new();
+                            audio.set_codec(one.codec_name);
+                            audio.set_channels(one.channels.unwrap());
+                            body.set_audio(audio);
+                        }
+                    }
+                    // debug!("ffmepg check end --- {}", _url.to_owned());
+                    return Ok(body);
+                }
+                Err(json_error) => {
+                    // eprintln!("JSON parsing error (from lossy UTF-8 input): {}", json_error);
+                    // 处理 JSON 解析错误
+                    return Err(Error::new(ErrorKind::Other, format!("JSON parsing error (from lossy UTF-8 input): {}", json_error)));
+                }
+            }
+        }
+    }
+
+    pub fn run_command_with_timeout(cmd: &str, args: &[&str], timeout: Duration) -> Result<(), String> {
+        let mut child = Command::new(cmd)
+            .args(args)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("Failed to spawn process: {}", e))?;
+
+        let start = Instant::now();
+
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    if status.success() {
+                        let mut str = String::default();
+                        println!("Successfully executed {}", str);
+                        return Ok(());
+                    } else {
+                        return Err(format!("Process exited with status: {}", status));
+                    }
+                }
+                Ok(None) => {
+                    if start.elapsed() >= timeout {
+                        // 超时了，杀掉进程
+                        child.kill().map_err(|e| format!("Failed to kill process: {}", e))?;
+                        return Err("Process timed out and was killed.".into());
+                    }
+                    // 进程还在跑，稍微sleep一下再继续检查
+                    thread::sleep(Duration::from_millis(100));
+                }
+                Err(e) => {
+                    return Err(format!("Failed to wait on child process: {}", e));
+                }
+            }
+        }
+    }
+
+    // 调用 ffprobe 并限制超时时间
+    pub async fn run_ffprobe_with_timeout(_url: String, timeout_mill_secs: u64) -> Result<CheckUrlIsAvailableResponse, Error> {
+        let duration = Duration::from_millis(200);
+        println!("start ffmepg check ----");
+
+        let mut second = timeout_mill_secs / 1000;
+        if second < 1 {
+            second = 1
+        }
+
+        // 使用 tokio 超时函数限制异步任务执行时间
+        let mut ffprobe = Command::new("ffprobe");
+        let cmd = ffprobe
+            .arg("-v")
+            .arg("quiet")
+            .arg("-print_format")
+            .arg("json")
+            .arg("-show_format")
+            .arg("-show_streams")
+            .arg("-timeout")
+            .arg(second.to_string())
+            .arg(_url.to_owned());
+
+        // 打印完整命令
+        let program = cmd.get_program().to_string_lossy().into_owned();
+        let args = cmd
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        println!("执行命令: {} {}", program, args);
+
+        let prob_result = cmd.output();
+        match prob_result {
+            Ok(prob_result) => {
+                if prob_result.status.success() {
+                    let res_data: Ffprobe =
+                        serde_json::from_str(String::from_utf8(prob_result.stdout).unwrap().as_str())?;
+                    let mut body: CheckUrlIsAvailableResponse = CheckUrlIsAvailableResponse::new();
+                    for one in res_data.streams.into_iter() {
+                        if one.codec_type == "video" {
+                            let mut video = VideoInfo::new();
+                            if let Some(e) = one.width {
+                                video.set_width(e)
+                            }
+                            if let Some(e) = one.height {
+                                video.set_height(e)
+                            }
+                            video.set_codec(one.codec_name);
+                            body.set_video(video);
+                        } else if one.codec_type == "audio" {
+                            let mut audio = AudioInfo::new();
+                            audio.set_codec(one.codec_name);
+                            audio.set_channels(one.channels.unwrap());
+                            body.set_audio(audio);
+                        }
+                    }
+                    debug!("ffmepg check end --- {}", _url.to_owned());
+                    Ok(body)
+                } else {
+                    debug!("ffmepg check error --- {}", _url.to_owned());
+                    Err(Error::new(ErrorKind::Other, "ffmepg check failed"))
+                }
+            }
+            Err(e) => {
+                debug!("ffmepg check error --- {}", _url.to_owned());
+                Err(Error::new(ErrorKind::Other, "ffmepg check failed"))
+            }
+        }
+    }
+
 
     pub fn get_link_info(_url: String, timeout: u64) -> Result<CheckUrlIsAvailableResponse, Error> {
+        debug!("ffmepg check start --- {}, timout: {}", _url.to_owned(), timeout);
         let mut ffprobe = Command::new("ffprobe");
         let mut timeout_int = timeout;
         if timeout == 0 {
-            timeout_int = 20000000
+            timeout_int = 20000000;
         }
         let mut prob = ffprobe
             .arg("-timeout").
             arg(timeout_int.to_string())
-            .arg("-v")
-            .arg("quiet")
             .arg("-print_format")
             .arg("json");
         let prob_resp = prob
@@ -152,12 +460,15 @@ pub mod check {
                             body.set_audio(audio);
                         }
                     }
-                    return Ok(body);
+                    debug!("ffmepg check end --- {}, timout: {}", _url.to_owned(), timeout);
+                    Ok(body)
                 } else {
+                    debug!("ffmepg check error --- {}, timout: {}", _url.to_owned(), timeout);
                     Err(Error::new(ErrorKind::Other, "ffmpeg error"))
                 }
             }
             Err(e) => {
+                debug!("ffmepg check error --- {}, timout: {}, err {}", _url.to_owned(), timeout, e);
                 // let error_str = String::from_utf8_lossy(&prob_result.stderr);
                 // println!("{} ffprobe error {:?}", _url.to_owned(), prob_result.stderr);
                 Err(Error::new(ErrorKind::Other, format!("ffmpeg error:{}", e)))
@@ -172,17 +483,24 @@ pub mod check {
         ffmpeg_check: bool,
         not_http_skip: bool,
     ) -> Result<CheckUrlIsAvailableResponse, Error> {
+        // println!("start check_link_is_valid check -----");
+        let start_time = Instant::now();
         if ffmpeg_check {
-            let res = get_link_info(_url.to_owned(), timeout * 1000);
+            let res = run_command_with_timeout_new(_url.to_owned(), timeout).await;
             return match res {
                 Ok(res) => {
+                    let lduration = start_time.elapsed();
+                    // println!("start check_link_is_valid end {}", lduration.subsec_millis());
                     Ok(res)
                 }
                 Err(e) => {
+                    let lduration = start_time.elapsed();
+                    // println!("start check_link_is_valid end {}", lduration.subsec_millis());
                     Err(Error::new(ErrorKind::Other, format!("status is not 200 {}", e)))
                 }
             };
         }
+        // println!("start web check -----");
         let parsed_info = Url::parse(&_url);
         match parsed_info {
             Ok(parsed_url) => {
@@ -211,7 +529,7 @@ pub mod check {
                         if res.status().is_success() {
                             let delay = Utc::now().timestamp_millis() - curr_timestamp;
                             if need_video_info {
-                                let mut ffmpeg_info = get_link_info(_url.to_owned(), timeout * 1000);
+                                let mut ffmpeg_info = run_command_with_timeout_new(_url.to_owned(), timeout).await;
                                 match ffmpeg_info {
                                     Ok(mut data) => {
                                         data.set_delay(delay as i32);
@@ -466,7 +784,31 @@ async fn check_rtmp_path_exists(address: &str, app_name: &str, stream_name: &str
 // 测试模块
 #[cfg(test)]
 mod tests {
+    use crate::common::check::check::{run_command_with_timeout, run_command_with_timeout_new};
     use crate::common::check::check_rtmp_path_exists;
+    use std::thread;
+    use std::time::{Duration, Instant};
+    use std::sync::mpsc;
+    #[tokio::test]
+    async fn test_timeout() {
+        let (tx, rx) = mpsc::channel();
+
+        // 模拟从channel里收到一条命令
+        thread::spawn(move || {
+            tx.send(("https://cd-live-stream.news.cctvplus.com/live/smil:CHANNEL2.smil/playlist.m3u8", 5000)).unwrap(); // 比如要执行sleep 5秒
+        });
+
+        if let Ok((_url, timeout)) = rx.recv() {
+            println!("Running command: {} {:?}", _url, timeout);
+            match run_command_with_timeout_new(_url.to_string(), (timeout as u64)).await {
+                Ok(ed) => {
+                    let v = ed.video.clone().unwrap();
+                    println!("Command finished successfully.{} {}", v.width, v.height)
+                }
+                Err(e) => println!("Command failed: {}", e),
+            }
+        }
+    }
 
     #[tokio::test]
     async fn test_valid_rtmp_url() {
@@ -489,19 +831,5 @@ mod tests {
                 println!("RTMP 路徑初步判斷為不存在 (發生錯誤)");
             }
         }
-
-        // match check_rtmp_socket(rtmp_address).await {
-        //     Ok(is_valid) => {
-        //         if is_valid {
-        //             println!("RTMP 服务初步判断为有效");
-        //         } else {
-        //             println!("RTMP 服务初步判断为无效");
-        //         }
-        //     },
-        //     Err(e) => {
-        //         eprintln!("检查过程中发生错误: {}", e);
-        //         println!("RTMP 服务初步判断为无效"); // 发生错误也视为无效
-        //     }
-        // }
     }
 }
