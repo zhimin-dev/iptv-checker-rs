@@ -100,7 +100,6 @@ pub struct FfprobeStream {
 }
 
 pub mod check {
-    use std::fmt::format;
     use crate::common::util::check_body_is_m3u8_format;
     use crate::common::{AudioInfo, CheckUrlIsAvailableResponse, Ffprobe, VideoInfo};
     use chrono::Utc;
@@ -110,12 +109,10 @@ pub mod check {
     use url::Url;
     use tokio::time::{timeout, Duration};
     use std::time::Instant;
-    use std::sync::mpsc;
     use std::thread;
     use std::process::{Command, Child, Stdio, ExitStatus};
     use std::sync::mpsc::{channel, Sender, Receiver};
     use std::io::{self, BufReader, BufRead};
-    use tokio::select;
     use std::sync::{Arc, Mutex};
 
     pub async fn run_command_with_timeout_new(_url: String, timeout_mill_secs: u64) -> Result<CheckUrlIsAvailableResponse, Error> {
@@ -270,7 +267,7 @@ pub mod check {
             // 正常结束，获取最终的输出
             // MutexGuard 在 drop 时自动解锁
             let stdout_data = stdout_buf.lock().unwrap().clone();
-            let stderr_data = stderr_buf.lock().unwrap().clone();
+            // let stderr_data = stderr_buf.lock().unwrap().clone();
             // eprintln!("Partial Stdout collected: {}", String::from_utf8_lossy(&stdout_data));
             // eprintln!("Partial Stderr collected: {}", String::from_utf8_lossy(&stderr_data));
 
@@ -304,174 +301,6 @@ pub mod check {
                     // 处理 JSON 解析错误
                     return Err(Error::new(ErrorKind::Other, format!("JSON parsing error (from lossy UTF-8 input): {}", json_error)));
                 }
-            }
-        }
-    }
-
-    pub fn run_command_with_timeout(cmd: &str, args: &[&str], timeout: Duration) -> Result<(), String> {
-        let mut child = Command::new(cmd)
-            .args(args)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|e| format!("Failed to spawn process: {}", e))?;
-
-        let start = Instant::now();
-
-        loop {
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    if status.success() {
-                        let mut str = String::default();
-                        println!("Successfully executed {}", str);
-                        return Ok(());
-                    } else {
-                        return Err(format!("Process exited with status: {}", status));
-                    }
-                }
-                Ok(None) => {
-                    if start.elapsed() >= timeout {
-                        // 超时了，杀掉进程
-                        child.kill().map_err(|e| format!("Failed to kill process: {}", e))?;
-                        return Err("Process timed out and was killed.".into());
-                    }
-                    // 进程还在跑，稍微sleep一下再继续检查
-                    thread::sleep(Duration::from_millis(100));
-                }
-                Err(e) => {
-                    return Err(format!("Failed to wait on child process: {}", e));
-                }
-            }
-        }
-    }
-
-    // 调用 ffprobe 并限制超时时间
-    pub async fn run_ffprobe_with_timeout(_url: String, timeout_mill_secs: u64) -> Result<CheckUrlIsAvailableResponse, Error> {
-        let duration = Duration::from_millis(200);
-        println!("start ffmepg check ----");
-
-        let mut second = timeout_mill_secs / 1000;
-        if second < 1 {
-            second = 1
-        }
-
-        // 使用 tokio 超时函数限制异步任务执行时间
-        let mut ffprobe = Command::new("ffprobe");
-        let cmd = ffprobe
-            .arg("-v")
-            .arg("quiet")
-            .arg("-print_format")
-            .arg("json")
-            .arg("-show_format")
-            .arg("-show_streams")
-            .arg("-timeout")
-            .arg(second.to_string())
-            .arg(_url.to_owned());
-
-        // 打印完整命令
-        let program = cmd.get_program().to_string_lossy().into_owned();
-        let args = cmd
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect::<Vec<_>>()
-            .join(" ");
-
-        println!("执行命令: {} {}", program, args);
-
-        let prob_result = cmd.output();
-        match prob_result {
-            Ok(prob_result) => {
-                if prob_result.status.success() {
-                    let res_data: Ffprobe =
-                        serde_json::from_str(String::from_utf8(prob_result.stdout).unwrap().as_str())?;
-                    let mut body: CheckUrlIsAvailableResponse = CheckUrlIsAvailableResponse::new();
-                    for one in res_data.streams.into_iter() {
-                        if one.codec_type == "video" {
-                            let mut video = VideoInfo::new();
-                            if let Some(e) = one.width {
-                                video.set_width(e)
-                            }
-                            if let Some(e) = one.height {
-                                video.set_height(e)
-                            }
-                            video.set_codec(one.codec_name);
-                            body.set_video(video);
-                        } else if one.codec_type == "audio" {
-                            let mut audio = AudioInfo::new();
-                            audio.set_codec(one.codec_name);
-                            audio.set_channels(one.channels.unwrap());
-                            body.set_audio(audio);
-                        }
-                    }
-                    debug!("ffmepg check end --- {}", _url.to_owned());
-                    Ok(body)
-                } else {
-                    debug!("ffmepg check error --- {}", _url.to_owned());
-                    Err(Error::new(ErrorKind::Other, "ffmepg check failed"))
-                }
-            }
-            Err(e) => {
-                debug!("ffmepg check error --- {}", _url.to_owned());
-                Err(Error::new(ErrorKind::Other, "ffmepg check failed"))
-            }
-        }
-    }
-
-
-    pub fn get_link_info(_url: String, timeout: u64) -> Result<CheckUrlIsAvailableResponse, Error> {
-        debug!("ffmepg check start --- {}, timout: {}", _url.to_owned(), timeout);
-        let mut ffprobe = Command::new("ffprobe");
-        let mut timeout_int = timeout;
-        if timeout == 0 {
-            timeout_int = 20000000;
-        }
-        let mut prob = ffprobe
-            .arg("-timeout").
-            arg(timeout_int.to_string())
-            .arg("-print_format")
-            .arg("json");
-        let prob_resp = prob
-            .arg("-show_format")
-            .arg("-show_streams")
-            .arg(_url.to_owned())
-            .output();
-        match prob_resp {
-            Ok(prob_result) => {
-                if prob_result.status.success() {
-                    let res_data: Ffprobe =
-                        serde_json::from_str(String::from_utf8(prob_result.stdout).unwrap().as_str())
-                            .expect("无法解析 JSON");
-                    let mut body: CheckUrlIsAvailableResponse = CheckUrlIsAvailableResponse::new();
-                    for one in res_data.streams.into_iter() {
-                        if one.codec_type == "video" {
-                            let mut video = VideoInfo::new();
-                            if let Some(e) = one.width {
-                                video.set_width(e)
-                            }
-                            if let Some(e) = one.height {
-                                video.set_height(e)
-                            }
-                            video.set_codec(one.codec_name);
-                            body.set_video(video);
-                        } else if one.codec_type == "audio" {
-                            let mut audio = AudioInfo::new();
-                            audio.set_codec(one.codec_name);
-                            audio.set_channels(one.channels.unwrap());
-                            body.set_audio(audio);
-                        }
-                    }
-                    debug!("ffmepg check end --- {}, timout: {}", _url.to_owned(), timeout);
-                    Ok(body)
-                } else {
-                    debug!("ffmepg check error --- {}, timout: {}", _url.to_owned(), timeout);
-                    Err(Error::new(ErrorKind::Other, "ffmpeg error"))
-                }
-            }
-            Err(e) => {
-                debug!("ffmepg check error --- {}, timout: {}, err {}", _url.to_owned(), timeout, e);
-                // let error_str = String::from_utf8_lossy(&prob_result.stderr);
-                // println!("{} ffprobe error {:?}", _url.to_owned(), prob_result.stderr);
-                Err(Error::new(ErrorKind::Other, format!("ffmpeg error:{}", e)))
             }
         }
     }
@@ -784,7 +613,7 @@ async fn check_rtmp_path_exists(address: &str, app_name: &str, stream_name: &str
 // 测试模块
 #[cfg(test)]
 mod tests {
-    use crate::common::check::check::{run_command_with_timeout, run_command_with_timeout_new};
+    use crate::common::check::check::{ run_command_with_timeout_new};
     use crate::common::check::check_rtmp_path_exists;
     use std::thread;
     use std::time::{Duration, Instant};

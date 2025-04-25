@@ -9,7 +9,14 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::{format, Error};
 use std::fs;
+use std::fs::FileTimes;
 use std::io::Write;
+use crate::common::check;
+use crate::common::task::{
+    add_task, delete_task, get_download_body, list_task, run_task, system_tasks_export,
+    system_tasks_import, update_task,
+};
+use crate::config;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GithubPageProps {
@@ -356,97 +363,90 @@ async fn init_search_data() -> Result<(), Error> {
     let _ = create_folder(&"./static/input/search/".to_string()).expect("文件夹创建失败");
 
     // 下线相关文件
-    let config = read_search_configs().expect("配置获取失败");
+    let config = read_search_configs().await.expect("配置获取失败");
     let mut i = 0;
-    for fetch_values in config.fetch_source {
-        if fetch_values.parse_type.eq("epg-livestream-page") {
-            if fetch_values.urls.len() > 0 {
-                let list = fetch_epg_page(fetch_values.urls[0].clone()).await;
-                // 将list转换成m3u文件
-                let save_status =
-                    epg_list_to_m3u_file(list, format!("./static/input/search/100-{}.m3u", i));
-                match save_status {
-                    Ok(()) => {
-                        info!("file save success");
-                    }
-                    Err(e) => {
-                        error!("file save failed: {}", e);
-                    }
-                }
-                i += 1;
-            }
-        } else if fetch_values.parse_type.eq("github-home-page") {
-            for url in fetch_values.urls {
-                let m3u_and_txt_files = fetch_github_home_page(
-                    url.clone(),
-                    fetch_values.include_files.clone(),
-                    config.valid_extensions.clone(),
-                )
-                    .await;
-                debug!("{:?}", m3u_and_txt_files);
-                // 下载m3u文件
-                for _url in m3u_and_txt_files {
-                    let save_name = format!("./static/input/search/200-{}{}", i, _url.extension);
-                    i += 1;
+    for fetch_values in config.source {
+        match fetch_values.parse_type {
+            SearchConfigParseType::EpgLivestreamPageUrl => {
+                if fetch_values.urls.len() > 0 {
+                    let fetch_url = fetch_values.urls[0].clone();
+                    let list = fetch_epg_page(fetch_url.clone()).await;
+                    // 将list转换成m3u文件
                     let save_status =
-                        download_target_files(_url.download_url, save_name.to_string()).await;
-                    match save_status {
-                        Ok(_) => {
-                            info!("file save success");
-                        }
-                        Err(e) => {
-                            error!("file save failed: {}", e);
-                        }
-                    }
-                }
-            }
-        } else if fetch_values.parse_type.eq("github-sub-page") {
-            for url in fetch_values.urls {
-                let m3u_and_txt_files = fetch_github_sub_page(
-                    url.clone(),
-                    fetch_values.include_files.clone(),
-                    config.valid_extensions.clone(),
-                )
-                    .await;
-                debug!("{:?}", m3u_and_txt_files);
-                // 下载m3u文件
-                for _url in m3u_and_txt_files {
-                    let save_name = format!("./static/input/search/300-{}{}", i, _url.extension);
-                    i += 1;
-                    let save_status =
-                        download_target_files(_url.download_url, save_name.to_string()).await;
+                        epg_list_to_m3u_file(list, format!("./static/input/search/100-{}.m3u", i));
                     match save_status {
                         Ok(()) => {
-                            info!("file save success");
+                            info!("{} file save success", fetch_url.clone());
                         }
                         Err(e) => {
-                            error!("file save failed: {}", e);
+                            error!("{} file save failed: {}", fetch_url.clone(), e);
                         }
+                    }
+                    i += 1;
+                }
+            }
+            SearchConfigParseType::GithubHomeUrl => {
+                for url in fetch_values.urls {
+                    let m3u_and_txt_files = fetch_github_home_page(
+                        url.clone(),
+                        fetch_values.include_files.clone(),
+                        config.extensions.clone(),
+                    )
+                        .await;
+                    debug!("{:?}", m3u_and_txt_files);
+                    // 下载m3u文件
+                    for _url in m3u_and_txt_files {
+                        i += 1;
+                        save_data(_url.download_url.clone(),
+                                  format!("./static/input/search/200-{}{}", i, _url.extension)).await;
                     }
                 }
             }
-        } else if fetch_values.parse_type.eq("raw-source") {
-            for url in fetch_values.urls {
-                let mut ext = ".m3u";
-                if url.contains(".txt") {
-                    ext = ".txt"
+            SearchConfigParseType::GithubSubPageUrl => {
+                for url in fetch_values.urls {
+                    let m3u_and_txt_files = fetch_github_sub_page(
+                        url.clone(),
+                        fetch_values.include_files.clone(),
+                        config.extensions.clone(),
+                    )
+                        .await;
+                    debug!("{:?}", m3u_and_txt_files);
+                    // 下载m3u文件
+                    for _url in m3u_and_txt_files {
+                        i += 1;
+                        save_data(_url.download_url.clone(),
+                                  format!("./static/input/search/300-{}{}", i, _url.extension)).await;
+                    }
                 }
-                let save_name = format!("./static/input/search/400-{}{}", i, ext);
-                i += 1;
-                let save_status =
-                    download_target_files(url.clone(), save_name.to_string()).await;
-                match save_status {
-                    Ok(()) => {
-                        info!("file save success");
+            }
+            SearchConfigParseType::RawSources => {
+                for url in fetch_values.urls {
+                    let mut ext = ".m3u";
+                    if url.contains(".txt") {
+                        ext = ".txt"
                     }
-                    Err(e) => {
-                        error!("file save failed: {}", e);
-                    }
+                    i += 1;
+                    save_data(url.clone(),
+                              format!("./static/input/search/400-{}{}", i, ext)).await;
                 }
             }
         }
     }
     Ok(())
+}
+
+async fn save_data(url: String, save_name: String) {
+    let fetch_url = url.clone();
+    let save_status =
+        download_target_files(fetch_url.clone(), save_name.to_string()).await;
+    match save_status {
+        Ok(_) => {
+            info!("{} file save success", fetch_url.clone());
+        }
+        Err(e) => {
+            error!("{} file save failed: {}", fetch_url.clone(), e);
+        }
+    }
 }
 
 async fn download_target_files(_url: String, save_path: String) -> Result<(), Error> {
@@ -463,31 +463,127 @@ async fn download_target_files(_url: String, save_path: String) -> Result<(), Er
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct ConfigSearch {
-    #[serde(rename = "fetchSource")]
-    pub fetch_source: Vec<FetchSource>,
-
-    #[serde(rename = "validExtensions")]
-    pub valid_extensions: Vec<String>,
+pub struct SearchConfigs {
+    pub source: Vec<SearchSource>,
+    pub extensions: Vec<String>,
+    pub search_list: Vec<SearchListItem>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct FetchSource {
+pub struct SearchSource {
     pub urls: Vec<String>,
-
-    #[serde(rename = "parseType")]
-    pub parse_type: String,
-
-    #[serde(rename = "includeFiles")]
     pub include_files: Vec<String>,
+    pub parse_type: SearchConfigParseType,
 }
 
-fn read_search_configs() -> Result<ConfigSearch, Error> {
-    let config_path = "./search.json";
-    let config_str = fs::read_to_string(&config_path).expect("read file error");
-    let config_list: ConfigSearch = serde_json::from_str(&config_str).unwrap();
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub enum SearchConfigParseType {
+    #[serde(rename = "epg-livestream-page")]
+    EpgLivestreamPageUrl,
+    #[serde(rename = "github-home-page")]
+    GithubHomeUrl,
+    #[serde(rename = "github-sub-page")]
+    GithubSubPageUrl,
+    #[serde(rename = "raw-source")]
+    RawSources,
+}
 
-    Ok(config_list)
+impl std::str::FromStr for SearchConfigParseType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "epg-livestream-page" => Ok(SearchConfigParseType::EpgLivestreamPageUrl),
+            "github-home-page" => Ok(SearchConfigParseType::GithubHomeUrl),
+            "github-sub-page" => Ok(SearchConfigParseType::GithubSubPageUrl),
+            "raw-source" => Ok(SearchConfigParseType::RawSources),
+            _ => Err(format!("Unknown parse type: {}", s)),
+        }
+    }
+}
+
+impl std::fmt::Display for SearchConfigParseType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SearchConfigParseType::EpgLivestreamPageUrl => write!(f, "epg-livestream-page"),
+            SearchConfigParseType::GithubHomeUrl => write!(f, "github-home-page"),
+            SearchConfigParseType::GithubSubPageUrl => write!(f, "github-sub-page"),
+            SearchConfigParseType::RawSources => write!(f, "raw-source"),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct SearchListItem {
+    pub id: String,
+    pub config: Vec<SearchConfig>,
+    pub result: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct SearchConfig {
+    pub search_name: Vec<String>,
+    pub save_name: String,
+    pub full_match: bool,
+    pub exclude_url: Vec<String>,
+    pub exclude_host: Vec<String>,
+}
+
+pub async fn read_search_configs() -> Result<SearchConfigs, Box<dyn std::error::Error>> {
+    // 从config模块读取搜索配置
+    let search_config = match config::get_search() {
+        Ok(config) => config,
+        Err(e) => {
+            error!("Failed to read search config: {}", e);
+            return Err(Box::new(e));
+        }
+    };
+
+    // 转换配置格式
+    let mut configs = SearchConfigs {
+        source: Vec::new(),
+        extensions: Vec::new(),
+        search_list: Vec::new(),
+    };
+
+    // 转换搜索源
+    for source in search_config.source {
+        configs.source.push(SearchSource {
+            urls: source.urls,
+            include_files: source.include_files,
+            parse_type: source.parse_type.parse().unwrap_or_else(|_| {
+                error!("Invalid parse type: {}", source.parse_type);
+                SearchConfigParseType::RawSources
+            }),
+        });
+    }
+
+    // 转换扩展名
+    configs.extensions = search_config.extensions;
+
+    // 转换搜索列表
+    for item in search_config.search_list {
+        let mut search_item = SearchListItem {
+            id: item.id,
+            config: Vec::new(),
+            result: item.result,
+        };
+
+        // 转换搜索配置
+        for config in item.config {
+            search_item.config.push(SearchConfig {
+                search_name: config.search_name,
+                save_name: config.save_name,
+                full_match: config.full_match,
+                exclude_url: config.exclude_url,
+                exclude_host: config.exclude_host,
+            });
+        }
+
+        configs.search_list.push(search_item);
+    }
+
+    Ok(configs)
 }
 
 pub async fn do_search(search_name: String, thumbnail: bool) -> Result<Vec<M3uObject>, Error> {
@@ -509,7 +605,10 @@ pub async fn do_search(search_name: String, thumbnail: bool) -> Result<Vec<M3uOb
             // 返回数据
             Ok(res_list)
         }
-        _ => Ok(vec![]),
+        Err(e) => {
+            error!("Failed to search: {}", e);
+            Ok(vec![])
+        }
     }
 }
 

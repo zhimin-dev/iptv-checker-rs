@@ -3,6 +3,14 @@ use crate::common::task::{
     add_task, delete_task, get_download_body, list_task, run_task, system_tasks_export,
     system_tasks_import, update_task, TaskManager,
 };
+use crate::middleware::Logging;
+use actix_web::middleware::Logger;
+use clap::ColorChoice;
+use env_logger::fmt::style::{Color, RgbColor};
+use env_logger::Env;
+use log::Level::Trace;
+use log::{error, info, LevelFilter};
+use std::io::Write;
 use actix_files as fs;
 use actix_files::NamedFile;
 use actix_multipart::form::{tempfile::TempFile, MultipartForm};
@@ -17,6 +25,11 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time;
 use std::time::Duration;
+use chrono::Local;
+use crate::common::task::TaskStatus::InProgress;
+use crate::config::config::{init_config, Core};
+use crate::config::{get_check, get_task, parse_core_json,save_task};
+use tokio::signal;
 
 #[derive(Debug, Deserialize, Serialize)]
 struct TaskDel {
@@ -168,14 +181,17 @@ async fn upload(MultipartForm(form): MultipartForm<UploadFormReq>) -> impl Respo
 }
 
 pub async fn start_web(port: u16) {
+    // 初始化日志
     let log_file = File::create(format!("./static/logs/app-{}.log", Local::now().format("%Y%m%d%H:%M").to_string())).unwrap();
-    let log_config = Config::default();
-    // log_config.time_format = Local::now().format("%Y-%m-%dT%H:%M:%S").to_string().as();
+    let mut log_config = Config::default();
+    log_config.time = Some(simplelog::Level::Debug);
+    log_config.time_format = Some("%Y-%m-%d %H:%M:%S%.3f");
+    
     let cb_logger = CombinedLogger::init(
         vec![
             WriteLogger::new(
                 LevelFilter::Debug,
-                log_config,
+                log_config.clone(),
                 log_file,
             ),
             WriteLogger::new(
@@ -185,20 +201,18 @@ pub async fn start_web(port: u16) {
         ]
     );
     match cb_logger {
-        Ok(cb_data) => {}
+        Ok(_) => {}
         Err(e) => {
             error!("cb_logger: {}",e)
         }
     }
 
-    let data = Arc::new(TaskManager {
+    init_config();
+
+    // Initialize TaskManager
+    let task_manager = Arc::new(TaskManager {
         tasks: Mutex::new(HashMap::new()),
     });
-
-    // 尝试从文件加载任务
-    if let Err(e) = data.load_tasks() {
-        error!("Failed to load tasks: {}", e);
-    }
 
     // 使用 Arc<Mutex<Scheduler>> 来共享 scheduler
     let scheduler: Arc<Mutex<Scheduler>> = Arc::new(Mutex::new(Scheduler::with_tz(chrono::Local)));
@@ -214,23 +228,36 @@ pub async fn start_web(port: u16) {
             thread::sleep(Duration::from_secs(30));
         })
     };
-    let data_clone = Arc::clone(&data);
+
+    // 设置定时任务
     {
         let mut scheduler = scheduler.lock().unwrap();
         scheduler.every(30.seconds()).run(move || {
-            let data_clone = Arc::clone(&data_clone);
-            let tasks = data_clone.list_task().unwrap();
-            for mut task in tasks {
-                task.run();
-                data_clone
-                    .update_task_info(task.get_uuid(), task.get_task_info())
-                    .unwrap();
+            // 获取所有任务
+            if let Ok(tasks) = get_check() {
+                for (id, task) in tasks.task {
+                    // 运行任务
+                    if let Ok(mut task) = get_task(&id) {
+                        if let Some(mut task) = task {
+                            // 更新任务状态
+                            task.task_info.is_running = true;
+                            task.task_info.task_status = InProgress;
+                            
+                            // 运行任务
+                            task.run();
+                            
+                            // 更新任务信息
+                            if let Err(e) = save_task(id.clone(), task) {
+                                error!("Failed to update task {}: {}", id, e);
+                            }
+                        }
+                    }
+                }
             }
         });
     }
-    let data_clone_for_http = Arc::clone(&data);
-    let _ = HttpServer::new(move || {
-        let data_clone_for_http_server = Arc::clone(&data_clone_for_http);
+
+    let server = HttpServer::new(move || {
         App::new()
             .service(check_url_is_available)
             .service(fetch_m3u_body)
@@ -238,8 +265,8 @@ pub async fn start_web(port: u16) {
             .service(index)
             .service(upload)
             .service(fs::Files::new("/static", VIEW_BASE_DIR.to_owned()).show_files_listing())
-            .app_data(web::Data::new(data_clone_for_http_server))
             .app_data(web::Data::new(scheduler.clone()))
+            .app_data(web::Data::new(Arc::clone(&task_manager)))
             .route("/tasks/list", web::get().to(list_task))
             .route("/tasks/run", web::get().to(run_task))
             .route("/tasks/update", web::post().to(update_task))
@@ -251,49 +278,23 @@ pub async fn start_web(port: u16) {
             .service(fs::Files::new("/", "./web/"))
             .wrap(Logger::default())
     })
-        .bind(("0.0.0.0", port))
-        .expect("Failed to bind address")
-        .run()
-        .await
-        .expect("failed to run server");
+    .bind(("0.0.0.0", port))
+    .expect("Failed to bind address")
+    .shutdown_timeout(60)
+    .run();
 
+    let server_handle = server.handle();
+    let server_task = tokio::spawn(server);
+
+    // Wait for Ctrl+C
+    tokio::select! {
+        _ = signal::ctrl_c() => {
+            info!("Shutting down server...");
+            server_handle.stop(true).await;
+        }
+        _ = server_task => {}
+    }
+
+    // Wait for scheduler thread to finish
     scheduler_thread.join().unwrap();
-}
-
-use crate::middleware::Logging;
-use actix_web::middleware::Logger;
-use chrono::Local;
-use clap::ColorChoice;
-use env_logger::fmt::style::{Color, RgbColor};
-use env_logger::Env;
-use log::Level::Trace;
-use log::{error, info, LevelFilter};
-use std::io::Write;
-
-pub fn init_logger() {
-    let env = Env::default().filter_or("MY_LOG_LEVEL", "debug");
-    // 设置日志打印格式
-    env_logger::Builder::from_env(env).format(|buf, record| {
-        Ok({
-            // let level_color = match record.level() {
-            //     log::Level::Error => Color::Rgb(RgbColor(231,28,31)),
-            //     log::Level::Warn => Color::Rgb(RgbColor(209,223,17)),
-            //     log::Level::Info => Color::Rgb(RgbColor(39,165,0)),
-            //     log::Level::Debug | log::Level::Trace => Color::Rgb(RgbColor(117,90,179)),
-            // };
-
-            // let mut level_style = buf.default_level_style(Trace);
-            // level_style.set_color(level_color).set_bold(true);
-            //
-            // let mut style = buf.style();
-            // style.set_color(Color::Rgb(RgbColor(255,255,255))).set_dimmed(true);
-
-            write!(buf, "{} {} [ {} ] {}\n",
-                   Local::now().format("%Y-%m-%d %H:%M:%S"),
-                   record.level(),
-                   record.module_path().unwrap_or("<unnamed>"),
-                   record.args()).unwrap();
-        })
-    }).filter(None, LevelFilter::Debug).init();
-    info!("env_logger initialized.");
 }

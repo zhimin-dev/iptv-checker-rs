@@ -4,11 +4,14 @@ mod search;
 mod utils;
 mod web;
 mod middleware;
+mod config;
 
 use crate::common::do_check;
 use crate::live::do_ob;
 use crate::search::{clear_search_folder, do_search};
 use crate::utils::{create_folder, file_exists};
+use crate::config::config::{init_config, Core};
+use crate::config::*;
 use chrono::Local;
 use clap::{arg, Args as clapArgs, Parser, Subcommand};
 use log::{error, info, LevelFilter};
@@ -26,13 +29,13 @@ enum Commands {
     /// 检查相关命令
     Check(CheckArgs),
     /// 搜索相关命令
-    Fetch(FetchArgs),
+    Search(SearchArgs),
     /// 转播相关命令
     Ob(ObArgs),
 }
 
 #[derive(clapArgs)]
-pub struct FetchArgs {
+pub struct SearchArgs {
     /// 搜索频道名称,如果有别名，用英文逗号分隔
     #[arg(long = "search", default_value_t = String::from(""))]
     search: String,
@@ -188,6 +191,19 @@ pub fn show_status() {
 
 #[actix_web::main]
 pub async fn main() {
+    // Initialize logger at the start
+    CombinedLogger::init(
+        vec![
+            WriteLogger::new(
+                LevelFilter::Info,
+                Config::default(),
+                std::io::stdout(),
+            ),
+        ]
+    ).unwrap();
+
+    init_config();
+
     init_folder();
     let pid_name = get_pid_file();
     let args = Args::parse();
@@ -206,14 +222,6 @@ pub async fn main() {
             }
         }
         Commands::Check(args) => {
-            CombinedLogger::init(
-                vec![
-                    WriteLogger::new(
-                        LevelFilter::Debug,
-                        Config::default(),
-                        std::io::stdout()),
-                ]
-            ).unwrap();
             if args.input_file.len() > 0 {
                 info!("您输入的文件地址是: {}", args.input_file.join(","));
                 do_check(
@@ -236,7 +244,7 @@ pub async fn main() {
                     .unwrap();
             }
         }
-        Commands::Fetch(args) => {
+        Commands::Search(args) => {
             if args.clear {
                 if let Ok(_) = clear_search_folder() {
                     info!("clear success 😄")

@@ -7,3 +7,4 @@ Cargo.lock
 tasks.json
 .cargo
 static/*
+core.json

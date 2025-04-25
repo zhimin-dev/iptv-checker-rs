@@ -9,8 +9,7 @@ use std::io::{Error, ErrorKind, Read, Result, Write};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
-
-const FILE_PATH: &str = "tasks.json";
+use crate::config::config::file_config;
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct TaskInfo {
@@ -23,10 +22,10 @@ pub struct TaskInfo {
     // next run time, (s)
     next_run_time: i32,
 
-    is_running: bool,
+    pub(crate) is_running: bool,
 
     // 任务状态
-    task_status: TaskStatus,
+    pub(crate) task_status: TaskStatus,
 }
 
 #[warn(private_interfaces)]
@@ -276,7 +275,7 @@ impl TaskContent {
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
-enum TaskStatus {
+pub enum TaskStatus {
     Pending,
     InProgress,
 }
@@ -293,7 +292,7 @@ pub struct Task {
     create_time: u64,
 
     //任务详情
-    task_info: TaskInfo,
+    pub(crate) task_info: TaskInfo,
 }
 
 fn now() -> u64 {
@@ -417,34 +416,37 @@ impl TaskManager {
         let ori = task.valid().unwrap();
         let mut task = Task::new();
         task.set_original(ori);
-        let mut tasks = self.tasks.lock().unwrap();
-        tasks.insert(task.get_uuid(), task.clone());
-        drop(tasks); // 显式释放锁以防止死锁
-        self.save_tasks()?;
-        Ok(task.get_uuid())
+        let id = task.get_uuid();
+        if let Err(e) = file_config::save_task(id.clone(), task) {
+            return Err(Error::new(ErrorKind::Other, e.to_string()));
+        }
+        if let Err(e) = file_config::save_config("core.json") {
+            return Err(Error::new(ErrorKind::Other, e.to_string()));
+        }
+        Ok(id)
     }
 
     pub fn import_task_from_data(&self, data_map: HashMap<String, Task>) -> bool {
-        let mut tasks = self.tasks.lock().unwrap();
         for (k, v) in data_map {
-            let id = v.id.clone();
-            if let None = tasks.get_mut(&id) {
-                tasks.insert(k, v.clone());
+            if let Err(_) = file_config::save_task(k, v) {
+                return false;
             }
         }
-        drop(tasks);
-        if let Ok(_) = self.save_tasks() {
-            return true;
+        if let Err(_) = file_config::save_config("core.json") {
+            return false;
         }
-        false
+        true
     }
 
     pub fn run_task(&self, id: String) -> Result<bool> {
-        let mut tasks = self.tasks.lock().unwrap();
-        if let Some(task) = tasks.get_mut(&id) {
+        if let Ok(Some(mut task)) = file_config::get_task(&id) {
             task.task_info.set_next_run_time(now() as i32);
-            drop(tasks);
-            self.save_tasks()?;
+            if let Err(_) = file_config::save_task(id, task) {
+                return Ok(false);
+            }
+            if let Err(_) = file_config::save_config("core.json") {
+                return Ok(false);
+            }
             Ok(true)
         } else {
             Ok(false)
@@ -452,26 +454,28 @@ impl TaskManager {
     }
 
     pub fn get_task(&self, id: String) -> Option<Task> {
-        let mut tasks = self.tasks.lock().unwrap();
-        if let Some(data) = tasks.get_mut(&id) {
-            return Some(data.clone());
+        if let Ok(Some(task)) = file_config::get_task(&id) {
+            Some(task)
+        } else {
+            None
         }
-        return None;
     }
 
     pub fn update_task(&self, id: String, pass_task: TaskContent) -> Result<bool> {
-        let mut tasks = self.tasks.lock().unwrap();
-        if let Some(task) = tasks.get_mut(&id) {
+        if let Ok(Some(mut task)) = file_config::get_task(&id) {
             let mut task_info = task.clone().get_task_info();
             let ori = pass_task.valid().unwrap();
-            let mut task = Task::new();
-            task.set_original(ori);
-            task.set_id(id);
+            let mut new_task = Task::new();
+            new_task.set_original(ori);
+            new_task.set_id(id);
             task_info.set_run_type(pass_task.run_type);
-            task.set_task_info(task_info);
-            tasks.insert(task.get_uuid(), task.clone());
-            drop(tasks);
-            self.save_tasks()?;
+            new_task.set_task_info(task_info);
+            if let Err(_) = file_config::save_task(new_task.get_uuid(), new_task) {
+                return Ok(false);
+            }
+            if let Err(_) = file_config::save_config("core.json") {
+                return Ok(false);
+            }
             Ok(true)
         } else {
             Ok(false)
@@ -479,49 +483,34 @@ impl TaskManager {
     }
 
     pub fn delete_task(&self, id: String) -> Result<bool> {
-        let mut tasks = self.tasks.lock().unwrap();
-        let removed = tasks.remove(&id).is_some();
-        drop(tasks);
-        if removed {
-            self.save_tasks()?;
+        if let Err(_) = file_config::delete_task(&id) {
+            Ok(false)
+        } else {
+            if let Err(_) = file_config::save_config("core.json") {
+                Ok(false)
+            } else {
+                Ok(true)
+            }
         }
-        Ok(removed)
     }
 
     pub fn load_tasks(&self) -> Result<()> {
-        match load_tasks_from_file() {
-            Ok(loaded_tasks) => {
-                let mut tasks = self.tasks.lock().unwrap();
-                *tasks = loaded_tasks;
-                Ok(())
-            }
-            Err(e) => Err(e),
-        }
+        Ok(())
     }
 
     pub fn save_tasks(&self) -> Result<()> {
-        let tasks = self.tasks.lock().unwrap();
-        save_tasks_to_file(&*tasks)
+        Ok(())
     }
 
-    // pub fn update_task_status(&self, id: String, status: TaskStatus) -> Result<bool> {
-    //     let mut tasks = self.tasks.lock().unwrap();
-    //     if let Some(task) = tasks.get_mut(&id) {
-    //         task.task_info.set_status(status);
-    //         drop(tasks);
-    //         self.save_tasks()?;
-    //         Ok(true)
-    //     } else {
-    //         Ok(false)
-    //     }
-    // }
-
     pub fn update_task_info(&self, id: String, task_info: TaskInfo) -> Result<bool> {
-        let mut tasks = self.tasks.lock().unwrap();
-        if let Some(task) = tasks.get_mut(&id) {
+        if let Ok(Some(mut task)) = file_config::get_task(&id) {
             task.set_task_info(task_info);
-            drop(tasks);
-            self.save_tasks()?;
+            if let Err(_) = file_config::save_task(id, task) {
+                return Ok(false);
+            }
+            if let Err(_) = file_config::save_config("core.json") {
+                return Ok(false);
+            }
             Ok(true)
         } else {
             Ok(false)
@@ -529,17 +518,13 @@ impl TaskManager {
     }
 
     pub fn list_task(&self) -> Result<Vec<Task>> {
-        return match load_tasks_from_file() {
-            Ok(data) => {
-                let mut list = vec![];
-                for (_key, value) in data.into_iter() {
-                    list.push(value);
-                }
-                list.sort_by(|a, b| a.create_time.cmp(&b.create_time));
-                return Ok(list);
-            }
-            Err(e) => Err(e),
-        };
+        if let Ok(tasks) = file_config::get_all_tasks() {
+            let mut list: Vec<Task> = tasks.into_values().collect();
+            list.sort_by(|a, b| a.create_time.cmp(&b.create_time));
+            Ok(list)
+        } else {
+            Err(Error::new(ErrorKind::Other, "Failed to get tasks"))
+        }
     }
 }
 
@@ -605,9 +590,8 @@ pub struct GetDownloadBodyReq {
 }
 
 pub async fn system_tasks_export(_: web::Data<Arc<TaskManager>>) -> impl Responder {
-    let data = get_task_from_file();
-    if let Ok(inner) = data {
-        HttpResponse::Ok().json(inner)
+    if let Ok(tasks) = file_config::get_all_tasks() {
+        HttpResponse::Ok().json(tasks)
     } else {
         let mut resp = HashMap::new();
         resp.insert("code", String::from("500"));
@@ -713,26 +697,4 @@ pub async fn list_task(task_manager: web::Data<Arc<TaskManager>>) -> impl Respon
         Err(_) => {}
     }
     HttpResponse::Ok().json(resp)
-}
-
-// 任务存储到文件的相关函数
-fn save_tasks_to_file(tasks: &HashMap<String, Task>) -> Result<()> {
-    let data = serde_json::to_vec(tasks)?;
-    Ok(std::fs::write(FILE_PATH, &data)?)
-}
-
-fn load_tasks_from_file() -> Result<HashMap<String, Task>> {
-    match std::fs::read(FILE_PATH) {
-        Err(_) => {
-            let mut data = File::create(FILE_PATH)?;
-            data.write_all(b"{}")?
-        }
-        _ => {}
-    }
-    let data = std::fs::read(FILE_PATH)?;
-    Ok(serde_json::from_slice(&data)?)
-}
-
-pub fn get_task_from_file() -> Result<HashMap<String, Task>> {
-    return load_tasks_from_file();
 }
