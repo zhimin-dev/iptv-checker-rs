@@ -47,6 +47,10 @@ pub struct SearchArgs {
     /// 清理资源池
     #[arg(long = "clear", default_value_t = false)]
     clear: bool,
+
+    /// 并发数
+    #[arg(short = 'c', long = "concurrency", default_value_t = 1)]
+    concurrency: i32,
 }
 
 #[derive(clapArgs)]
@@ -253,7 +257,7 @@ pub async fn main() {
                 }
             } else {
                 if args.search.len() > 0 {
-                    let data = do_search(args.search.clone(), args.thumbnail).await;
+                    let data = do_search(args.search.clone(), args.thumbnail,args.concurrency).await;
                     match data {
                         Ok(data) => {
                             info!("{:?}", data)

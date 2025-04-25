@@ -1,4 +1,4 @@
-use crate::common::{AudioInfo, VideoInfo};
+use crate::common::{AudioInfo, CheckOptions, VideoInfo};
 use crate::{common, utils};
 use log::info;
 use serde::{Deserialize, Serialize};
@@ -312,24 +312,17 @@ pub mod check {
         ffmpeg_check: bool,
         not_http_skip: bool,
     ) -> Result<CheckUrlIsAvailableResponse, Error> {
-        // println!("start check_link_is_valid check -----");
-        let start_time = Instant::now();
         if ffmpeg_check {
             let res = run_command_with_timeout_new(_url.to_owned(), timeout).await;
             return match res {
                 Ok(res) => {
-                    let lduration = start_time.elapsed();
-                    // println!("start check_link_is_valid end {}", lduration.subsec_millis());
                     Ok(res)
                 }
                 Err(e) => {
-                    let lduration = start_time.elapsed();
-                    // println!("start check_link_is_valid end {}", lduration.subsec_millis());
                     Err(Error::new(ErrorKind::Other, format!("status is not 200 {}", e)))
                 }
             };
         }
-        // println!("start web check -----");
         let parsed_info = Url::parse(&_url);
         match parsed_info {
             Ok(parsed_url) => {
@@ -429,8 +422,16 @@ pub async fn do_check(
     if print_result {
         info!("输出文件: {}", output_file);
     }
-    data.check_data_new(request_timeout, concurrent, sort, no_check, ffmpeg_check, same_save_num, not_http_skip)
-        .await;
+    data.check_data_new(CheckOptions {
+        request_time:request_timeout,
+        concurrent,
+        sort,
+        no_check,
+        ffmpeg_check,
+        same_save_num,
+        not_http_skip,
+        search_clarity: vec![],
+    }).await;
     data.output_file(output_file).await;
     if print_result {
         if !no_check {
@@ -613,7 +614,7 @@ async fn check_rtmp_path_exists(address: &str, app_name: &str, stream_name: &str
 // 测试模块
 #[cfg(test)]
 mod tests {
-    use crate::common::check::check::{ run_command_with_timeout_new};
+    use crate::common::check::check::{run_command_with_timeout_new};
     use crate::common::check::check_rtmp_path_exists;
     use std::thread;
     use std::time::{Duration, Instant};

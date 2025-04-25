@@ -3,7 +3,6 @@ use crate::common::m3u::m3u::{do_name_sort, do_same_save};
 use crate::common::util::{check_url_host_ip_type, match_ipv6_format, IpAddress};
 use crate::common::CheckDataStatus::{Failed, Success, Unchecked};
 use crate::common::SourceType::{Normal, Quota};
-use crate::common::VideoType::Unknown;
 use crate::utils::remove_other_char;
 use actix_rt::time;
 use log::{debug, error, info};
@@ -15,7 +14,12 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
+use actix_web::http::header::Quality;
 use tokio::time::{timeout};
+use crate::common::cmd::capture_stream_pic;
+use crate::common::QualityType::Unknown;
+use crate::common::task::md5_str;
+use crate::search::generate_channel_thumbnail_folder_name;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct M3uExtend {
@@ -106,6 +110,48 @@ impl M3uObject {
             other_status: None,
         };
     }
+
+    pub fn get_obj(self) -> M3uObject {
+        self
+    }
+
+    pub fn check_by_block(
+        &mut self,
+        request_time: i32,
+        search_clarity: bool,
+        ffmpeg_check: bool,
+        not_http_skip: bool,
+    ) {
+        let url = self.url.clone();
+        let _log_url = url.clone();
+        let result = actix_rt::System::new().block_on(check_link_is_valid(
+            url,
+            request_time as u64,
+            search_clarity,
+            ffmpeg_check,
+            not_http_skip,
+        ));
+        debug!("url is: {} result: {:?}", self.url.clone(), result);
+        return match result {
+            Ok(data) => {
+                let mut status = OtherStatus::new();
+                match data.audio {
+                    Some(a) => status.set_audio(a),
+                    None => {}
+                }
+                match data.video {
+                    Some(v) => status.set_video(v),
+                    None => {}
+                }
+                self.set_status(Success);
+                self.set_other_status(status)
+            }
+            Err(_e) => {
+                self.set_status(Failed)
+            }
+        };
+    }
+
 
     pub fn set_index(&mut self, index: i32) {
         self.index = index;
@@ -199,9 +245,7 @@ pub struct M3uObjectList {
     header: Option<M3uExt>,
     list: Vec<M3uObject>,
     result_list: Vec<M3uObject>,
-    debug: bool,
-    search_clarity: Option<VideoType>,
-    counter: Option<M3uObjectListCounter>,
+    counter: M3uObjectListCounter,
 }
 
 impl M3uObjectListCounter {
@@ -244,15 +288,36 @@ impl M3uObjectListCounter {
     // }
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SearchOptions {
+    pub search_name: String,
+    pub full_match: bool,
+    pub ipv4: bool,
+    pub ipv6: bool,
+    pub exclude_url: Vec<String>,
+    pub exclude_host: Vec<String>,
+    pub quality: Vec<QualityType>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CheckOptions {
+    pub request_time: i32,
+    pub concurrent: i32,
+    pub sort: bool,
+    pub no_check: bool,
+    pub ffmpeg_check: bool,
+    pub  same_save_num: i32,
+    pub not_http_skip: bool,
+    pub search_clarity: Vec<QualityType>,
+}
+
 impl M3uObjectList {
     pub fn new() -> M3uObjectList {
         M3uObjectList {
             header: None,
             list: vec![],
             result_list: vec![],
-            debug: false,
-            search_clarity: None,
-            counter: None,
+            counter: M3uObjectListCounter::new(),
         }
     }
 
@@ -275,30 +340,22 @@ impl M3uObjectList {
     }
 
     pub fn print_result(&mut self) -> String {
-        let succ_num = self.counter.unwrap().success_count;
-        let failed_num = self.counter.unwrap().total - succ_num;
+        let succ_num = self.counter.success_count;
+        let failed_num = self.counter.total - succ_num;
         format!("有效源: {}, 无效源: {}", succ_num, failed_num)
     }
 
     pub fn set_counter(&mut self, counter: M3uObjectListCounter) {
-        self.counter = Some(counter)
+        self.counter = counter
     }
 
     // pub fn set_debug_mod(&mut self, debug: bool) {
     //     self.debug = debug
     // }
 
-    pub async fn search(
-        &self,
-        search_name: String,
-        full_match: bool,
-        _ipv4: bool,
-        _ipv6: bool,
-        _exclude_url: Vec<String>,
-        _exclude_host: Vec<String>,
-    ) -> Result<Vec<M3uObject>, Error> {
+    pub async fn search(&mut self, search: SearchOptions) {
         let mut list = vec![];
-        let s_name = search_name.clone();
+        let s_name = search.search_name.clone();
         let exp_list: Vec<&str> = s_name.split(",").collect();
         debug!(
             "query params ----{:?} search data count --- {}",
@@ -308,7 +365,7 @@ impl M3uObjectList {
         for v in self.list.clone() {
             let mut is_save = false;
             for e in exp_list.clone() {
-                if full_match {
+                if search.full_match {
                     if v.search_name.eq(e.to_string().as_str()) {
                         is_save = true;
                     }
@@ -366,53 +423,97 @@ impl M3uObjectList {
             .filter(|p| seen.insert(p.url.clone()))
             .collect();
 
-        Ok(unique_list)
+        self.list = unique_list
+    }
+
+
+    pub async fn generate_channel_thumbnail(&mut self, concurrent: i32) {
+        debug!("channel_list len {}", self.list.len());
+
+        // Create a semaphore to limit concurrency
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrent as usize));
+        let mut results = Vec::new();
+
+        // Create a stream of futures
+        let mut tasks = Vec::new();
+        for v in self.list.clone() {
+            let img_url = format!("{}/{}.jpeg", generate_channel_thumbnail_folder_name(), md5_str(v.get_url()));
+            let url = v.get_url().clone();
+            let semaphore = Arc::clone(&semaphore);
+            let task = tokio::spawn(async move {
+                // Acquire permit from semaphore
+                let _permit = semaphore.acquire().await.unwrap();
+                let succ = capture_stream_pic(url, img_url.clone());
+                (v, succ, img_url)
+            });
+            tasks.push(task);
+        }
+
+        // Process results as they complete
+        let mut completed = 0;
+        while completed < tasks.len() {
+            match futures::future::select_all(tasks).await {
+                (Ok((mut v, succ, img_url)), _, remaining) => {
+                    if succ {
+                        let mut extend;
+                        match v.get_extend() {
+                            None => {
+                                extend = M3uExtend::new();
+                            }
+                            Some(data) => {
+                                extend = data.clone()
+                            }
+                        }
+                        extend.set_thumbnail(img_url);
+                        v.set_status(Success);
+                        v.set_extend(extend);
+                        // Only add to results if thumbnail generation was successful
+                        results.push(v);
+                    } else {
+                        v.set_status(Failed);
+                    }
+                    tasks = remaining;
+                    completed += 1;
+                }
+                (Err(e), _, remaining) => {
+                    error!("Error processing thumbnail: {}", e);
+                    tasks = remaining;
+                    completed += 1;
+                }
+            }
+        }
     }
 
     pub async fn check_data_new(
-        &mut self,
-        request_time: i32,
-        _concurrent: i32,
-        sort: bool,
-        no_check: bool,
-        ffmpeg_check: bool,
-        same_save_num: i32,
-        not_http_skip: bool,
-    ) {
-        let mut search_clarity = false;
-        match &self.search_clarity {
-            Some(_d) => search_clarity = true,
-            None => {}
-        }
-        if !no_check {
+        &mut self, opt:CheckOptions) {
+        if !opt.no_check {
             let total = self.list.len();
             info!("文件中源总数： {}", total);
             let mut counter = M3uObjectListCounter::new();
             counter.set_total(total as i32);
             self.set_counter(counter);
-            let debug = self.debug;
 
             let data = self.list.clone();
             let (tx, rx) = mpsc::channel();
             let (data_tx, data_rx) = mpsc::channel();
             let new_data_rx = Arc::new(Mutex::new(data_rx));
 
-            for _i in 0.._concurrent {
+            for _i in 0..opt.concurrent {
                 let tx_clone = tx.clone();
                 let data_rx_clone = Arc::clone(&new_data_rx);
 
                 thread::spawn(move || loop {
                     match data_rx_clone.lock() {
                         Ok(data) => {
-                            let item = {
+                            let mut item = {
                                 let rx_lock = data;
                                 rx_lock.recv().unwrap_or_else(|_| M3uObject::new())
                             };
                             if item.url == "" {
                                 break;
                             }
-                            let result = set_one_item(debug, item, request_time, search_clarity, ffmpeg_check, not_http_skip);
-                            tx_clone.send(result).unwrap()
+                            item.check_by_block(opt.request_time, true, opt.ffmpeg_check, opt.not_http_skip);
+                            tx_clone.send(item.get_obj()).unwrap()
                         }
                         Err(e) => {
                             error!("check_data_new error ---{} ", e);
@@ -445,7 +546,7 @@ impl M3uObjectList {
                 }
             }
         } else {
-            info!("no check----{}", no_check);
+            info!("no check----{}", opt.no_check);
             let total = self.list.len();
             for item in &mut self.list {
                 item.set_status(Success);
@@ -453,21 +554,17 @@ impl M3uObjectList {
             info!("文件中源总数： {}", total);
             self.result_list = self.list.clone()
         }
-        if sort {
+        if opt.sort {
             self.result_list = do_name_sort(self.result_list.clone());
         }
-        if same_save_num > 0 {
-            self.result_list = do_same_save(self.result_list.clone(), same_save_num);
+        if opt.same_save_num > 0 {
+            self.result_list = do_same_save(self.result_list.clone(), opt.same_save_num);
         }
     }
 
     pub async fn output_file(&mut self, output_file: String) {
         let mut lines: Vec<String> = vec![];
-        let mut counter = M3uObjectListCounter::new();
-        match self.counter {
-            Some(data) => counter = data,
-            None => {}
-        }
+        let mut counter = self.counter;
         for x in &self.result_list {
             if x.status == Success {
                 counter.incr_succ();
@@ -555,49 +652,6 @@ impl M3uObjectList {
     }
 }
 
-fn set_one_item(
-    debug: bool,
-    mut x: M3uObject,
-    request_time: i32,
-    search_clarity: bool,
-    ffmpeg_check: bool,
-    not_http_skip: bool,
-) -> M3uObject {
-    let start_time = Instant::now();
-    let url = x.url.clone();
-    let _log_url = url.clone();
-    let result = actix_rt::System::new().block_on(check_link_is_valid(
-        url,
-        request_time as u64,
-        search_clarity,
-        ffmpeg_check,
-        not_http_skip,
-    ));
-    if debug {
-        debug!("url is: {} result: {:?}", x.url.clone(), result);
-    }
-    return match result {
-        Ok(data) => {
-            let mut status = OtherStatus::new();
-            match data.audio {
-                Some(a) => status.set_audio(a),
-                None => {}
-            }
-            match data.video {
-                Some(v) => status.set_video(v),
-                None => {}
-            }
-            x.set_status(Success);
-            x.set_other_status(status);
-            x
-        }
-        Err(_e) => {
-            x.set_status(Failed);
-            x
-        }
-    };
-}
-
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct M3uExt {
     pub(crate) x_tv_url: Vec<String>,
@@ -609,9 +663,7 @@ impl From<String> for M3uObjectList {
             header: None,
             list: vec![],
             result_list: vec![],
-            debug: false,
-            search_clarity: None,
-            counter: None,
+            counter: M3uObjectListCounter::new(),
         };
         let source_type = m3u::check_source_type(_str.to_owned());
         return match source_type {
@@ -664,7 +716,7 @@ pub struct NetworkInfo {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy)]
-pub enum VideoType {
+pub enum QualityType {
     Unknown,
     Sd,
     Hd,
@@ -689,7 +741,7 @@ pub struct VideoInfo {
     pub width: i32,
     pub height: i32,
     pub codec: String,
-    pub video_type: VideoType,
+    pub quality_type: QualityType,
 }
 
 impl VideoInfo {
@@ -698,7 +750,7 @@ impl VideoInfo {
             width: 0,
             height: 0,
             codec: "".to_string(),
-            video_type: Unknown,
+            quality_type: Unknown,
         }
     }
 

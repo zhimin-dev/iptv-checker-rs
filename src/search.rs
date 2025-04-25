@@ -2,13 +2,13 @@ use crate::common::cmd::capture_stream_pic;
 use crate::common::m3u::m3u::from_body_arr;
 use crate::common::task::md5_str;
 use crate::common::CheckDataStatus::{Failed, Success};
-use crate::common::{M3uExtend, M3uObject, M3uObjectList};
+use crate::common::{M3uExtend, M3uObject, M3uObjectList, SearchOptions};
 use crate::utils::{create_folder, folder_exists};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::{format, Error};
-use std::fs;
+use std::{fs, vec};
 use std::fs::FileTimes;
 use std::io::Write;
 use crate::common::check;
@@ -17,6 +17,9 @@ use crate::common::task::{
     system_tasks_import, update_task,
 };
 use crate::config;
+use std::sync::Arc;
+use std::fs::File;
+use std::path::Path;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GithubPageProps {
@@ -586,28 +589,31 @@ pub async fn read_search_configs() -> Result<SearchConfigs, Box<dyn std::error::
     Ok(configs)
 }
 
-pub async fn do_search(search_name: String, thumbnail: bool) -> Result<Vec<M3uObject>, Error> {
+pub async fn do_search(search_name: String, thumbnail: bool, concurrent: i32) -> Result<Vec<M3uObject>, Error> {
     match init_search_data().await {
         Ok(()) => {
-            let m3u_data = load_m3u_data().expect("load m3u data failed");
-            let mut search_list = m3u_data
-                .search(search_name.clone(), false, true, false, vec![], vec![])
-                .await
-                .expect("Failed to search");
-            debug!("result count:{}", search_list.len());
-            let mut res_list;
+            let mut m3u_data = load_m3u_data().expect("load m3u data failed");
+            m3u_data.search(SearchOptions{
+                search_name: search_name.clone(),
+                full_match: false,
+                ipv4: true,
+                ipv6: true,
+                exclude_url: vec![],
+                exclude_host: vec![],
+                quality: vec![]
+            }).await;
+            let list = m3u_data.get_list();
+            debug!("result count:{}", list.len());
+            
             if thumbnail {
-                // 通过ffmpeg生成缩略图以及其他信息
-                res_list = generate_channel_thumbnail(search_list.clone()).await;
+                Ok(generate_channel_thumbnail(list, concurrent).await)
             } else {
-                res_list = search_list
+                Ok(list)
             }
-            // 返回数据
-            Ok(res_list)
         }
         Err(e) => {
             error!("Failed to search: {}", e);
-            Ok(vec![])
+            Err(e)
         }
     }
 }
@@ -640,17 +646,10 @@ fn load_m3u_data() -> std::io::Result<M3uObjectList> {
     Ok(result)
 }
 
-async fn search_channel(search_name: String, check: bool) -> Result<Vec<String>, Error> {
-    debug!("check {}", check);
-    let mut list = vec![];
-    list.push(search_name);
-    Ok(list)
-}
-
 use chrono::{Datelike, Local};
 use log::{debug, error, info};
 
-fn generate_channel_thumbnail_folder_name() -> String {
+pub fn generate_channel_thumbnail_folder_name() -> String {
     // 获取当前本地时间
     let now = Local::now();
 
@@ -665,29 +664,59 @@ fn generate_channel_thumbnail_folder_name() -> String {
     folder
 }
 
-async fn generate_channel_thumbnail(mut channel_list: Vec<M3uObject>) -> Vec<M3uObject> {
-    debug!("channel_list len {}", channel_list.len());
-    for v in &mut channel_list {
-        // if v.get_status() == Success {
+async fn generate_channel_thumbnail(list: Vec<M3uObject>, concurrent: i32) -> Vec<M3uObject> {
+    // Create a semaphore to limit concurrency
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrent as usize));
+    let mut results = Vec::new();
+    
+    // Create a stream of futures
+    let mut tasks = Vec::new();
+    for v in list {
         let img_url = format!("{}/{}.jpeg", generate_channel_thumbnail_folder_name(), md5_str(v.get_url()));
-        let succ = capture_stream_pic(v.get_url(), img_url.clone());
-        if succ {
-            let mut extend;
-            match v.get_extend() {
-                None => {
-                    extend = M3uExtend::new();
-                }
-                Some(data) => {
-                    extend = data.clone()
-                }
-            }
-            extend.set_thumbnail(img_url);
-            v.set_status(Success);
-            v.set_extend(extend);
-        } else {
-            v.set_status(Failed);
-        }
-        // }
+        let url = v.get_url().clone();
+        let semaphore = Arc::clone(&semaphore);
+        let task = tokio::spawn(async move {
+            // Acquire permit from semaphore
+            let _permit = semaphore.acquire().await.unwrap();
+            let succ = capture_stream_pic(url, img_url.clone());
+            (v, succ, img_url)
+        });
+        tasks.push(task);
     }
-    channel_list
+
+    // Process results as they complete
+    let mut completed = 0;
+    while completed < tasks.len() {
+        match futures::future::select_all(tasks).await {
+            (Ok((mut v, succ, img_url)), _, remaining) => {
+                if succ {
+                    let mut extend;
+                    match v.get_extend() {
+                        None => {
+                            extend = M3uExtend::new();
+                        }
+                        Some(data) => {
+                            extend = data.clone()
+                        }
+                    }
+                    extend.set_thumbnail(img_url);
+                    v.set_status(Success);
+                    v.set_extend(extend);
+                    // Only add to results if thumbnail generation was successful
+                    results.push(v);
+                } else {
+                    v.set_status(Failed);
+                }
+                tasks = remaining;
+                completed += 1;
+            }
+            (Err(e), _, remaining) => {
+                error!("Error processing thumbnail: {}", e);
+                tasks = remaining;
+                completed += 1;
+            }
+        }
+    }
+
+    results
 }
