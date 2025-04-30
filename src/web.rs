@@ -31,35 +31,36 @@ use crate::config::config::{init_config, Core};
 use crate::config::{get_check, get_task, parse_core_json,save_task};
 use tokio::signal;
 
+/// 删除任务请求结构体
 #[derive(Debug, Deserialize, Serialize)]
 struct TaskDel {
-    task_id: String, //任务id
+    task_id: String, // 任务ID
 }
 
+/// 删除任务响应结构体
 #[derive(Debug, Deserialize, Serialize)]
 struct TaskDelResp {
-    result: bool, //是否成功
+    result: bool, // 操作是否成功
 }
 
+/// 检查系统是否支持IPv6
 pub async fn check_ipv6() -> bool {
     let result = reqwest::get("http://[2606:2800:220:1:248:1893:25c8:1946]").await;
 
     match result {
         Ok(_) => true,
-        Err(_) => {
-            // 处理错误，根据错误类型返回更探针对性的信息也可以
-            // HttpResponse::Ok().body(format!("IPv6 might not be supported: {}", e))
-            false
-        }
+        Err(_) => false
     }
 }
 
+/// URL可用性检查请求结构体
 #[derive(Serialize, Deserialize)]
 struct CheckUrlIsAvailableRequest {
     url: String,
     timeout: Option<i32>,
 }
 
+/// 检查URL是否可用的API端点
 #[get("/check/url-is-available")]
 async fn check_url_is_available(req: web::Query<CheckUrlIsAvailableRequest>) -> impl Responder {
     let mut timeout = 0;
@@ -80,12 +81,14 @@ async fn check_url_is_available(req: web::Query<CheckUrlIsAvailableRequest>) -> 
     };
 }
 
+/// 获取M3U文件内容请求结构体
 #[derive(Serialize, Deserialize)]
 struct FetchM3uBodyRequest {
     url: String,
     timeout: Option<i32>,
 }
 
+/// 获取M3U文件内容的API端点
 #[get("/fetch/m3u-body")]
 async fn fetch_m3u_body(req: web::Query<FetchM3uBodyRequest>) -> impl Responder {
     let mut timeout = 0;
@@ -124,15 +127,18 @@ async fn fetch_m3u_body(req: web::Query<FetchM3uBodyRequest>) -> impl Responder 
     };
 }
 
+/// 静态文件基础目录
 pub static VIEW_BASE_DIR: &str = "./static/";
 
+/// 系统状态响应结构体
 #[derive(Serialize, Deserialize)]
 struct SystemStatusResp {
-    can_ipv6: bool,
-    version: String,
-    output: String,
+    can_ipv6: bool,    // 是否支持IPv6
+    version: String,   // 系统版本
+    output: String,    // 输出目录
 }
 
+/// 获取系统信息的API端点
 #[get("/system/info")]
 async fn system_status() -> impl Responder {
     let check_ipv6 = check_ipv6().await;
@@ -147,24 +153,28 @@ async fn system_status() -> impl Responder {
         .body(obj);
 }
 
+/// 首页API端点
 #[get("/")]
 async fn index() -> impl Responder {
-    let path: std::path::PathBuf = "./web/index.html".into(); // 替换为实际的 index.html 路径
+    let path: std::path::PathBuf = "./web/index.html".into();
     NamedFile::open(path)
 }
 
+/// 文件上传请求结构体
 #[derive(Debug, MultipartForm)]
 struct UploadFormReq {
     #[multipart(rename = "file")]
     file: TempFile,
 }
 
+/// 文件上传响应结构体
 #[derive(Serialize, Deserialize)]
 struct UploadResponse {
-    msg: String,
-    url: String,
+    msg: String,   // 响应消息
+    url: String,   // 文件URL
 }
 
+/// 文件上传API端点
 #[post("/media/upload")]
 async fn upload(MultipartForm(form): MultipartForm<UploadFormReq>) -> impl Responder {
     let path = format!("static/input/{}", form.file.file_name.unwrap());
@@ -180,8 +190,9 @@ async fn upload(MultipartForm(form): MultipartForm<UploadFormReq>) -> impl Respo
         .body(obj);
 }
 
+/// 启动Web服务器
 pub async fn start_web(port: u16) {
-    // 初始化日志
+    // 初始化日志系统
     let log_file = File::create(format!("./static/logs/app-{}.log", Local::now().format("%Y%m%d%H:%M").to_string())).unwrap();
     let mut log_config = Config::default();
     log_config.time = Some(simplelog::Level::Debug);
@@ -207,17 +218,18 @@ pub async fn start_web(port: u16) {
         }
     }
 
+    // 初始化配置
     init_config();
 
-    // Initialize TaskManager
+    // 初始化任务管理器
     let task_manager = Arc::new(TaskManager {
         tasks: Mutex::new(HashMap::new()),
     });
 
-    // 使用 Arc<Mutex<Scheduler>> 来共享 scheduler
+    // 创建定时任务调度器
     let scheduler: Arc<Mutex<Scheduler>> = Arc::new(Mutex::new(Scheduler::with_tz(chrono::Local)));
 
-    // 创建一个新线程来运行定时任务
+    // 创建定时任务执行线程
     let scheduler_thread = {
         let scheduler = Arc::clone(&scheduler);
         thread::spawn(move || loop {

@@ -306,7 +306,7 @@ pub struct CheckOptions {
     pub sort: bool,
     pub no_check: bool,
     pub ffmpeg_check: bool,
-    pub  same_save_num: i32,
+    pub same_save_num: i32,
     pub not_http_skip: bool,
     pub search_clarity: Vec<QualityType>,
 }
@@ -426,10 +426,7 @@ impl M3uObjectList {
         self.list = unique_list
     }
 
-
-    pub async fn generate_channel_thumbnail(&mut self, concurrent: i32) {
-        debug!("channel_list len {}", self.list.len());
-
+    pub async fn generate_thumbnail(&mut self, concurrent: i32) {
         // Create a semaphore to limit concurrency
         let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrent as usize));
         let mut results = Vec::new();
@@ -443,7 +440,7 @@ impl M3uObjectList {
             let task = tokio::spawn(async move {
                 // Acquire permit from semaphore
                 let _permit = semaphore.acquire().await.unwrap();
-                let succ = capture_stream_pic(url, img_url.clone());
+                let succ = capture_stream_pic(url, img_url.clone(), 3);
                 (v, succ, img_url)
             });
             tasks.push(task);
@@ -482,10 +479,12 @@ impl M3uObjectList {
                 }
             }
         }
+
+        self.list = results
     }
 
     pub async fn check_data_new(
-        &mut self, opt:CheckOptions) {
+        &mut self, opt: CheckOptions) {
         if !opt.no_check {
             let total = self.list.len();
             info!("文件中源总数： {}", total);
@@ -578,11 +577,12 @@ impl M3uObjectList {
         // 生成.m3u 文件
         self.generate_m3u_file_from_giving_list(output_file.clone(), lines);
         // 生成.txt 文件
-        self.generate_text_file(output_file.clone());
+        let txt_file = output_file.clone().replace(".m3u", ".txt");
+        self.generate_text_file(txt_file.clone());
         time::sleep(Duration::from_millis(500)).await;
     }
 
-    pub fn generate_m3u_file(&mut self, output_file: String) {
+    pub fn generate_m3u_file(&mut self, output_file: String, only_succ: bool) {
         if self.list.len() > 0 {
             let mut result_m3u_content: Vec<String> = vec![];
             match &self.header {
@@ -598,7 +598,13 @@ impl M3uObjectList {
                 }
             }
             for x in self.list.clone() {
-                result_m3u_content.push(x.raw.clone());
+                if only_succ {
+                    if x.status == Success {
+                        result_m3u_content.push(x.raw.clone());
+                    }
+                } else {
+                    result_m3u_content.push(x.raw.clone());
+                }
             }
             let mut fd = File::create(output_file.to_owned()).unwrap();
             for x in result_m3u_content {
@@ -636,10 +642,8 @@ impl M3uObjectList {
     }
 
     pub fn generate_text_file(&mut self, output_file: String) {
-        let txt_sub = output_file.replace(".m3u", ".txt");
-
         // 打开文件 b 并准备写入
-        let mut file_b = File::create(txt_sub).unwrap();
+        let mut file_b = File::create(output_file).unwrap();
 
         // 逐行读取文件 a 的内容
         for line in &self.result_list {

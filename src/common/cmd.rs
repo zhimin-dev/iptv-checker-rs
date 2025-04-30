@@ -1,15 +1,25 @@
 use std::process::{Command, ExitStatus};
 
-// capture_stream_pic("http://127.0.0.1:8089/static/input/live/live.m3u8".to_string(), "./static/input/222.jpeg".to_string());
-pub fn capture_stream_pic(m3u8_url: String, output_image: String) -> bool {
-    // 使用 ffmpeg 截取首帧
+/// 从M3U8流中捕获首帧图片
+/// 
+/// # 参数
+/// * `m3u8_url` - M3U8流的URL地址
+/// * `output_image` - 输出图片的路径
+/// * `timeout_seconds` - 超时时间（秒）
+/// 
+/// # 返回值
+/// * `bool` - 成功返回true，失败返回false
+pub fn capture_stream_pic(m3u8_url: String, output_image: String, timeout_seconds: u64) -> bool {
+    // 使用ffmpeg截取首帧
     let status = Command::new("ffmpeg")
         .args(&[
             "-i",
-            &m3u8_url, // 输入 M3U8 地址
+            &m3u8_url, // 输入M3U8地址
             "-frames:v",
             "1",           // 只截取一帧
             "-y",          // 如果输出文件已存在则覆盖
+            "-timeout",    // 添加超时参数
+            &timeout_seconds.to_string(),
             &output_image, // 输出文件名
         ])
         .status()
@@ -24,18 +34,32 @@ pub fn capture_stream_pic(m3u8_url: String, output_image: String) -> bool {
     }
 }
 
+/// 将RTMP流转换为HLS流
+/// 
+/// # 参数
+/// * `rtmp_url` - RTMP流的URL地址
+/// * `hls_output` - HLS输出文件的路径
+/// 
+/// # 返回值
+/// * `bool` - 成功返回true，失败返回false
+/// 
+/// # 说明
+/// 该函数使用ffmpeg将RTMP流转换为HLS流，并生成相应的M3U8文件和TS片段。
+/// 转换过程中会：
+/// 1. 保持视频编码不变（copy）
+/// 2. 将音频转换为AAC格式
+/// 3. 每个TS片段持续10秒
+/// 4. 保持最近的5个片段在播放列表中
+/// 5. 自动删除旧的TS片段
 pub fn live_steam_to_m3u8_steam(rtmp_url: String, hls_output: String) -> bool {
-    // 启动 RTMP 服务器（假设你用其他工具启动，比如 NGINX）
-    // 然后使用 FFmpeg 处理 RTMP 流转为 HLS
-
     let status: ExitStatus = Command::new("ffmpeg")
         .args(&[
             "-i",
             &rtmp_url,
             "-c:v",
-            "copy",
+            "copy",        // 保持视频编码不变
             "-c:a",
-            "aac",
+            "aac",         // 将音频转换为AAC格式
             "-strict",
             "experimental",
             "-f",
@@ -43,7 +67,7 @@ pub fn live_steam_to_m3u8_steam(rtmp_url: String, hls_output: String) -> bool {
             "-hls_flags",
             "delete_segments", // 启用删除旧的TS文件
             "-hls_time",
-            "10", // 每个 TS 片段的持续时间
+            "10", // 每个TS片段的持续时间
             "-hls_list_size",
             "5", // 保持最近的5个片段在播放列表
             &hls_output,

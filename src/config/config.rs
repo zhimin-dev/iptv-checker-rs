@@ -10,76 +10,77 @@ use crate::common::do_check;
 use crate::common::task::Task;
 use crate::config::{parse_core_json, update_config};
 
-/// 核心配置结构体
+/// 核心配置结构体，包含所有配置项
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Core {
-    pub check: Check,
-    pub ob: Ob,
-    pub search: Search,
+    pub check: Check,    // 检查相关配置
+    pub ob: Ob,         // 转播相关配置
+    pub search: Search,  // 搜索相关配置
 }
 
-/// 检查相关配置
+/// 检查相关配置结构体
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Check {
-    pub now: Option<String>,
-    pub task: HashMap<String, Task>,
+    pub now: Option<String>,           // 当前运行的任务ID
+    pub task: HashMap<String, Task>,   // 任务列表
 }
 
-/// 转播相关配置
+/// 转播相关配置结构体
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Ob {
-    pub list: Vec<ObItem>,
+    pub list: Vec<ObItem>,  // 转播列表
 }
 
-/// 转播项
+/// 转播项结构体
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ObItem {
-    pub id: String,
-    pub pid: i32,
-    pub name: String,
-    pub create_time: u64,
-    pub url: String,
+    pub id: String,         // 转播ID
+    pub pid: i32,          // 进程ID
+    pub name: String,      // 转播名称
+    pub create_time: u64,  // 创建时间
+    pub url: String,       // 转播URL
 }
 
-/// 搜索相关配置
+/// 搜索相关配置结构体
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Search {
-    pub source: Vec<SearchSource>,
-    pub extensions: Vec<String>,
-    pub search_list: Vec<SearchListItem>,
+    pub source: Vec<SearchSource>,     // 搜索源列表
+    pub extensions: Vec<String>,       // 文件扩展名列表
+    pub search_list: Vec<SearchListItem>, // 搜索列表
 }
 
-/// 搜索源配置
+/// 搜索源配置结构体
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct SearchSource {
-    pub urls: Vec<String>,
-    pub include_files: Vec<String>,
-    pub parse_type: String,
+    pub urls: Vec<String>,         // 源URL列表
+    pub include_files: Vec<String>, // 包含的文件列表
+    pub parse_type: String,        // 解析类型
 }
 
-/// 搜索列表项
+/// 搜索列表项结构体
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct SearchListItem {
-    pub id: String,
-    pub config: Vec<SearchConfig>,
-    pub result: String,
+    pub id: String,              // 列表项ID
+    pub config: Vec<SearchConfig>, // 搜索配置列表
+    pub result: String,          // 搜索结果
 }
 
-/// 搜索配置项
+/// 搜索配置项结构体
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct SearchConfig {
-    pub search_name: Vec<String>,
-    pub save_name: String,
-    pub full_match: bool,
-    pub exclude_url: Vec<String>,
-    pub exclude_host: Vec<String>,
+    pub search_name: Vec<String>,  // 搜索名称列表
+    pub save_name: String,        // 保存名称
+    pub full_match: bool,         // 是否完全匹配
+    pub exclude_url: Vec<String>, // 排除的URL列表
+    pub exclude_host: Vec<String>, // 排除的主机列表
 }
 
-/// 全局配置
+/// 全局配置实例
 lazy_static::lazy_static! {
     static ref GLOBAL_CONFIG: Mutex<Core> = Mutex::new(Core::default());
 }
 
+/// 为Core实现Default trait
 impl Default for Core {
     fn default() -> Self {
         Core {
@@ -99,8 +100,9 @@ impl Default for Core {
     }
 }
 
+/// 初始化配置
 pub fn init_config() {
-    // Initialize config
+    // 尝试从文件加载配置
     let config_data = match parse_core_json("core.json") {
         Ok(cfg) => {
             info!("Successfully loaded core.json");
@@ -108,11 +110,11 @@ pub fn init_config() {
         }
         Err(e) => {
             error!("Failed to load core.json: {}", e);
-            // 使用默认配置
+            // 加载失败时使用默认配置
             Core::default()
         }
     };
-    // Update global config
+    // 更新全局配置
     if let Err(e) = update_config(config_data) {
         error!("Failed to update global config: {}", e);
     }

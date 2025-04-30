@@ -20,6 +20,8 @@ use crate::config;
 use std::sync::Arc;
 use std::fs::File;
 use std::path::Path;
+use chrono::{Datelike, Local};
+use log::{debug, error, info};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GithubPageProps {
@@ -320,7 +322,7 @@ fn epg_list_to_m3u_file(list: Vec<EpgM3u8Info>, file_name: String) -> Result<(),
         }
     }
     result.set_list(m3u8_list);
-    result.generate_m3u_file(file_name.clone());
+    result.generate_m3u_file(file_name.clone(), false);
     Ok(())
 }
 
@@ -589,27 +591,25 @@ pub async fn read_search_configs() -> Result<SearchConfigs, Box<dyn std::error::
     Ok(configs)
 }
 
-pub async fn do_search(search_name: String, thumbnail: bool, concurrent: i32) -> Result<Vec<M3uObject>, Error> {
+pub async fn do_search(search_name: String, thumbnail: bool, concurrent: i32) -> Result<(), Error> {
     match init_search_data().await {
         Ok(()) => {
             let mut m3u_data = load_m3u_data().expect("load m3u data failed");
-            m3u_data.search(SearchOptions{
+            m3u_data.search(SearchOptions {
                 search_name: search_name.clone(),
                 full_match: false,
                 ipv4: true,
                 ipv6: true,
                 exclude_url: vec![],
                 exclude_host: vec![],
-                quality: vec![]
+                quality: vec![],
             }).await;
-            let list = m3u_data.get_list();
-            debug!("result count:{}", list.len());
-            
-            if thumbnail {
-                Ok(generate_channel_thumbnail(list, concurrent).await)
-            } else {
-                Ok(list)
-            }
+            info!("list1 --- {}", m3u_data.clone().get_list().len());
+            m3u_data.generate_thumbnail(concurrent).await;
+            info!("list2 --- {}", m3u_data.clone().get_list().len());
+            m3u_data.generate_m3u_file(String::from("./static/output/1111.m3u"), true);
+            m3u_data.generate_text_file(String::from("./static/output/1111.txt"));
+            Ok(())
         }
         Err(e) => {
             error!("Failed to search: {}", e);
@@ -645,10 +645,6 @@ fn load_m3u_data() -> std::io::Result<M3uObjectList> {
     let result = from_body_arr(contents, vec![], vec![], true, true);
     Ok(result)
 }
-
-use chrono::{Datelike, Local};
-use log::{debug, error, info};
-
 pub fn generate_channel_thumbnail_folder_name() -> String {
     // 获取当前本地时间
     let now = Local::now();
@@ -662,61 +658,4 @@ pub fn generate_channel_thumbnail_folder_name() -> String {
         fs::create_dir_all(folder.clone()).unwrap()
     }
     folder
-}
-
-async fn generate_channel_thumbnail(list: Vec<M3uObject>, concurrent: i32) -> Vec<M3uObject> {
-    // Create a semaphore to limit concurrency
-    let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrent as usize));
-    let mut results = Vec::new();
-    
-    // Create a stream of futures
-    let mut tasks = Vec::new();
-    for v in list {
-        let img_url = format!("{}/{}.jpeg", generate_channel_thumbnail_folder_name(), md5_str(v.get_url()));
-        let url = v.get_url().clone();
-        let semaphore = Arc::clone(&semaphore);
-        let task = tokio::spawn(async move {
-            // Acquire permit from semaphore
-            let _permit = semaphore.acquire().await.unwrap();
-            let succ = capture_stream_pic(url, img_url.clone());
-            (v, succ, img_url)
-        });
-        tasks.push(task);
-    }
-
-    // Process results as they complete
-    let mut completed = 0;
-    while completed < tasks.len() {
-        match futures::future::select_all(tasks).await {
-            (Ok((mut v, succ, img_url)), _, remaining) => {
-                if succ {
-                    let mut extend;
-                    match v.get_extend() {
-                        None => {
-                            extend = M3uExtend::new();
-                        }
-                        Some(data) => {
-                            extend = data.clone()
-                        }
-                    }
-                    extend.set_thumbnail(img_url);
-                    v.set_status(Success);
-                    v.set_extend(extend);
-                    // Only add to results if thumbnail generation was successful
-                    results.push(v);
-                } else {
-                    v.set_status(Failed);
-                }
-                tasks = remaining;
-                completed += 1;
-            }
-            (Err(e), _, remaining) => {
-                error!("Error processing thumbnail: {}", e);
-                tasks = remaining;
-                completed += 1;
-            }
-        }
-    }
-
-    results
 }
