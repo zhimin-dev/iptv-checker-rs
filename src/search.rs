@@ -1,27 +1,15 @@
-use crate::common::cmd::capture_stream_pic;
 use crate::common::m3u::m3u::from_body_arr;
-use crate::common::task::md5_str;
-use crate::common::CheckDataStatus::{Failed, Success};
-use crate::common::{M3uExtend, M3uObject, M3uObjectList, SearchOptions};
+use crate::common::{M3uObject, M3uObjectList, SearchOptions};
+use crate::config;
 use crate::utils::{create_folder, folder_exists};
+use chrono::{Datelike, Local};
+use log::{debug, error, info};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fmt::{format, Error};
-use std::{fs, vec};
-use std::fs::FileTimes;
+use std::fmt::Error;
 use std::io::Write;
-use crate::common::check;
-use crate::common::task::{
-    add_task, delete_task, get_download_body, list_task, run_task, system_tasks_export,
-    system_tasks_import, update_task,
-};
-use crate::config;
-use std::sync::Arc;
-use std::fs::File;
-use std::path::Path;
-use chrono::{Datelike, Local};
-use log::{debug, error, info};
+use std::{fs, vec};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GithubPageProps {
@@ -397,13 +385,16 @@ async fn init_search_data() -> Result<(), Error> {
                         fetch_values.include_files.clone(),
                         config.extensions.clone(),
                     )
-                        .await;
+                    .await;
                     debug!("{:?}", m3u_and_txt_files);
                     // 下载m3u文件
                     for _url in m3u_and_txt_files {
                         i += 1;
-                        save_data(_url.download_url.clone(),
-                                  format!("./static/input/search/200-{}{}", i, _url.extension)).await;
+                        save_data(
+                            _url.download_url.clone(),
+                            format!("./static/input/search/200-{}{}", i, _url.extension),
+                        )
+                        .await;
                     }
                 }
             }
@@ -414,13 +405,16 @@ async fn init_search_data() -> Result<(), Error> {
                         fetch_values.include_files.clone(),
                         config.extensions.clone(),
                     )
-                        .await;
+                    .await;
                     debug!("{:?}", m3u_and_txt_files);
                     // 下载m3u文件
                     for _url in m3u_and_txt_files {
                         i += 1;
-                        save_data(_url.download_url.clone(),
-                                  format!("./static/input/search/300-{}{}", i, _url.extension)).await;
+                        save_data(
+                            _url.download_url.clone(),
+                            format!("./static/input/search/300-{}{}", i, _url.extension),
+                        )
+                        .await;
                     }
                 }
             }
@@ -431,8 +425,11 @@ async fn init_search_data() -> Result<(), Error> {
                         ext = ".txt"
                     }
                     i += 1;
-                    save_data(url.clone(),
-                              format!("./static/input/search/400-{}{}", i, ext)).await;
+                    save_data(
+                        url.clone(),
+                        format!("./static/input/search/400-{}{}", i, ext),
+                    )
+                    .await;
                 }
             }
         }
@@ -442,8 +439,7 @@ async fn init_search_data() -> Result<(), Error> {
 
 async fn save_data(url: String, save_name: String) {
     let fetch_url = url.clone();
-    let save_status =
-        download_target_files(fetch_url.clone(), save_name.to_string()).await;
+    let save_status = download_target_files(fetch_url.clone(), save_name.to_string()).await;
     match save_status {
         Ok(_) => {
             info!("{} file save success", fetch_url.clone());
@@ -595,17 +591,22 @@ pub async fn do_search(search_name: String, thumbnail: bool, concurrent: i32) ->
     match init_search_data().await {
         Ok(()) => {
             let mut m3u_data = load_m3u_data().expect("load m3u data failed");
-            m3u_data.search(SearchOptions {
-                search_name: search_name.clone(),
-                full_match: false,
-                ipv4: true,
-                ipv6: true,
-                exclude_url: vec![],
-                exclude_host: vec![],
-                quality: vec![],
-            }).await;
+            m3u_data
+                .search(SearchOptions {
+                    search_name: search_name.clone(),
+                    full_match: false,
+                    ipv4: true,
+                    ipv6: true,
+                    exclude_url: vec![],
+                    exclude_host: vec![],
+                    quality: vec![],
+                })
+                .await;
             info!("list1 --- {}", m3u_data.clone().get_list().len());
-            m3u_data.generate_thumbnail(concurrent).await;
+            if thumbnail {
+                m3u_data.generate_thumbnail(concurrent).await;
+            }
+
             info!("list2 --- {}", m3u_data.clone().get_list().len());
             m3u_data.generate_m3u_file(String::from("./static/output/1111.m3u"), true);
             m3u_data.generate_text_file(String::from("./static/output/1111.txt"));

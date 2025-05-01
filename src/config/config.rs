@@ -1,12 +1,9 @@
 use std::collections::HashMap;
 use std::fs;
-use std::io::{Error, ErrorKind};
+use std::io::{Error};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
-use std::path::Path;
-use log::{debug, error, info};
-use uuid::Uuid;
-use crate::common::do_check;
+use log::{error, info};
 use crate::common::task::Task;
 use crate::config::{parse_core_json, update_config};
 
@@ -75,7 +72,6 @@ pub struct SearchConfig {
     pub exclude_host: Vec<String>, // 排除的主机列表
 }
 
-/// 全局配置实例
 lazy_static::lazy_static! {
     static ref GLOBAL_CONFIG: Mutex<Core> = Mutex::new(Core::default());
 }
@@ -132,9 +128,9 @@ pub mod file_config {
     }
 
     /// 从字符串解析配置
-    pub fn read_config(content: String) -> Result<Core, Error> {
-        Ok(serde_json::from_str(&content)?)
-    }
+    // pub fn read_config(content: String) -> Result<Core, Error> {
+    //     Ok(serde_json::from_str(&content)?)
+    // }
 
     /// 保存配置到文件
     pub fn save_config(file_path: &str) -> Result<(), Error> {
@@ -152,25 +148,25 @@ pub mod file_config {
     }
 
     /// 更新检查配置
-    pub fn update_check(check: Check) -> Result<(), Error> {
-        let mut config = GLOBAL_CONFIG.lock().unwrap();
-        config.check = check;
-        Ok(())
-    }
+    // pub fn update_check(check: Check) -> Result<(), Error> {
+    //     let mut config = GLOBAL_CONFIG.lock().unwrap();
+    //     config.check = check;
+    //     Ok(())
+    // }
 
     /// 更新转播配置
-    pub fn update_ob(ob: Ob) -> Result<(), Error> {
-        let mut config = GLOBAL_CONFIG.lock().unwrap();
-        config.ob = ob;
-        Ok(())
-    }
+    // pub fn update_ob(ob: Ob) -> Result<(), Error> {
+    //     let mut config = GLOBAL_CONFIG.lock().unwrap();
+    //     config.ob = ob;
+    //     Ok(())
+    // }
 
     /// 更新搜索配置
-    pub fn update_search(search: Search) -> Result<(), Error> {
-        let mut config = GLOBAL_CONFIG.lock().unwrap();
-        config.search = search;
-        Ok(())
-    }
+    // pub fn update_search(search: Search) -> Result<(), Error> {
+    //     let mut config = GLOBAL_CONFIG.lock().unwrap();
+    //     config.search = search;
+    //     Ok(())
+    // }
 
     /// 添加或更新任务
     pub fn save_task(id: String, task: Task) -> Result<(), Error> {
@@ -187,10 +183,10 @@ pub mod file_config {
     }
 
     /// 获取整个配置
-    pub fn get_config() -> Result<Core, Error> {
-        let config = GLOBAL_CONFIG.lock().unwrap();
-        Ok(config.clone())
-    }
+    // pub fn get_config() -> Result<Core, Error> {
+    //     let config = GLOBAL_CONFIG.lock().unwrap();
+    //     Ok(config.clone())
+    // }
 
     /// 获取检查配置
     pub fn get_check() -> Result<Check, Error> {
@@ -199,10 +195,10 @@ pub mod file_config {
     }
 
     /// 获取转播配置
-    pub fn get_ob() -> Result<Ob, Error> {
-        let config = GLOBAL_CONFIG.lock().unwrap();
-        Ok(config.ob.clone())
-    }
+    // pub fn get_ob() -> Result<Ob, Error> {
+    //     let config = GLOBAL_CONFIG.lock().unwrap();
+    //     Ok(config.ob.clone())
+    // }
 
     /// 获取搜索配置
     pub fn get_search() -> Result<Search, Error> {
@@ -221,19 +217,17 @@ pub mod file_config {
         let config = GLOBAL_CONFIG.lock().unwrap();
         Ok(config.check.task.clone())
     }
-
-    /// 获取当前运行的任务ID
-    pub fn get_now_task() -> Result<Option<String>, Error> {
-        let config = GLOBAL_CONFIG.lock().unwrap();
-        Ok(config.check.now.clone())
-    }
-
-    /// 设置当前运行的任务ID
-    pub fn set_now_task(task_id: Option<String>) -> Result<(), Error> {
-        let mut config = GLOBAL_CONFIG.lock().unwrap();
-        config.check.now = task_id;
-        Ok(())
-    }
+    
+    // pub fn get_now_task() -> Result<Option<String>, Error> {
+    //     let config = GLOBAL_CONFIG.lock().unwrap();
+    //     Ok(config.check.now.clone())
+    // }
+    
+    // pub fn set_now_task(task_id: Option<String>) -> Result<(), Error> {
+    //     let mut config = GLOBAL_CONFIG.lock().unwrap();
+    //     config.check.now = task_id;
+    //     Ok(())
+    // }
 }
 
 /*

@@ -1,12 +1,11 @@
 use crate::common::{M3uExt, M3uExtend, M3uObject, M3uObjectList};
 use crate::utils::translator_t2s;
 use reqwest::Error;
-use std::io;
-use std::net::IpAddr;
 use url::Url;
 
 /// IP地址类型枚举
 #[derive(Debug)]
+#[warn(dead_code)]
 pub enum IpAddress {
     Ipv4Addr,  // IPv4地址
     Ipv6Addr,  // IPv6地址
@@ -47,24 +46,24 @@ pub fn check_body_is_m3u8_format(_body: String) -> bool {
 /// 
 /// # 返回值
 /// * `bool` - 如果是IPv6格式返回true，否则返回false
-pub fn match_ipv6_format(s: &str) -> bool {
-    // 检查是否包含IPv6地址的典型特征：冒号
-    if !s.contains(':') {
-        return false;
-    }
-
-    // 如果包含方括号，则去掉方括号
-    let s = if s.starts_with('[') && s.ends_with(']') {
-        &s[1..s.len() - 1]
-    } else {
-        s
-    };
-
-    // 解析URL并检查主机部分是否为IPv6地址
-    let parsed_url = Url::parse(s).unwrap();
-    let host = parsed_url.host_str().unwrap();
-    host.parse::<std::net::Ipv6Addr>().is_ok()
-}
+// pub fn match_ipv6_format(s: &str) -> bool {
+//     // 检查是否包含IPv6地址的典型特征：冒号
+//     if !s.contains(':') {
+//         return false;
+//     }
+// 
+//     // 如果包含方括号，则去掉方括号
+//     let s = if s.starts_with('[') && s.ends_with(']') {
+//         &s[1..s.len() - 1]
+//     } else {
+//         s
+//     };
+// 
+//     // 解析URL并检查主机部分是否为IPv6地址
+//     let parsed_url = Url::parse(s).unwrap();
+//     let host = parsed_url.host_str().unwrap();
+//     host.parse::<std::net::Ipv6Addr>().is_ok()
+// }
 
 /// 检查URL的主机地址类型
 /// 
@@ -73,18 +72,18 @@ pub fn match_ipv6_format(s: &str) -> bool {
 /// 
 /// # 返回值
 /// * `io::Result<Option<IpAddress>>` - 成功返回IP地址类型，失败返回错误
-pub fn check_url_host_ip_type(url_str: &str) -> io::Result<Option<IpAddress>> {
-    let parsed_url = Url::parse(url_str).unwrap();
-    let host = parsed_url.host_str().unwrap();
-    if let Ok(ip) = host.parse::<IpAddr>() {
-        match ip {
-            IpAddr::V4(_) => Ok(Some(IpAddress::Ipv4Addr)),
-            IpAddr::V6(_) => Ok(Some(IpAddress::Ipv6Addr)),
-        }
-    } else {
-        Ok(None)
-    }
-}
+// pub fn check_url_host_ip_type(url_str: &str) -> io::Result<Option<IpAddress>> {
+//     let parsed_url = Url::parse(url_str).unwrap();
+//     let host = parsed_url.host_str().unwrap();
+//     if let Ok(ip) = host.parse::<IpAddr>() {
+//         match ip {
+//             IpAddr::V4(_) => Ok(Some(IpAddress::Ipv4Addr)),
+//             IpAddr::V6(_) => Ok(Some(IpAddress::Ipv6Addr)),
+//         }
+//     } else {
+//         Ok(None)
+//     }
+// }
 
 /// 解析标准M3U格式的字符串
 /// 
@@ -194,7 +193,7 @@ fn parse_one_m3u(_arr: Vec<&str>, index: i32) -> Option<M3uObject> {
 
         // 创建M3U对象并设置属性
         let mut m3u_obj = M3uObject::new();
-        let simple_name = translator_t2s(&name.clone().to_string());
+        let simple_name = translator_t2s(&name.to_string());
         m3u_obj.set_extend(extend);
         m3u_obj.set_index(index);
         m3u_obj.set_url(url.to_string());

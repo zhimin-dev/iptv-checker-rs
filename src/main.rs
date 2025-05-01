@@ -1,23 +1,20 @@
 mod common;
+mod config;
 mod live;
+mod middleware;
 mod search;
 mod utils;
 mod web;
-mod middleware;
-mod config;
 
 use crate::common::do_check;
+use crate::config::config::{init_config};
 use crate::live::do_ob;
 use crate::search::{clear_search_folder, do_search};
-use crate::utils::{create_folder, file_exists};
-use crate::config::config::{init_config, Core};
-use crate::config::*;
-use chrono::Local;
+use crate::utils::{create_folder};
 use clap::{arg, Args as clapArgs, Parser, Subcommand};
 use log::{error, info, LevelFilter};
 use simplelog::{CombinedLogger, Config, WriteLogger};
 use std::env;
-use std::fs::File;
 use tempfile::tempdir;
 
 const DEFAULT_HTTP_PORT: u16 = 8089;
@@ -163,12 +160,12 @@ async fn start_daemonize_web(pid_name: &String, port: u16) {
 fn init_folder() {
     let folder = vec![
         "./static",
-        "./static/input", 
-        "./static/input/live", 
+        "./static/input",
+        "./static/input/live",
         "./static/input/search",
-        "./static/output", 
+        "./static/output",
         "./static/output/thumbnail",
-        "./static/logs"
+        "./static/logs",
     ];
     for f in folder {
         create_folder(&f.to_string()).unwrap()
@@ -194,15 +191,10 @@ pub fn show_status() {
 
 #[actix_web::main]
 pub async fn main() {
-    CombinedLogger::init(
-        vec![
-            WriteLogger::new(
-                LevelFilter::Info,
-                Config::default(),
-                std::io::stdout(),
-            ),
-        ]
-    ).unwrap();
+    CombinedLogger::init(vec![
+        WriteLogger::new(LevelFilter::Debug, Config::default(), std::io::stdout()),
+    ])
+    .unwrap();
 
     init_config();
 
@@ -242,8 +234,8 @@ pub async fn main() {
                     args.same_save_num,
                     args.not_http_skip,
                 )
-                    .await
-                    .unwrap();
+                .await
+                .unwrap();
             }
         }
         Commands::Search(args) => {
@@ -255,7 +247,8 @@ pub async fn main() {
                 }
             } else {
                 if args.search.len() > 0 {
-                    let data = do_search(args.search.clone(), args.thumbnail,args.concurrency).await;
+                    let data =
+                        do_search(args.search.clone(), args.thumbnail, args.concurrency).await;
                     match data {
                         Ok(()) => {
                             info!("成功 ---")

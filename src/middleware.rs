@@ -1,11 +1,7 @@
-use actix_web::body::{to_bytes, MessageBody};
-use actix_web::{dev::{forward_ready, Service, ServiceRequest, ServiceResponse, Transform}, web, Error, HttpResponse};
-use actix_web::HttpMessage;
+use actix_web::{dev::{forward_ready, Service, ServiceRequest, ServiceResponse, Transform}, Error};
 use futures_util::future::LocalBoxFuture;
-use futures_util::{FutureExt, StreamExt};
-use log::{debug, info, warn};
+use log::{debug};
 use std::future::{ready, Ready};
-use std::io::Bytes;
 
 /// 日志中间件结构体
 pub struct Logging;

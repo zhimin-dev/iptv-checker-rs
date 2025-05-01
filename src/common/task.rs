@@ -5,8 +5,8 @@ use md5;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{Error, ErrorKind, Read, Result, Write};
-use std::sync::{Arc, Mutex};
+use std::io::{Error, ErrorKind, Read, Result};
+use std::sync::{Arc};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 use crate::config::config::file_config;
@@ -30,7 +30,7 @@ pub struct TaskInfo {
 
 #[warn(private_interfaces)]
 #[derive(Debug, Deserialize, Serialize, Clone)]
-enum RunTime {
+pub enum RunTime {
     EveryDay,
     EveryHour,
 }
@@ -58,9 +58,9 @@ impl TaskInfo {
         self.next_run_time = time
     }
 
-    pub fn set_last_run_time(&mut self, time: i32) {
-        self.next_run_time = time
-    }
+    // pub fn set_last_run_time(&mut self, time: i32) {
+    //     self.next_run_time = time
+    // }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -407,9 +407,7 @@ impl Task {
     }
 }
 
-pub struct TaskManager {
-    pub tasks: Mutex<HashMap<String, Task>>,
-}
+pub struct TaskManager {}
 
 impl TaskManager {
     pub fn add_task(&self, task: TaskContent) -> Result<String> {
@@ -462,9 +460,9 @@ impl TaskManager {
     }
 
     pub fn update_task(&self, id: String, pass_task: TaskContent) -> Result<bool> {
-        if let Ok(Some(mut task)) = file_config::get_task(&id) {
+        if let Ok(Some( task)) = file_config::get_task(&id) {
             let mut task_info = task.clone().get_task_info();
-            let ori = pass_task.valid().unwrap();
+            let ori = pass_task.valid()?;
             let mut new_task = Task::new();
             new_task.set_original(ori);
             new_task.set_id(id);
@@ -494,28 +492,20 @@ impl TaskManager {
         }
     }
 
-    pub fn load_tasks(&self) -> Result<()> {
-        Ok(())
-    }
-
-    pub fn save_tasks(&self) -> Result<()> {
-        Ok(())
-    }
-
-    pub fn update_task_info(&self, id: String, task_info: TaskInfo) -> Result<bool> {
-        if let Ok(Some(mut task)) = file_config::get_task(&id) {
-            task.set_task_info(task_info);
-            if let Err(_) = file_config::save_task(id, task) {
-                return Ok(false);
-            }
-            if let Err(_) = file_config::save_config("core.json") {
-                return Ok(false);
-            }
-            Ok(true)
-        } else {
-            Ok(false)
-        }
-    }
+    // pub fn update_task_info(&self, id: String, task_info: TaskInfo) -> Result<bool> {
+    //     if let Ok(Some(mut task)) = file_config::get_task(&id) {
+    //         task.set_task_info(task_info);
+    //         if let Err(_) = file_config::save_task(id, task) {
+    //             return Ok(false);
+    //         }
+    //         if let Err(_) = file_config::save_config("core.json") {
+    //             return Ok(false);
+    //         }
+    //         Ok(true)
+    //     } else {
+    //         Ok(false)
+    //     }
+    // }
 
     pub fn list_task(&self) -> Result<Vec<Task>> {
         if let Ok(tasks) = file_config::get_all_tasks() {

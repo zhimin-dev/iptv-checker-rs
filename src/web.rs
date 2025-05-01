@@ -3,14 +3,8 @@ use crate::common::task::{
     add_task, delete_task, get_download_body, list_task, run_task, system_tasks_export,
     system_tasks_import, update_task, TaskManager,
 };
-use crate::middleware::Logging;
 use actix_web::middleware::Logger;
-use clap::ColorChoice;
-use env_logger::fmt::style::{Color, RgbColor};
-use env_logger::Env;
-use log::Level::Trace;
 use log::{error, info, LevelFilter};
-use std::io::Write;
 use actix_files as fs;
 use actix_files::NamedFile;
 use actix_multipart::form::{tempfile::TempFile, MultipartForm};
@@ -18,8 +12,6 @@ use actix_web::{get, post, web, App, HttpResponse, HttpServer, Responder};
 use clokwerk::{Scheduler, TimeUnits};
 use serde::{Deserialize, Serialize};
 use simplelog::{CombinedLogger, Config, WriteLogger};
-use std::collections::HashMap;
-use std::fmt::format;
 use std::fs::File;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -27,8 +19,8 @@ use std::time;
 use std::time::Duration;
 use chrono::Local;
 use crate::common::task::TaskStatus::InProgress;
-use crate::config::config::{init_config, Core};
-use crate::config::{get_check, get_task, parse_core_json,save_task};
+use crate::config::config::{init_config};
+use crate::config::{get_check, get_task,save_task};
 use tokio::signal;
 
 /// 删除任务请求结构体
@@ -222,9 +214,7 @@ pub async fn start_web(port: u16) {
     init_config();
 
     // 初始化任务管理器
-    let task_manager = Arc::new(TaskManager {
-        tasks: Mutex::new(HashMap::new()),
-    });
+    let task_manager = Arc::new(TaskManager {});
 
     // 创建定时任务调度器
     let scheduler: Arc<Mutex<Scheduler>> = Arc::new(Mutex::new(Scheduler::with_tz(chrono::Local)));
@@ -247,9 +237,9 @@ pub async fn start_web(port: u16) {
         scheduler.every(30.seconds()).run(move || {
             // 获取所有任务
             if let Ok(tasks) = get_check() {
-                for (id, task) in tasks.task {
+                for (id, _) in tasks.task {
                     // 运行任务
-                    if let Ok(mut task) = get_task(&id) {
+                    if let Ok( task) = get_task(&id) {
                         if let Some(mut task) = task {
                             // 更新任务状态
                             task.task_info.is_running = true;
