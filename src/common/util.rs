@@ -4,7 +4,6 @@ use reqwest::Error;
 use url::Url;
 
 /// IP地址类型枚举
-#[derive(Debug)]
 #[warn(dead_code)]
 pub enum IpAddress {
     Ipv4Addr,  // IPv4地址
@@ -51,14 +50,14 @@ pub fn check_body_is_m3u8_format(_body: String) -> bool {
 //     if !s.contains(':') {
 //         return false;
 //     }
-// 
+//
 //     // 如果包含方括号，则去掉方括号
 //     let s = if s.starts_with('[') && s.ends_with(']') {
 //         &s[1..s.len() - 1]
 //     } else {
 //         s
 //     };
-// 
+//
 //     // 解析URL并检查主机部分是否为IPv6地址
 //     let parsed_url = Url::parse(s).unwrap();
 //     let host = parsed_url.host_str().unwrap();

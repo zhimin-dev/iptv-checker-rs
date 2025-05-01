@@ -26,7 +26,7 @@ pub fn get_out_put_filename(output_file: String) -> String {
 
 /// 生成随机的输出文件名
 fn get_random_output_filename() -> String {
-    let rng = rand::thread_rng();
+    let rng = rand::rng();
 
     let random_string: String = rng
         .sample_iter(Alphanumeric)
