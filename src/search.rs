@@ -59,25 +59,25 @@ pub struct GithubPagePropTreeItem {
 
 #[derive(Debug)]
 pub struct GithubInfo {
-    pub content_type: String,
-    pub path: String,
-    pub name: String,
+    // pub content_type: String,
+    // pub path: String,
+    // pub name: String,
     pub download_url: String,
     pub extension: String, //.txt, .m3u
 }
 
 impl GithubInfo {
     pub fn new(
-        content_type: String,
-        path: String,
-        name: String,
+        // content_type: String,
+        // path: String,
+        // name: String,
         download_url: String,
         extension: String,
     ) -> GithubInfo {
         GithubInfo {
-            content_type,
-            path,
-            name,
+            // content_type,
+            // path,
+            // name,
             download_url,
             extension,
         }
@@ -116,9 +116,9 @@ pub fn parse_github_sub_page_body_to_m3u_link(
                                     if value.path.ends_with(ext) {
                                         let download_url = format!("https://raw.githubusercontent.com/{}/{}/refs/heads/{}/{}", props.payload.repo.owner_login, props.payload.repo.name, props.payload.repo.default_branch, value.path);
                                         urls.push(GithubInfo::new(
-                                            value.content_type.clone(),
-                                            value.path.clone(),
-                                            value.name.clone(),
+                                            // value.content_type.clone(),
+                                            // value.path.clone(),
+                                            // value.name.clone(),
                                             download_url,
                                             ext.to_string(),
                                         ))
@@ -167,9 +167,9 @@ pub fn parse_github_home_page_body_to_m3u_link(
                                     if value.path.ends_with(ext) {
                                         let download_url = format!("https://raw.githubusercontent.com/{}/{}/refs/heads/{}/{}", props.props.initial_payload.repo.owner_login, props.props.initial_payload.repo.name, props.props.initial_payload.repo.default_branch, value.path);
                                         urls.push(GithubInfo::new(
-                                            value.content_type.clone(),
-                                            value.path.clone(),
-                                            value.name.clone(),
+                                            // value.content_type.clone(),
+                                            // value.path.clone(),
+                                            // value.name.clone(),
                                             download_url,
                                             ext.to_string(),
                                         ))
@@ -222,9 +222,9 @@ async fn fetch_github_sub_page(
 #[derive(Debug)]
 pub struct EpgM3u8Info {
     pub name: String,
-    pub revolution: String,
-    pub reg: String,
-    pub check: String,
+    // pub revolution: String,
+    // pub reg: String,
+    // pub check: String,
     pub urls: Vec<String>,
 }
 
@@ -287,9 +287,9 @@ fn epg_live_stream_html_parse(html: &str) -> Vec<EpgM3u8Info> {
         if row.len() >= 5 {
             rows.push(EpgM3u8Info {
                 name: row[0]["text"][0].clone(),
-                revolution: row[1]["text"][0].clone(),
-                reg: row[2]["text"][0].clone(),
-                check: row[3]["text"][0].clone(),
+                // revolution: row[1]["text"][0].clone(),
+                // reg: row[2]["text"][0].clone(),
+                // check: row[3]["text"][0].clone(),
                 urls: row[4]["links"].clone(),
             });
         }

@@ -2,7 +2,6 @@ mod common;
 mod config;
 mod r#const;
 mod live;
-mod middleware;
 mod search;
 mod utils;
 mod web;
