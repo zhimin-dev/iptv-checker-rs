@@ -1,4 +1,5 @@
 use crate::common::do_check;
+use crate::config::config::file_config;
 use actix_web::{web, HttpResponse, Responder};
 use log::{debug, info};
 use md5;
@@ -6,10 +7,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Error, ErrorKind, Read, Result};
-use std::sync::{Arc};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
-use crate::config::config::file_config;
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct TaskInfo {
@@ -389,7 +389,7 @@ impl Task {
                 same_save_num,
                 not_http_skip,
             )
-                .await;
+            .await;
             debug!("end taskId: {}", task_id);
         });
         self.task_info.task_status = TaskStatus::Pending;
@@ -418,7 +418,7 @@ impl TaskManager {
         if let Err(e) = file_config::save_task(id.clone(), task) {
             return Err(Error::new(ErrorKind::Other, e.to_string()));
         }
-        if let Err(e) = file_config::save_config("core.json") {
+        if let Err(e) = file_config::save_config() {
             return Err(Error::new(ErrorKind::Other, e.to_string()));
         }
         Ok(id)
@@ -430,7 +430,7 @@ impl TaskManager {
                 return false;
             }
         }
-        if let Err(_) = file_config::save_config("core.json") {
+        if let Err(_) = file_config::save_config() {
             return false;
         }
         true
@@ -442,7 +442,7 @@ impl TaskManager {
             if let Err(_) = file_config::save_task(id, task) {
                 return Ok(false);
             }
-            if let Err(_) = file_config::save_config("core.json") {
+            if let Err(_) = file_config::save_config() {
                 return Ok(false);
             }
             Ok(true)
@@ -460,7 +460,7 @@ impl TaskManager {
     }
 
     pub fn update_task(&self, id: String, pass_task: TaskContent) -> Result<bool> {
-        if let Ok(Some( task)) = file_config::get_task(&id) {
+        if let Ok(Some(task)) = file_config::get_task(&id) {
             let mut task_info = task.clone().get_task_info();
             let ori = pass_task.valid()?;
             let mut new_task = Task::new();
@@ -471,7 +471,7 @@ impl TaskManager {
             if let Err(_) = file_config::save_task(new_task.get_uuid(), new_task) {
                 return Ok(false);
             }
-            if let Err(_) = file_config::save_config("core.json") {
+            if let Err(_) = file_config::save_config() {
                 return Ok(false);
             }
             Ok(true)
@@ -484,28 +484,13 @@ impl TaskManager {
         if let Err(_) = file_config::delete_task(&id) {
             Ok(false)
         } else {
-            if let Err(_) = file_config::save_config("core.json") {
+            if let Err(_) = file_config::save_config() {
                 Ok(false)
             } else {
                 Ok(true)
             }
         }
     }
-
-    // pub fn update_task_info(&self, id: String, task_info: TaskInfo) -> Result<bool> {
-    //     if let Ok(Some(mut task)) = file_config::get_task(&id) {
-    //         task.set_task_info(task_info);
-    //         if let Err(_) = file_config::save_task(id, task) {
-    //             return Ok(false);
-    //         }
-    //         if let Err(_) = file_config::save_config("core.json") {
-    //             return Ok(false);
-    //         }
-    //         Ok(true)
-    //     } else {
-    //         Ok(false)
-    //     }
-    // }
 
     pub fn list_task(&self) -> Result<Vec<Task>> {
         if let Ok(tasks) = file_config::get_all_tasks() {

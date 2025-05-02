@@ -11,7 +11,7 @@ use std::process::Command;
 pub fn get_out_put_filename(output_file: String) -> String {
     let mut filename = output_file.clone();
     if output_file.is_empty() {
-        filename = format!("static/output/{}", get_random_output_filename());
+        filename = format!("{}{}", OUTPUT_FOLDER, get_random_output_filename());
     }
     filename
 }
@@ -60,6 +60,7 @@ pub fn file_exists(file_path: &String) -> bool {
 }
 
 use lazy_static::lazy_static;
+use crate::r#const::constant::OUTPUT_FOLDER;
 
 lazy_static! {
     // 匹配数字和方括号中的内容
@@ -80,7 +81,8 @@ pub fn remove_other_char(str: String) -> String {
         }
     }
     // 移除特定的频道标记
-    let rename_channel_list: Vec<&str> = vec!["[geo-blocked]", "[ipv6]", "hevc", "50 fps", "[not 24/7]"];
+    let rename_channel_list: Vec<&str> =
+        vec!["[geo-blocked]", "[ipv6]", "hevc", "50 fps", "[not 24/7]"];
     for change in rename_channel_list {
         res_str = res_str.replace(change, "")
     }
@@ -113,7 +115,10 @@ mod tests {
         println!("{}", remove_other_char("[HD]cctv3".to_string()));
         println!("{}", remove_other_char("[bd]cctv4".to_string()));
         println!("{}", remove_other_char("2323 cctv5".to_string()));
-        println!("{}", remove_other_char("2323 cctv6[geo-blocked]".to_string()));
+        println!(
+            "{}",
+            remove_other_char("2323 cctv6[geo-blocked]".to_string())
+        );
 
         // println!("{}", translator_t2s("FTV (民視) (720p) [Not 24/7]"));
     }

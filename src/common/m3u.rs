@@ -15,7 +15,7 @@ use std::io::{self, Write};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration};
+use std::time::Duration;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct M3uExtend {
@@ -325,7 +325,7 @@ impl M3uObjectList {
     pub fn get_list(self) -> Vec<M3uObject> {
         self.list
     }
-    
+
     pub fn get_header(self) -> Option<M3uExt> {
         self.header
     }

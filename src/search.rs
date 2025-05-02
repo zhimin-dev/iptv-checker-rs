@@ -1,6 +1,7 @@
 use crate::common::m3u::m3u::from_body_arr;
 use crate::common::{M3uObject, M3uObjectList, SearchOptions};
 use crate::config;
+use crate::r#const::constant::{INPUT_SEARCH_FOLDER, OUTPUT_THUMBNAIL_FOLDER};
 use crate::utils::{create_folder, folder_exists};
 use chrono::{Datelike, Local};
 use log::{debug, error, info};
@@ -333,7 +334,7 @@ async fn get_url_body(_url: String) -> Result<String, Error> {
 }
 
 fn check_search_data_exists() -> std::io::Result<bool> {
-    let path = std::path::Path::new("./static/input/search/");
+    let path = std::path::Path::new(INPUT_SEARCH_FOLDER);
     if path.is_dir() {
         for entry in fs::read_dir(path)? {
             let entry = entry?;
@@ -353,7 +354,7 @@ async fn init_search_data() -> Result<(), Error> {
         return Ok(());
     }
     // 初始化search文件夹
-    let _ = create_folder(&"./static/input/search/".to_string()).expect("文件夹创建失败");
+    let _ = create_folder(&INPUT_SEARCH_FOLDER.to_string()).expect("文件夹创建失败");
 
     // 下线相关文件
     let config = read_search_configs().await.expect("配置获取失败");
@@ -366,7 +367,7 @@ async fn init_search_data() -> Result<(), Error> {
                     let list = fetch_epg_page(fetch_url.clone()).await;
                     // 将list转换成m3u文件
                     let save_status =
-                        epg_list_to_m3u_file(list, format!("./static/input/search/100-{}.m3u", i));
+                        epg_list_to_m3u_file(list, format!("{}100-{}.m3u", INPUT_SEARCH_FOLDER, i));
                     match save_status {
                         Ok(()) => {
                             info!("{} file save success", fetch_url.clone());
@@ -392,7 +393,7 @@ async fn init_search_data() -> Result<(), Error> {
                         i += 1;
                         save_data(
                             _url.download_url.clone(),
-                            format!("./static/input/search/200-{}{}", i, _url.extension),
+                            format!("{}200-{}{}", INPUT_SEARCH_FOLDER, i, _url.extension),
                         )
                         .await;
                     }
@@ -412,7 +413,7 @@ async fn init_search_data() -> Result<(), Error> {
                         i += 1;
                         save_data(
                             _url.download_url.clone(),
-                            format!("./static/input/search/300-{}{}", i, _url.extension),
+                            format!("{}300-{}{}", INPUT_SEARCH_FOLDER, i, _url.extension),
                         )
                         .await;
                     }
@@ -427,7 +428,7 @@ async fn init_search_data() -> Result<(), Error> {
                     i += 1;
                     save_data(
                         url.clone(),
-                        format!("./static/input/search/400-{}{}", i, ext),
+                        format!("{}400-{}{}", INPUT_SEARCH_FOLDER, i, ext),
                     )
                     .await;
                 }
@@ -620,14 +621,14 @@ pub async fn do_search(search_name: String, thumbnail: bool, concurrent: i32) ->
 }
 
 pub fn clear_search_folder() -> std::io::Result<()> {
-    let p = "./static/input/search/";
+    let p = INPUT_SEARCH_FOLDER;
     fs::remove_dir_all(p)?;
     info!("Deleted directory: {}", p);
     Ok(())
 }
 
 fn load_m3u_data() -> std::io::Result<M3uObjectList> {
-    let p = "./static/input/search/";
+    let p = INPUT_SEARCH_FOLDER;
     let path = std::path::Path::new(p);
     let mut file_names = vec![];
     if path.is_dir() {
@@ -654,7 +655,7 @@ pub fn generate_channel_thumbnail_folder_name() -> String {
     let year = now.year();
     let month = now.month();
     let day = now.day();
-    let folder = format!("./static/output/thumbnail/{}{}{}/", year, month, day);
+    let folder = format!("{}{}{}{}/", OUTPUT_THUMBNAIL_FOLDER, year, month, day);
     if !folder_exists(&folder) {
         fs::create_dir_all(folder.clone()).unwrap()
     }

@@ -3,19 +3,12 @@ use crate::utils::translator_t2s;
 use reqwest::Error;
 use url::Url;
 
-/// IP地址类型枚举
-#[warn(dead_code)]
-pub enum IpAddress {
-    Ipv4Addr,  // IPv4地址
-    Ipv6Addr,  // IPv6地址
-}
-
 /// 获取URL的内容
-/// 
+///
 /// # 参数
 /// * `_url` - 要获取内容的URL
 /// * `timeout` - 超时时间（毫秒）
-/// 
+///
 /// # 返回值
 /// * `Result<String, Error>` - 成功返回URL内容，失败返回错误
 pub async fn get_url_body(_url: String, timeout: u64) -> Result<String, Error> {
@@ -28,10 +21,10 @@ pub async fn get_url_body(_url: String, timeout: u64) -> Result<String, Error> {
 }
 
 /// 检查内容是否为M3U8格式
-/// 
+///
 /// # 参数
 /// * `_body` - 要检查的内容
-/// 
+///
 /// # 返回值
 /// * `bool` - 如果是M3U8格式返回true，否则返回false
 pub fn check_body_is_m3u8_format(_body: String) -> bool {
@@ -39,10 +32,10 @@ pub fn check_body_is_m3u8_format(_body: String) -> bool {
 }
 
 /// 检查字符串是否为IPv6格式
-/// 
+///
 /// # 参数
 /// * `s` - 要检查的字符串
-/// 
+///
 /// # 返回值
 /// * `bool` - 如果是IPv6格式返回true，否则返回false
 // pub fn match_ipv6_format(s: &str) -> bool {
@@ -65,10 +58,10 @@ pub fn check_body_is_m3u8_format(_body: String) -> bool {
 // }
 
 /// 检查URL的主机地址类型
-/// 
+///
 /// # 参数
 /// * `url_str` - 要检查的URL
-/// 
+///
 /// # 返回值
 /// * `io::Result<Option<IpAddress>>` - 成功返回IP地址类型，失败返回错误
 // pub fn check_url_host_ip_type(url_str: &str) -> io::Result<Option<IpAddress>> {
@@ -85,10 +78,10 @@ pub fn check_body_is_m3u8_format(_body: String) -> bool {
 // }
 
 /// 解析标准M3U格式的字符串
-/// 
+///
 /// # 参数
 /// * `_body` - M3U格式的字符串
-/// 
+///
 /// # 返回值
 /// * `M3uObjectList` - 解析后的M3U对象列表
 pub fn parse_normal_str(_body: String) -> M3uObjectList {
@@ -99,7 +92,7 @@ pub fn parse_normal_str(_body: String) -> M3uObjectList {
     let mut index = 1;
     let mut one_m3u = Vec::new();
     let mut save_mode = false;
-    
+
     // 逐行解析M3U内容
     for x in exp_line {
         if x.starts_with("#EXTM3U") {
@@ -133,10 +126,10 @@ pub fn parse_normal_str(_body: String) -> M3uObjectList {
 }
 
 /// 解析M3U头部信息
-/// 
+///
 /// # 参数
 /// * `_str` - M3U头部字符串
-/// 
+///
 /// # 返回值
 /// * `M3uExt` - 解析后的M3U扩展信息
 fn parse_m3u_header(_str: String) -> M3uExt {
@@ -154,18 +147,18 @@ fn parse_m3u_header(_str: String) -> M3uExt {
 }
 
 /// 解析单个M3U条目
-/// 
+///
 /// # 参数
 /// * `_arr` - M3U条目字符串数组
 /// * `index` - 条目索引
-/// 
+///
 /// # 返回值
 /// * `Option<M3uObject>` - 解析后的M3U对象
 fn parse_one_m3u(_arr: Vec<&str>, index: i32) -> Option<M3uObject> {
     let url = _arr.last().unwrap().to_string();
     if _arr.first().unwrap().starts_with("#EXTINF") && is_url(url.to_owned()) {
         let mut extend = M3uExtend::new();
-        
+
         // 解析各种扩展属性
         if let Some(title) = _arr.first().unwrap().split("group-title=\"").nth(1) {
             extend.set_group_title(title.split('"').next().unwrap().to_owned())
@@ -185,7 +178,7 @@ fn parse_one_m3u(_arr: Vec<&str>, index: i32) -> Option<M3uObject> {
         if let Some(user_agent) = _arr.first().unwrap().split("user-agent=\"").nth(1) {
             extend.set_user_agent(user_agent.split('"').next().unwrap().to_owned())
         }
-        
+
         // 解析频道名称
         let exp: Vec<&str> = _arr.first().unwrap().split(',').collect();
         let name = exp.last().unwrap();
@@ -205,10 +198,10 @@ fn parse_one_m3u(_arr: Vec<&str>, index: i32) -> Option<M3uObject> {
 }
 
 /// 解析带引号的M3U格式字符串
-/// 
+///
 /// # 参数
 /// * `_body` - 带引号的M3U格式字符串
-/// 
+///
 /// # 返回值
 /// * `M3uObjectList` - 解析后的M3U对象列表
 pub fn parse_quota_str(_body: String) -> M3uObjectList {
@@ -217,13 +210,13 @@ pub fn parse_quota_str(_body: String) -> M3uObjectList {
     let exp_line = _body.lines();
     let mut now_group = String::from("");
     let mut index = 1;
-    
+
     // 逐行解析M3U内容
     for x in exp_line {
         let one_c: Vec<&str> = x.split(',').collect();
         let mut name = String::from("");
         let mut url = String::from("");
-        
+
         // 解析名称和URL
         match one_c.first() {
             Some(pname) => {
@@ -238,7 +231,7 @@ pub fn parse_quota_str(_body: String) -> M3uObjectList {
             }
             None => {}
         }
-        
+
         // 处理分组和频道信息
         if !name.is_empty() && !url.is_empty() {
             if !is_url(url.clone()) {
@@ -264,10 +257,10 @@ pub fn parse_quota_str(_body: String) -> M3uObjectList {
 }
 
 /// 检查字符串是否为有效的URL
-/// 
+///
 /// # 参数
 /// * `_str` - 要检查的字符串
-/// 
+///
 /// # 返回值
 /// * `bool` - 如果是有效的URL返回true，否则返回false
 pub fn is_url(_str: String) -> bool {

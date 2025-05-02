@@ -1,12 +1,12 @@
 use std::process::{Command, ExitStatus};
 
 /// 从M3U8流中捕获首帧图片
-/// 
+///
 /// # 参数
 /// * `m3u8_url` - M3U8流的URL地址
 /// * `output_image` - 输出图片的路径
 /// * `timeout_seconds` - 超时时间（秒）
-/// 
+///
 /// # 返回值
 /// * `bool` - 成功返回true，失败返回false
 pub fn capture_stream_pic(m3u8_url: String, output_image: String, timeout_seconds: u64) -> bool {
@@ -16,9 +16,9 @@ pub fn capture_stream_pic(m3u8_url: String, output_image: String, timeout_second
             "-i",
             &m3u8_url, // 输入M3U8地址
             "-frames:v",
-            "1",           // 只截取一帧
-            "-y",          // 如果输出文件已存在则覆盖
-            "-timeout",    // 添加超时参数
+            "1",        // 只截取一帧
+            "-y",       // 如果输出文件已存在则覆盖
+            "-timeout", // 添加超时参数
             &timeout_seconds.to_string(),
             &output_image, // 输出文件名
         ])
@@ -35,14 +35,14 @@ pub fn capture_stream_pic(m3u8_url: String, output_image: String, timeout_second
 }
 
 /// 将RTMP流转换为HLS流
-/// 
+///
 /// # 参数
 /// * `rtmp_url` - RTMP流的URL地址
 /// * `hls_output` - HLS输出文件的路径
-/// 
+///
 /// # 返回值
 /// * `bool` - 成功返回true，失败返回false
-/// 
+///
 /// # 说明
 /// 该函数使用ffmpeg将RTMP流转换为HLS流，并生成相应的M3U8文件和TS片段。
 /// 转换过程中会：
@@ -57,9 +57,9 @@ pub fn live_steam_to_m3u8_steam(rtmp_url: String, hls_output: String) -> bool {
             "-i",
             &rtmp_url,
             "-c:v",
-            "copy",        // 保持视频编码不变
+            "copy", // 保持视频编码不变
             "-c:a",
-            "aac",         // 将音频转换为AAC格式
+            "aac", // 将音频转换为AAC格式
             "-strict",
             "experimental",
             "-f",

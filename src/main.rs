@@ -1,5 +1,6 @@
 mod common;
 mod config;
+mod r#const;
 mod live;
 mod middleware;
 mod search;
@@ -7,10 +8,14 @@ mod utils;
 mod web;
 
 use crate::common::do_check;
-use crate::config::config::{init_config};
+use crate::config::config::init_config;
 use crate::live::do_ob;
+use crate::r#const::constant::{
+    INPUT_FOLDER, INPUT_LIVE_FOLDER, INPUT_SEARCH_FOLDER, LOGS_FOLDER, OUTPUT_FOLDER,
+    OUTPUT_THUMBNAIL_FOLDER, STATIC_FOLDER,
+};
 use crate::search::{clear_search_folder, do_search};
-use crate::utils::{create_folder};
+use crate::utils::create_folder;
 use clap::{arg, Args as clapArgs, Parser, Subcommand};
 use log::{error, info, LevelFilter};
 use simplelog::{CombinedLogger, Config, WriteLogger};
@@ -159,13 +164,13 @@ async fn start_daemonize_web(pid_name: &String, port: u16) {
 
 fn init_folder() {
     let folder = vec![
-        "./static",
-        "./static/input",
-        "./static/input/live",
-        "./static/input/search",
-        "./static/output",
-        "./static/output/thumbnail",
-        "./static/logs",
+        STATIC_FOLDER,
+        INPUT_FOLDER,
+        INPUT_LIVE_FOLDER,
+        INPUT_SEARCH_FOLDER,
+        OUTPUT_FOLDER,
+        OUTPUT_THUMBNAIL_FOLDER,
+        LOGS_FOLDER,
     ];
     for f in folder {
         create_folder(&f.to_string()).unwrap()
@@ -191,9 +196,11 @@ pub fn show_status() {
 
 #[actix_web::main]
 pub async fn main() {
-    CombinedLogger::init(vec![
-        WriteLogger::new(LevelFilter::Debug, Config::default(), std::io::stdout()),
-    ])
+    CombinedLogger::init(vec![WriteLogger::new(
+        LevelFilter::Debug,
+        Config::default(),
+        std::io::stdout(),
+    )])
     .unwrap();
 
     init_config();

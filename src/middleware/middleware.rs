@@ -1,6 +1,9 @@
-use actix_web::{dev::{forward_ready, Service, ServiceRequest, ServiceResponse, Transform}, Error};
+use actix_web::{
+    dev::{forward_ready, Service, ServiceRequest, ServiceResponse, Transform},
+    Error,
+};
 use futures_util::future::LocalBoxFuture;
-use log::{debug};
+use log::debug;
 use std::future::{ready, Ready};
 
 /// 日志中间件结构体
@@ -11,7 +14,7 @@ pub struct Logging;
 /// B - 响应体的类型
 impl<S, B> Transform<S, ServiceRequest> for Logging
 where
-    S: Service<ServiceRequest, Response=ServiceResponse<B>, Error=Error>,
+    S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error>,
     S::Future: 'static,
     B: 'static,
 {
@@ -35,7 +38,7 @@ pub struct LoggingMiddleware<S> {
 /// 实现Service trait来处理请求和响应
 impl<S, B> Service<ServiceRequest> for LoggingMiddleware<S>
 where
-    S: Service<ServiceRequest, Response=ServiceResponse<B>, Error=Error>,
+    S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error>,
     S::Future: 'static,
     B: 'static,
 {
@@ -52,10 +55,12 @@ where
         let path = req.path().to_string();
         let headers = req.headers().to_owned();
         let query_params = req.query_string().to_string();
-        
+
         // 记录请求日志
-        debug!("request path: {}, \nheader:{:?}, \nquery_params:{} ",
-            path, headers, query_params);
+        debug!(
+            "request path: {}, \nheader:{:?}, \nquery_params:{} ",
+            path, headers, query_params
+        );
 
         // 调用内部服务处理请求
         let future = self.service.call(req);

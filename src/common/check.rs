@@ -109,7 +109,7 @@ pub mod check {
     use crate::common::util::check_body_is_m3u8_format;
     use crate::common::{AudioInfo, CheckUrlIsAvailableResponse, Ffprobe, VideoInfo};
     use chrono::Utc;
-    use log::{debug};
+    use log::debug;
     use std::io::{Error, ErrorKind, Read};
     use std::process::{Command, ExitStatus, Stdio};
     use std::sync::{Arc, Mutex};
@@ -432,13 +432,13 @@ pub mod check {
         // #[tokio::test]
         // async fn test_timeout() {
         //     let (tx, rx) = mpsc::channel();
-        // 
+        //
         //     // 模拟从channel里收到一条命令
         //     thread::spawn(move || {
         //         tx.send(("https://cd-live-stream.news.cctvplus.com/live/smil:CHANNEL2.smil/playlist.m3u8", 5000)).unwrap();
         //         // 比如要执行sleep 5秒
         //     });
-        // 
+        //
         //     if let Ok((_url, timeout)) = rx.recv() {
         //         println!("Running command: {} {:?}", _url, timeout);
         //         match run_command_with_timeout_new(_url.to_string(), (timeout as u64)).await {
