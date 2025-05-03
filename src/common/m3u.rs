@@ -149,11 +149,6 @@ impl M3uObject {
     pub fn set_index(&mut self, index: i32) {
         self.index = index;
     }
-
-    // pub fn get_status(&self) -> CheckDataStatus {
-    //     self.status.clone()
-    // }
-
     pub fn get_extend(&self) -> Option<M3uExtend> {
         self.extend.clone()
     }
@@ -228,11 +223,11 @@ impl M3uObject {
 
 #[derive(Copy, Clone)]
 pub struct M3uObjectListCounter {
-    check_index: i32,
-    //当前检查的索引
-    total: i32,
-    // 总数
-    success_count: i32, // 成功数据
+    check_index: i32,             // 当前检查的索引
+    total: i32,                   // 总数
+    success_count: i32,           // 成功数据
+    // repeat_channel_count: i32,    // 频道名称重复数
+    // no_repeat_channel_count: i32, // 频道名称最终保存数
 }
 
 #[derive(Clone)]
@@ -248,6 +243,8 @@ impl M3uObjectListCounter {
             check_index: 0,
             total: 0,
             success_count: 0,
+            // repeat_channel_count: 0,
+            // no_repeat_channel_count: 0,
         }
     }
 
@@ -257,15 +254,8 @@ impl M3uObjectListCounter {
         self.check_index = index
     }
 
-    // pub fn now_index_incr_and_print(&mut self) {
-    //     let mut index = self.check_index;
-    //     index += 1;
-    //     self.check_index = index;
-    //     self.print_now_status();
-    // }
-
-    pub fn incr_succ(&mut self) {
-        self.success_count += 1
+    pub fn set_success_count(&mut self, success_count: i32) {
+        self.success_count = success_count;
     }
 
     pub fn set_total(&mut self, total: i32) {
@@ -273,13 +263,9 @@ impl M3uObjectListCounter {
     }
 
     pub fn print_now_status(self) {
-        info!("\r检查进度: {}/{}", self.check_index, self.total);
+        debug!("\r检查进度: {}/{}", self.check_index, self.total);
         io::stdout().flush().unwrap();
     }
-
-    // pub fn get_now_status(self) -> (i32, i32) {
-    //     (self.check_index, self.total)
-    // }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -330,6 +316,13 @@ impl M3uObjectList {
         self.header
     }
 
+    // pub fn now_index_incr_and_print(&mut self) {
+    //     let mut index = self.check_index;
+    //     index += 1;
+    //     self.check_index = index;
+    //     self.print_now_status();
+    // }
+
     pub fn print_result(&mut self) -> String {
         let succ_num = self.counter.success_count;
         let failed_num = self.counter.total - succ_num;
@@ -339,10 +332,6 @@ impl M3uObjectList {
     pub fn set_counter(&mut self, counter: M3uObjectListCounter) {
         self.counter = counter
     }
-
-    // pub fn set_debug_mod(&mut self, debug: bool) {
-    //     self.debug = debug
-    // }
 
     pub async fn search(&mut self, search: SearchOptions) {
         let mut list = vec![];
@@ -384,26 +373,30 @@ impl M3uObjectList {
             // } else if now_ip_type == 2 && ipv6 {
             //     is_save = true
             // }
-            // for ex_url in exclude_url.clone() {
-            //     if v.url.clone().to_lowercase().eq(&ex_url.clone().to_lowercase()) {
-            //         is_save = false
-            //     }
-            // }
-            // for ex_host in exclude_host.clone() {
-            //     // 解析 URL
-            //     let url = url::Url::parse(&*v.clone().url);
-            //     match url {
-            //         Ok(url) => {
-            //             // 获取主机部分
-            //             if let Some(host) = url.host_str() {
-            //                 if ex_host.clone().eq(&host.to_string()) {
-            //                     is_save = false;
-            //                 }
-            //             }
-            //         }
-            //         _ => {}
-            //     }
-            // }
+            for ex_url in search.exclude_url.clone() {
+                if v.url
+                    .clone()
+                    .to_lowercase()
+                    .eq(&ex_url.clone().to_lowercase())
+                {
+                    is_save = false
+                }
+            }
+            for ex_host in search.exclude_host.clone() {
+                // 解析 URL
+                let url = url::Url::parse(&*v.clone().url);
+                match url {
+                    Ok(url) => {
+                        // 获取主机部分
+                        if let Some(host) = url.host_str() {
+                            if ex_host.clone().eq(&host.to_string()) {
+                                is_save = false;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
             if is_save {
                 list.push(v.clone());
             }
@@ -417,7 +410,11 @@ impl M3uObjectList {
         self.list = unique_list
     }
 
-    pub async fn generate_thumbnail(&mut self, concurrent: i32) {
+    pub async fn generate_thumbnail(&mut self, concurrent: i32, timeout_millisecond: u16) {
+        let mut ffmpeg_timeout_sec = 1;
+        if timeout_millisecond / 1000 >= 1 {
+            ffmpeg_timeout_sec = (timeout_millisecond / 1000) as u64;
+        }
         // Create a semaphore to limit concurrency
         let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrent as usize));
         let mut results = Vec::new();
@@ -435,7 +432,7 @@ impl M3uObjectList {
             let task = tokio::spawn(async move {
                 // Acquire permit from semaphore
                 let _permit = semaphore.acquire().await.unwrap();
-                let succ = capture_stream_pic(url, img_url.clone(), 3);
+                let succ = capture_stream_pic(url, img_url.clone(), ffmpeg_timeout_sec);
                 (v, succ, img_url)
             });
             tasks.push(task);
@@ -552,29 +549,26 @@ impl M3uObjectList {
             }
             info!("文件中源总数： {}", total);
         }
-        if opt.sort {
-            self.do_name_sort();
+        // 统计success list
+        let mut succ_count = 0;
+        for i in self.list.clone() {
+            if i.status == Success {
+                succ_count += 1;
+            }
         }
+        self.counter.set_success_count(succ_count);
         if opt.same_save_num > 0 {
             self.do_same_save(opt.same_save_num);
+        }
+        if opt.sort {
+            println!("sort");
+            self.do_name_sort();
         }
     }
 
     pub async fn output_file(&mut self, output_file: String) {
-        let mut lines: Vec<String> = vec![];
-        let mut counter = self.counter;
-        for x in &self.list {
-            if x.status == Success {
-                counter.incr_succ();
-                let exp: Vec<&str> = x.raw.lines().collect();
-                for o in exp {
-                    lines.push(o.to_owned());
-                }
-            }
-        }
-        self.set_counter(counter);
         // 生成.m3u 文件
-        self.generate_m3u_file_from_giving_list(output_file.clone(), lines);
+        self.generate_m3u_file(output_file.clone(), true);
         // 生成.txt 文件
         let txt_file = output_file.clone().replace(".m3u", ".txt");
         self.generate_text_file(txt_file.clone());
@@ -584,13 +578,15 @@ impl M3uObjectList {
     pub fn do_same_save(&mut self, same_save_num: i32) {
         let mut hash_list: HashMap<String, Vec<M3uObject>> = HashMap::new();
         for item in self.list.clone() {
-            let mut list = vec![];
-            let list_op = hash_list.get(&item.search_name.clone());
-            if list_op.is_some() {
-                list = list_op.unwrap().to_vec();
+            if item.status == Success {
+                let mut list = vec![];
+                let list_op = hash_list.get(&item.search_name.clone());
+                if list_op.is_some() {
+                    list = list_op.unwrap().to_vec();
+                }
+                list.push(item.clone());
+                hash_list.insert(item.search_name.clone(), list);
             }
-            list.push(item.clone());
-            hash_list.insert(item.search_name.clone(), list);
         }
         let mut save_list = vec![];
         for (_, items) in hash_list {
@@ -607,9 +603,6 @@ impl M3uObjectList {
     }
 
     pub fn do_name_sort(&mut self) {
-        // new_list.sort_by(|a_value, b_value| {
-        //     a_value.search_name.cmp(&b_value.search_name)
-        // });
         // 自定义排序
         self.list.sort_by(|a, b| {
             // 提取前缀和数字部分
@@ -650,33 +643,6 @@ impl M3uObjectList {
                 } else {
                     result_m3u_content.push(x.raw.clone());
                 }
-            }
-            let mut fd = File::create(output_file.to_owned()).unwrap();
-            for x in result_m3u_content {
-                let _ = fd.write(format!("{}\n", x).as_bytes());
-            }
-            let _ = fd.flush();
-        }
-    }
-
-    pub fn generate_m3u_file_from_giving_list(&mut self, output_file: String, lines: Vec<String>) {
-        if lines.len() > 0 {
-            let mut result_m3u_content: Vec<String> = vec![];
-            match &self.header {
-                None => result_m3u_content.push(String::from("#EXTM3U")),
-                Some(data) => {
-                    if data.x_tv_url.len() > 0 {
-                        let exp = data.x_tv_url.join(",");
-                        let header_line = format!("#EXTM3U x-tvg-url=\"{}\"", exp);
-                        result_m3u_content.push(header_line.to_owned());
-                    } else {
-                        result_m3u_content.push(String::from("#EXTM3U"))
-                    }
-                }
-            }
-            for x in lines {
-                let temp = x.clone();
-                result_m3u_content.push(temp.to_owned());
             }
             let mut fd = File::create(output_file.to_owned()).unwrap();
             for x in result_m3u_content {
@@ -752,10 +718,6 @@ impl OtherStatus {
     pub fn set_audio(&mut self, audio: AudioInfo) {
         self.audio = Some(audio)
     }
-
-    // pub fn set_network(&mut self, network: NetworkInfo) {
-    //     self.network = Some(network)
-    // }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -810,29 +772,9 @@ impl VideoInfo {
         self.height = height
     }
 
-    // pub fn set_video_type(&mut self, video_type: VideoType) {
-    //     self.video_type = video_type
-    // }
-
     pub fn set_codec(&mut self, codec: String) {
         self.codec = codec
     }
-
-    // pub fn get_width(self) -> i32 {
-    //     self.width
-    // }
-    //
-    // pub fn get_height(self) -> i32 {
-    //     self.height
-    // }
-    //
-    // pub fn get_video_type(self) -> VideoType {
-    //     self.video_type
-    // }
-    //
-    // pub fn get_codec(self) -> String {
-    //     self.codec
-    // }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -896,7 +838,7 @@ pub mod m3u {
         if quota {
             return Some(Quota);
         }
-        return None;
+        None
     }
 
     pub(crate) fn body_normal(_body: String, not_show_input_type: bool) -> M3uObjectList {
@@ -999,7 +941,7 @@ pub mod m3u {
         }
         let save_keyword = filter_by_keyword(list, keyword_like, keyword_dislike, rename);
         obj.set_list(save_keyword);
-        return obj;
+        obj
     }
 
     // 提取前缀和数字的函数

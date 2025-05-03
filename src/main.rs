@@ -14,7 +14,7 @@ use crate::r#const::constant::{
     OUTPUT_THUMBNAIL_FOLDER, STATIC_FOLDER,
 };
 use crate::search::{clear_search_folder, do_search};
-use crate::utils::create_folder;
+use crate::utils::{create_folder, get_out_put_filename};
 use clap::{arg, Args as clapArgs, Parser, Subcommand};
 use log::{error, info, LevelFilter};
 use simplelog::{CombinedLogger, Config, WriteLogger};
@@ -52,6 +52,14 @@ pub struct SearchArgs {
     /// 并发搜索数量
     #[arg(short = 'c', long = "concurrency", default_value_t = 1)]
     concurrency: i32,
+
+    /// 检查超时时间（毫秒）
+    #[arg(short = 't', long = "timeout", default_value_t = 10000)]
+    timeout: u16,
+
+    /// 输出文件路径，不指定则生成随机文件名
+    #[arg(short = 'o', long = "output-file", default_value_t = String::from(""))]
+    output_file: String,
 }
 
 #[derive(clapArgs)]
@@ -253,8 +261,16 @@ pub async fn main() {
                 }
             } else {
                 if args.search.len() > 0 {
-                    let data =
-                        do_search(args.search.clone(), args.thumbnail, args.concurrency).await;
+                    let output_file =
+                        get_out_put_filename(OUTPUT_FOLDER, args.output_file.to_owned());
+                    let data = do_search(
+                        args.search.clone(),
+                        args.thumbnail,
+                        args.concurrency,
+                        args.timeout,
+                        output_file.clone(),
+                    )
+                    .await;
                     match data {
                         Ok(()) => {
                             info!("成功 ---")

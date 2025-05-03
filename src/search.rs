@@ -193,14 +193,11 @@ async fn fetch_github_home_page(
     valid_extensions: Vec<String>,
 ) -> Vec<GithubInfo> {
     let body = get_url_body(url).await.expect("Failed to get body");
-    match parse_github_home_page_body_to_m3u_link(
+    parse_github_home_page_body_to_m3u_link(
         &body,
         include_files.clone(),
         valid_extensions.clone(),
-    ) {
-        Ok(list) => list,
-        Err(_) => vec![],
-    }
+    ).unwrap_or_else(|_| vec![])
 }
 
 async fn fetch_github_sub_page(
@@ -209,14 +206,11 @@ async fn fetch_github_sub_page(
     valid_extensions: Vec<String>,
 ) -> Vec<GithubInfo> {
     let body = get_url_body(url).await.expect("Failed to get body");
-    match parse_github_sub_page_body_to_m3u_link(
+    parse_github_sub_page_body_to_m3u_link(
         &body,
         include_files.clone(),
         valid_extensions.clone(),
-    ) {
-        Ok(list) => list,
-        Err(_) => vec![],
-    }
+    ).unwrap_or_else(|_| vec![])
 }
 
 #[derive(Debug)]
@@ -588,7 +582,7 @@ pub async fn read_search_configs() -> Result<SearchConfigs, Box<dyn std::error::
     Ok(configs)
 }
 
-pub async fn do_search(search_name: String, thumbnail: bool, concurrent: i32) -> Result<(), Error> {
+pub async fn do_search(search_name: String, thumbnail: bool, concurrent: i32, timeout:u16, output_file:String) -> Result<(), Error> {
     match init_search_data().await {
         Ok(()) => {
             let mut m3u_data = load_m3u_data().expect("load m3u data failed");
@@ -605,12 +599,12 @@ pub async fn do_search(search_name: String, thumbnail: bool, concurrent: i32) ->
                 .await;
             info!("list1 --- {}", m3u_data.clone().get_list().len());
             if thumbnail {
-                m3u_data.generate_thumbnail(concurrent).await;
+                m3u_data.generate_thumbnail(concurrent, timeout).await;
             }
-
             info!("list2 --- {}", m3u_data.clone().get_list().len());
-            m3u_data.generate_m3u_file(String::from("./static/output/1111.m3u"), true);
-            m3u_data.generate_text_file(String::from("./static/output/1111.txt"));
+            m3u_data.generate_m3u_file(String::from(output_file.clone()), true);
+            let txt_file = output_file.clone().replace(".m3u", ".txt");
+            m3u_data.generate_text_file(String::from(txt_file.clone()));
             Ok(())
         }
         Err(e) => {

@@ -6,23 +6,16 @@ use std::fs::File;
 use std::io::{Error, ErrorKind, Read};
 use std::process::Command;
 // use opencc_rust::*;
+use lazy_static::lazy_static;
 
 /// 获取输出文件名，如果未指定则生成随机文件名
-pub fn get_out_put_filename(output_file: String) -> String {
+pub fn get_out_put_filename(folder: &str, output_file: String) -> String {
     let mut filename = output_file.clone();
     if output_file.is_empty() {
-        filename = format!("{}{}", OUTPUT_FOLDER, get_random_output_filename());
+        filename = format!("{}{}", folder, get_random_output_filename());
     }
     filename
 }
-
-// pub fn check_ip_address(ip: &str) -> Result<&'static str, &'static str> {
-//     match ip.parse::<IpAddr>() {
-//         Ok(IpAddr::V4(_)) => Ok("IPv4"),
-//         Ok(IpAddr::V6(_)) => Ok("IPv6"),
-//         Err(_) => Err("Invalid IP address format"),
-//     }
-// }
 
 /// 生成随机的输出文件名
 fn get_random_output_filename() -> String {
@@ -58,9 +51,6 @@ pub fn file_exists(file_path: &String) -> bool {
         false
     }
 }
-
-use lazy_static::lazy_static;
-use crate::r#const::constant::OUTPUT_FOLDER;
 
 lazy_static! {
     // 匹配数字和方括号中的内容

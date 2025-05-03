@@ -3,6 +3,7 @@ use crate::{common, utils};
 use log::info;
 use serde::{Deserialize, Serialize};
 use std::fmt::Error;
+use crate::r#const::constant::OUTPUT_FOLDER;
 
 /// URL检查响应结构体
 #[derive(Debug, Serialize, Deserialize)]
@@ -477,12 +478,7 @@ pub async fn do_check(
         rename,
     )
     .await;
-    let mut output_file = utils::get_out_put_filename(output_file.clone());
-    // 拼接目录
-    output_file = format!("{}{}", "./", output_file);
-    if print_result {
-        info!("输出文件: {}", output_file);
-    }
+    let output_file = utils::get_out_put_filename(OUTPUT_FOLDER, output_file.clone());
     data.check_data_new(CheckOptions {
         request_time: request_timeout,
         concurrent,
@@ -494,6 +490,9 @@ pub async fn do_check(
         search_clarity: vec![],
     })
     .await;
+    if print_result {
+        info!("输出文件: {}", output_file);
+    }
     data.output_file(output_file).await;
     if print_result {
         if !no_check {
