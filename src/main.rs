@@ -1,132 +1,144 @@
 mod common;
+mod config;
+mod r#const;
 mod live;
 mod search;
 mod utils;
 mod web;
-mod middleware;
 
 use crate::common::do_check;
+use crate::config::config::init_config;
 use crate::live::do_ob;
+use crate::r#const::constant::{
+    INPUT_FOLDER, INPUT_LIVE_FOLDER, INPUT_SEARCH_FOLDER, LOGS_FOLDER, OUTPUT_FOLDER,
+    OUTPUT_THUMBNAIL_FOLDER, STATIC_FOLDER,
+};
 use crate::search::{clear_search_folder, do_search};
-use crate::utils::{create_folder, file_exists};
-use chrono::Local;
+use crate::utils::{create_folder, get_out_put_filename};
 use clap::{arg, Args as clapArgs, Parser, Subcommand};
 use log::{error, info, LevelFilter};
 use simplelog::{CombinedLogger, Config, WriteLogger};
 use std::env;
-use std::fs::File;
 use tempfile::tempdir;
 
 const DEFAULT_HTTP_PORT: u16 = 8089;
 
 #[derive(Subcommand)]
 enum Commands {
-    /// web相关命令
+    /// Web服务相关命令
     Web(WebArgs),
-    /// 检查相关命令
+    /// IPTV检查相关命令
     Check(CheckArgs),
-    /// 搜索相关命令
-    Fetch(FetchArgs),
+    /// 频道搜索相关命令
+    Search(SearchArgs),
     /// 转播相关命令
     Ob(ObArgs),
 }
 
 #[derive(clapArgs)]
-pub struct FetchArgs {
-    /// 搜索频道名称,如果有别名，用英文逗号分隔
+pub struct SearchArgs {
+    /// 搜索频道名称，支持多个名称用英文逗号分隔
     #[arg(long = "search", default_value_t = String::from(""))]
     search: String,
 
-    /// 是否需要生成缩略图
+    /// 是否生成频道缩略图
     #[arg(long = "thumbnail", default_value_t = false)]
     thumbnail: bool,
 
-    /// 清理资源池
+    /// 是否清理搜索资源池
     #[arg(long = "clear", default_value_t = false)]
     clear: bool,
+
+    /// 并发搜索数量
+    #[arg(short = 'c', long = "concurrency", default_value_t = 1)]
+    concurrency: i32,
+
+    /// 检查超时时间（毫秒）
+    #[arg(short = 't', long = "timeout", default_value_t = 10000)]
+    timeout: u16,
+
+    /// 输出文件路径，不指定则生成随机文件名
+    #[arg(short = 'o', long = "output-file", default_value_t = String::from(""))]
+    output_file: String,
 }
 
 #[derive(clapArgs)]
 pub struct ObArgs {
-    /// 需要转播的链接
+    /// 需要转播的源链接
     #[arg(short = 'i', long = "input-url")]
     input_url: String,
 }
 
 #[derive(clapArgs)]
 pub struct WebArgs {
-    /// 启动一个web服务
+    /// 启动Web服务
     #[arg(long = "start", default_value_t = false)]
     start: bool,
 
-    /// 指定这个web服务的端口号
+    /// 指定Web服务端口号
     #[arg(long = "port", default_value_t = DEFAULT_HTTP_PORT)]
     port: u16,
 
-    /// 关闭这个web服务
+    /// 停止Web服务
     #[arg(long = "stop", default_value_t = false)]
     stop: bool,
 
-    /// 输出当前web服务的状态，比如pid信息
+    /// 查看Web服务状态
     #[arg(long = "status", default_value_t = false)]
     status: bool,
 }
 
 #[derive(clapArgs)]
 pub struct CheckArgs {
-    /// 输入文件，可以是本地文件或者是网络文件，支持标准m3u格式以及非标准的格式：
-    /// CCTV,https://xxxx.com/xxx.m3u8格式
+    /// 输入文件路径，支持本地文件或网络文件，支持标准m3u格式和非标准格式
     #[arg(short = 'i', long = "input-file")]
     input_file: Vec<String>,
 
-    // /// [待实现]支持sdr、hd、fhd、uhd、fuhd搜索
-    // #[arg(short = 's', long = "search_clarity", default_value_t = String::from(""))]
-    // search_clarity: String,
-    /// 输出文件，如果不指定，则默认生成一个随机文件名
+    /// 输出文件路径，不指定则生成随机文件名
     #[arg(short = 'o', long = "output-file", default_value_t = String::from(""))]
     output_file: String,
 
-    /// 超时时间，默认超时时间为10秒
+    /// 检查超时时间（毫秒）
     #[arg(short = 't', long = "timeout", default_value_t = 10000)]
     timeout: u16,
 
-    /// debug使用，可以看到相关的中间日志
+    /// 是否启用调试模式
     #[arg(long = "debug", default_value_t = false)]
     debug: bool,
 
-    /// 并发数
+    /// 并发检查数量
     #[arg(short = 'c', long = "concurrency", default_value_t = 1)]
     concurrency: i32,
 
-    /// 想看关键词
+    /// 频道名称包含的关键词
     #[arg(long = "like")]
     keyword_like: Vec<String>,
 
-    /// 不想看关键词
+    /// 频道名称不包含的关键词
     #[arg(long = "dislike")]
     keyword_dislike: Vec<String>,
 
-    /// 频道排序
+    /// 是否对频道进行排序
     #[arg(long = "sort", default_value_t = false)]
     sort: bool,
 
-    /// 是否不需要检查
+    /// 是否跳过检查步骤
     #[arg(long = "no-check", default_value_t = false)]
     no_check: bool,
 
-    /// 去掉无用的字段
+    /// 是否重命名无用字段
     #[arg(long = "rename", default_value_t = false)]
     rename: bool,
 
-    /// 使用ffmpeg检查
+    /// 是否使用ffmpeg进行检查
     #[arg(long = "ffmpeg-check", default_value_t = false)]
     ffmpeg_check: bool,
 
-    /// 如果名称相同，保存几个源，默认全部保存
+    /// 相同名称频道保存的最大数量
     #[arg(long = "same-save-num", default_value_t = 0)]
     same_save_num: i32,
 
-    /// 如果非http，就跳过
+    /// 是否跳过非HTTP协议的源
     #[arg(long = "not-http-skip", default_value_t = false)]
     not_http_skip: bool,
 }
@@ -154,15 +166,18 @@ fn get_pid_file() -> String {
 async fn start_daemonize_web(pid_name: &String, port: u16) {
     utils::check_pid_exits(pid_name);
     info!("start web server, port:{}", port);
-    // 启动 web 服务
     web::start_web(port).await;
 }
 
 fn init_folder() {
-    let folder = vec!["./static",
-                      "./static/input", "./static/input/live", "./static/input/search",
-                      "./static/output", "./static/output/thumbnail",
-                      "./static/logs"
+    let folder = vec![
+        STATIC_FOLDER,
+        INPUT_FOLDER,
+        INPUT_LIVE_FOLDER,
+        INPUT_SEARCH_FOLDER,
+        OUTPUT_FOLDER,
+        OUTPUT_THUMBNAIL_FOLDER,
+        LOGS_FOLDER,
     ];
     for f in folder {
         create_folder(&f.to_string()).unwrap()
@@ -188,6 +203,15 @@ pub fn show_status() {
 
 #[actix_web::main]
 pub async fn main() {
+    CombinedLogger::init(vec![WriteLogger::new(
+        LevelFilter::Debug,
+        Config::default(),
+        std::io::stdout(),
+    )])
+    .unwrap();
+
+    init_config();
+
     init_folder();
     let pid_name = get_pid_file();
     let args = Args::parse();
@@ -206,14 +230,6 @@ pub async fn main() {
             }
         }
         Commands::Check(args) => {
-            CombinedLogger::init(
-                vec![
-                    WriteLogger::new(
-                        LevelFilter::Debug,
-                        Config::default(),
-                        std::io::stdout()),
-                ]
-            ).unwrap();
             if args.input_file.len() > 0 {
                 info!("您输入的文件地址是: {}", args.input_file.join(","));
                 do_check(
@@ -232,11 +248,11 @@ pub async fn main() {
                     args.same_save_num,
                     args.not_http_skip,
                 )
-                    .await
-                    .unwrap();
+                .await
+                .unwrap();
             }
         }
-        Commands::Fetch(args) => {
+        Commands::Search(args) => {
             if args.clear {
                 if let Ok(_) = clear_search_folder() {
                     info!("clear success 😄")
@@ -245,10 +261,19 @@ pub async fn main() {
                 }
             } else {
                 if args.search.len() > 0 {
-                    let data = do_search(args.search.clone(), args.thumbnail).await;
+                    let output_file =
+                        get_out_put_filename(OUTPUT_FOLDER, args.output_file.to_owned());
+                    let data = do_search(
+                        args.search.clone(),
+                        args.thumbnail,
+                        args.concurrency,
+                        args.timeout,
+                        output_file.clone(),
+                    )
+                    .await;
                     match data {
-                        Ok(data) => {
-                            info!("{:?}", data)
+                        Ok(()) => {
+                            info!("成功 ---")
                         }
                         Err(e) => {
                             error!("获取失败---{}", e)
