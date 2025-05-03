@@ -1,12 +1,13 @@
 use crate::common::task::Task;
 use crate::config::{parse_core_json, update_config};
-use crate::r#const::constant::CORE_JSON;
+use crate::r#const::constant::{core_data, CORE_JSON};
 use log::{error, info};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::io::Error;
+use std::io::{Error, Write};
 use std::sync::Mutex;
+use crate::utils::file_exists;
 
 /// 核心配置结构体，包含所有配置项
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -95,8 +96,17 @@ impl Default for Core {
     }
 }
 
+pub fn create_config_file() {
+    if !file_exists(&CORE_JSON.to_string()) {
+        let mut fd = fs::File::create(CORE_JSON).expect(&format!("Failed to create file: {}", CORE_JSON.to_string()));
+        fd.write(core_data.to_string().as_bytes()).expect(&format!("Failed to write file: {}", CORE_JSON.to_string()));
+        fd.flush().expect(&format!("Failed to flush file: {}", CORE_JSON.to_string()));
+    }
+}
+
 /// 初始化配置
 pub fn init_config() {
+    create_config_file();
     // 尝试从文件加载配置
     let config_data = match parse_core_json(CORE_JSON) {
         Ok(cfg) => {
