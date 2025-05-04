@@ -1,13 +1,13 @@
 use crate::common::task::Task;
 use crate::config::{parse_core_json, update_config};
-use crate::r#const::constant::{core_data, CORE_JSON};
+use crate::r#const::constant::{CORE_DATA, CORE_JSON};
+use crate::utils::file_exists;
 use log::{error, info};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{Error, Write};
 use std::sync::Mutex;
-use crate::utils::file_exists;
 
 /// 核心配置结构体，包含所有配置项
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -15,6 +15,19 @@ pub struct Core {
     pub check: Check,   // 检查相关配置
     pub ob: Ob,         // 转播相关配置
     pub search: Search, // 搜索相关配置
+    pub others: Others, // 其他配置
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct Others {
+    pub replace_chars: Vec<ReplaceChar>,
+    pub replace_empty: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct ReplaceChar {
+    pub name: String,
+    pub replace: String,
 }
 
 /// 检查相关配置结构体
@@ -86,6 +99,10 @@ impl Default for Core {
                 now: None,
                 task: HashMap::new(),
             },
+            others: Others {
+                replace_chars: Vec::new(),
+                replace_empty: Vec::new(),
+            },
             ob: Ob { list: Vec::new() },
             search: Search {
                 source: Vec::new(),
@@ -98,9 +115,12 @@ impl Default for Core {
 
 pub fn create_config_file() {
     if !file_exists(&CORE_JSON.to_string()) {
-        let mut fd = fs::File::create(CORE_JSON).expect(&format!("Failed to create file: {}", CORE_JSON.to_string()));
-        fd.write(core_data.to_string().as_bytes()).expect(&format!("Failed to write file: {}", CORE_JSON.to_string()));
-        fd.flush().expect(&format!("Failed to flush file: {}", CORE_JSON.to_string()));
+        let mut fd = fs::File::create(CORE_JSON)
+            .expect(&format!("Failed to create file: {}", CORE_JSON.to_string()));
+        fd.write(CORE_DATA.to_string().as_bytes())
+            .expect(&format!("Failed to write file: {}", CORE_JSON.to_string()));
+        fd.flush()
+            .expect(&format!("Failed to flush file: {}", CORE_JSON.to_string()));
     }
 }
 
@@ -202,6 +222,12 @@ pub mod file_config {
     pub fn get_check() -> Result<Check, Error> {
         let config = GLOBAL_CONFIG.lock().unwrap();
         Ok(config.check.clone())
+    }
+
+    pub fn get_others() -> Result<Others, Error> {
+        let config = GLOBAL_CONFIG.lock().unwrap();
+
+        Ok(config.others.clone())
     }
 
     /// 获取转播配置

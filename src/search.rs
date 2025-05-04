@@ -1,5 +1,5 @@
-use crate::common::m3u::m3u::from_body_arr;
-use crate::common::{M3uObject, M3uObjectList, SearchOptions};
+use crate::common::m3u::m3u::list_str2obj;
+use crate::common::{M3uObject, M3uObjectList, SearchParams};
 use crate::config;
 use crate::r#const::constant::{INPUT_SEARCH_FOLDER, OUTPUT_THUMBNAIL_FOLDER};
 use crate::utils::{create_folder, folder_exists};
@@ -193,11 +193,8 @@ async fn fetch_github_home_page(
     valid_extensions: Vec<String>,
 ) -> Vec<GithubInfo> {
     let body = get_url_body(url).await.expect("Failed to get body");
-    parse_github_home_page_body_to_m3u_link(
-        &body,
-        include_files.clone(),
-        valid_extensions.clone(),
-    ).unwrap_or_else(|_| vec![])
+    parse_github_home_page_body_to_m3u_link(&body, include_files.clone(), valid_extensions.clone())
+        .unwrap_or_else(|_| vec![])
 }
 
 async fn fetch_github_sub_page(
@@ -206,11 +203,8 @@ async fn fetch_github_sub_page(
     valid_extensions: Vec<String>,
 ) -> Vec<GithubInfo> {
     let body = get_url_body(url).await.expect("Failed to get body");
-    parse_github_sub_page_body_to_m3u_link(
-        &body,
-        include_files.clone(),
-        valid_extensions.clone(),
-    ).unwrap_or_else(|_| vec![])
+    parse_github_sub_page_body_to_m3u_link(&body, include_files.clone(), valid_extensions.clone())
+        .unwrap_or_else(|_| vec![])
 }
 
 #[derive(Debug)]
@@ -582,29 +576,17 @@ pub async fn read_search_configs() -> Result<SearchConfigs, Box<dyn std::error::
     Ok(configs)
 }
 
-pub async fn do_search(search_name: String, thumbnail: bool, concurrent: i32, timeout:u16, output_file:String) -> Result<(), Error> {
+pub async fn do_search(search_params: SearchParams) -> Result<(), Error> {
     match init_search_data().await {
         Ok(()) => {
             let mut m3u_data = load_m3u_data().expect("load m3u data failed");
-            m3u_data
-                .search(SearchOptions {
-                    search_name: search_name.clone(),
-                    full_match: false,
-                    ipv4: true,
-                    ipv6: true,
-                    exclude_url: vec![],
-                    exclude_host: vec![],
-                    quality: vec![],
-                })
-                .await;
-            info!("list1 --- {}", m3u_data.clone().get_list().len());
-            if thumbnail {
-                m3u_data.generate_thumbnail(concurrent, timeout).await;
+            m3u_data.t2s();
+            m3u_data.search(search_params.search_options).await;
+            if search_params.thumbnail {
+                m3u_data.generate_thumbnail(search_params.concurrent, search_params.timeout).await;
             }
-            info!("list2 --- {}", m3u_data.clone().get_list().len());
-            m3u_data.generate_m3u_file(String::from(output_file.clone()), true);
-            let txt_file = output_file.clone().replace(".m3u", ".txt");
-            m3u_data.generate_text_file(String::from(txt_file.clone()));
+            info!("list2 --- total {}", m3u_data.get_list_len());
+            m3u_data.output_file(search_params.output_file.clone(), false).await;
             Ok(())
         }
         Err(e) => {
@@ -638,7 +620,7 @@ fn load_m3u_data() -> std::io::Result<M3uObjectList> {
         let content = fs::read_to_string(format!("{}{}", p, file_name.clone()))?;
         contents.push(content)
     }
-    let result = from_body_arr(contents, vec![], vec![], true, true);
+    let result = list_str2obj(contents, true);
     Ok(result)
 }
 pub fn generate_channel_thumbnail_folder_name() -> String {

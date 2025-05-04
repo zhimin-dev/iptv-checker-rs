@@ -2,10 +2,11 @@ use crate::common::check::check::check_link_is_valid;
 use crate::common::cmd::capture_stream_pic;
 use crate::common::task::md5_str;
 use crate::common::CheckDataStatus::{Failed, Success, Unchecked};
+use crate::common::FfmpegInfo;
 use crate::common::QualityType::Unknown;
 use crate::common::SourceType::{Normal, Quota};
 use crate::search::generate_channel_thumbnail_folder_name;
-use crate::utils::remove_other_char;
+use crate::utils::{remove_other_char, replace_char};
 use actix_rt::time;
 use log::{debug, error, info};
 use serde::{Deserialize, Serialize};
@@ -90,7 +91,7 @@ pub struct M3uObject {
     //原始的m3u文件信息
     status: CheckDataStatus,
     //当前状态
-    other_status: Option<OtherStatus>, //其它状态
+    other_status: OtherStatus, //其它状态
 }
 
 impl M3uObject {
@@ -103,7 +104,7 @@ impl M3uObject {
             search_name: "".to_string(),
             raw: "".to_string(),
             status: Unchecked,
-            other_status: None,
+            other_status: OtherStatus::new(),
         };
     }
 
@@ -111,36 +112,23 @@ impl M3uObject {
         self
     }
 
-    pub fn check_by_block(
-        &mut self,
-        request_time: i32,
-        need_video_info: bool,
-        ffmpeg_check: bool,
-        not_http_skip: bool,
-    ) {
+    pub fn check_by_block(&mut self, request_time: i32, ffmpeg_check: bool, not_http_skip: bool) {
         let url = self.url.clone();
         let _log_url = url.clone();
         let result = actix_rt::System::new().block_on(check_link_is_valid(
             url,
             request_time as u64,
-            need_video_info,
             ffmpeg_check,
             not_http_skip,
         ));
         debug!("url is: {} result: {:?}", self.url.clone(), result);
         return match result {
             Ok(data) => {
-                let mut status = OtherStatus::new();
-                match data.audio {
-                    Some(a) => status.set_audio(a),
-                    None => {}
-                }
-                match data.video {
-                    Some(v) => status.set_video(v),
-                    None => {}
-                }
+                let mut o_status = OtherStatus::new();
+                o_status.set_delay(data.delay);
+                o_status.set_ffmpeg_info(data.ffmpeg_info);
+                self.set_other_status(o_status);
                 self.set_status(Success);
-                self.set_other_status(status)
             }
             Err(_e) => self.set_status(Failed),
         };
@@ -151,6 +139,16 @@ impl M3uObject {
     }
     pub fn get_extend(&self) -> Option<M3uExtend> {
         self.extend.clone()
+    }
+
+    pub fn t2s(&mut self) {
+        let name = self.name.clone();
+        let rename = replace_char(self.search_name.clone());
+        self.search_name = rename.clone();
+        self.name = rename.clone();
+        self.raw = self
+            .raw
+            .replace(name.clone().as_str(), rename.clone().as_str());
     }
 
     pub fn rename_name(&mut self) {
@@ -213,7 +211,7 @@ impl M3uObject {
     }
 
     pub fn set_other_status(&mut self, other_status: OtherStatus) {
-        self.other_status = Some(other_status)
+        self.other_status = other_status
     }
 
     pub fn set_status(&mut self, status: CheckDataStatus) {
@@ -223,11 +221,11 @@ impl M3uObject {
 
 #[derive(Copy, Clone)]
 pub struct M3uObjectListCounter {
-    check_index: i32,             // 当前检查的索引
-    total: i32,                   // 总数
-    success_count: i32,           // 成功数据
-    // repeat_channel_count: i32,    // 频道名称重复数
-    // no_repeat_channel_count: i32, // 频道名称最终保存数
+    check_index: i32, // 当前检查的索引
+    total: i32,       // 总数
+    success_count: i32, // 成功数据
+                      // repeat_channel_count: i32,    // 频道名称重复数
+                      // no_repeat_channel_count: i32, // 频道名称最终保存数
 }
 
 #[derive(Clone)]
@@ -268,10 +266,19 @@ impl M3uObjectListCounter {
     }
 }
 
+pub struct SearchParams {
+    pub thumbnail: bool,
+    pub concurrent: i32,
+    pub timeout: u16,
+    pub output_file: String,
+    pub search_options: SearchOptions,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SearchOptions {
-    pub search_name: String,
-    pub full_match: bool,
+    pub keyword_full_match: Vec<String>,
+    pub keyword_like: Vec<String>,
+    pub keyword_dislike: Vec<String>,
     pub ipv4: bool,
     pub ipv6: bool,
     pub exclude_url: Vec<String>,
@@ -316,13 +323,6 @@ impl M3uObjectList {
         self.header
     }
 
-    // pub fn now_index_incr_and_print(&mut self) {
-    //     let mut index = self.check_index;
-    //     index += 1;
-    //     self.check_index = index;
-    //     self.print_now_status();
-    // }
-
     pub fn print_result(&mut self) -> String {
         let succ_num = self.counter.success_count;
         let failed_num = self.counter.total - succ_num;
@@ -333,46 +333,76 @@ impl M3uObjectList {
         self.counter = counter
     }
 
-    pub async fn search(&mut self, search: SearchOptions) {
-        let mut list = vec![];
-        let s_name = search.search_name.clone();
-        let exp_list: Vec<&str> = s_name.split(",").collect();
-        debug!(
-            "query params ----{:?} search data count --- {}",
-            exp_list,
-            self.list.len()
-        );
-        for v in self.list.clone() {
-            let mut is_save = false;
-            for e in exp_list.clone() {
-                if search.full_match {
-                    if v.search_name.eq(e.to_string().as_str()) {
-                        is_save = true;
-                    }
-                } else {
-                    if v.search_name.contains(e.to_string().as_str()) {
-                        is_save = true;
+    pub fn t2s(&mut self) {
+        for item in &mut self.list {
+            item.t2s();
+        }
+    }
+
+    pub fn remove_useless_char(&mut self) {
+        for item in &mut self.list {
+            item.rename_name();
+        }
+    }
+
+    fn search_keywords(
+        &mut self,
+        full_name_search: Vec<String>,
+        keyword_like: Vec<String>,
+        keyword_dislike: Vec<String>,
+    ) {
+        if keyword_like.len() == 0 && keyword_dislike.len() == 0 && full_name_search.len() == 0 {
+            return;
+        }
+        let mut save_list = vec![];
+        for i in self.list.clone() {
+            let mut save = true;
+            if keyword_like.len() > 0 {
+                save = false;
+                for lk in keyword_like.to_owned() {
+                    if i.search_name.contains(&lk.to_lowercase()) {
+                        save = true
                     }
                 }
             }
-            // let ip_type:i32;
-            // let is_ipv6_format = match_ipv6_format(v.url.as_str());
-            // if is_ipv6_format {
-            //     now_ip_type = 2
-            // } else {
-            //     now_ip_type = 1
-            // }
-            // if now_ip_type == 2 {
-            //     debug!("now ip type {}, host: {}", now_ip_type, v.url.clone());
-            // }
-            // if now_ip_type == 0 {
-            //     continue;
-            // }
-            // if now_ip_type == 1 && ipv4 {
-            //     is_save = true
-            // } else if now_ip_type == 2 && ipv6 {
-            //     is_save = true
-            // }
+            if keyword_dislike.len() > 0 {
+                for dk in keyword_dislike.to_owned() {
+                    if i.search_name.contains(&dk.to_lowercase()) {
+                        save = false
+                    }
+                }
+            }
+            if full_name_search.len() > 0 {
+                for fk in full_name_search.to_owned() {
+                    if !i.search_name.eq(&fk.to_lowercase()) {
+                        save = false
+                    }
+                }
+            }
+            if save {
+                save_list.push(i);
+            }
+        }
+        self.set_list(save_list)
+    }
+
+    pub async fn search(&mut self, search: SearchOptions) {
+        let mut list = vec![];
+        debug!(
+            "query params --- full -- {:?} like --{:?} dislike{:?} search data count {:?}",
+            search.keyword_full_match,
+            search.keyword_like,
+            search.keyword_dislike,
+            self.list.len()
+        );
+        self.search_keywords(
+            search.keyword_full_match,
+            search.keyword_like,
+            search.keyword_dislike,
+        );
+        debug!("query params --- searched data count {:?}", self.list.len());
+        for v in self.list.clone() {
+            let mut is_save = true;
             for ex_url in search.exclude_url.clone() {
                 if v.url
                     .clone()
@@ -406,8 +436,7 @@ impl M3uObjectList {
             .into_iter()
             .filter(|p| seen.insert(p.url.clone()))
             .collect();
-
-        self.list = unique_list
+        self.set_list(unique_list)
     }
 
     pub async fn generate_thumbnail(&mut self, concurrent: i32, timeout_millisecond: u16) {
@@ -502,7 +531,6 @@ impl M3uObjectList {
                             }
                             item.check_by_block(
                                 opt.request_time,
-                                false,
                                 opt.ffmpeg_check,
                                 opt.not_http_skip,
                             );
@@ -561,17 +589,30 @@ impl M3uObjectList {
             self.do_same_save(opt.same_save_num);
         }
         if opt.sort {
-            println!("sort");
             self.do_name_sort();
         }
     }
 
-    pub async fn output_file(&mut self, output_file: String) {
+    pub fn get_list_len(&self) -> usize {
+        self.list.len()
+    }
+
+    // pub fn get_succ_list_len(&self) -> usize {
+    //     let mut x = 0;
+    //     for i in self.list.clone() {
+    //         if i.status == Success {
+    //             x += 1;
+    //         }
+    //     }
+    //     x
+    // }
+
+    pub async fn output_file(&mut self, output_file: String, only_success: bool) {
         // 生成.m3u 文件
-        self.generate_m3u_file(output_file.clone(), true);
+        self.generate_m3u_file(output_file.clone(), only_success);
         // 生成.txt 文件
         let txt_file = output_file.clone().replace(".m3u", ".txt");
-        self.generate_text_file(txt_file.clone());
+        self.generate_text_file(txt_file.clone(), only_success);
         time::sleep(Duration::from_millis(500)).await;
     }
 
@@ -635,7 +676,8 @@ impl M3uObjectList {
                     }
                 }
             }
-            for x in self.list.clone() {
+            for mut x in self.list.clone() {
+                x.generate_raw();
                 if only_succ {
                     if x.status == Success {
                         result_m3u_content.push(x.raw.clone());
@@ -652,16 +694,24 @@ impl M3uObjectList {
         }
     }
 
-    pub fn generate_text_file(&mut self, output_file: String) {
-        // 打开文件 b 并准备写入
-        let mut file_b = File::create(output_file).unwrap();
+    pub fn generate_text_file(&mut self, output_file: String, only_succ: bool) {
+        if self.list.len() > 0 {
+            // 打开文件 b 并准备写入
+            let mut file_b = File::create(output_file).unwrap();
 
-        // 逐行读取文件 a 的内容
-        for line in &self.list {
-            if line.status == Success {
-                let txt = format!("{},{}", line.name, line.url);
-                // 将每一行写入文件 b
-                writeln!(file_b, "{}", txt).unwrap();
+            // 逐行读取文件 a 的内容
+            for line in &self.list {
+                if only_succ {
+                    if line.status == Success {
+                        let txt = format!("{},{}", line.name, line.url);
+                        // 将每一行写入文件 b
+                        writeln!(file_b, "{}", txt).unwrap();
+                    }
+                } else {
+                    let txt = format!("{},{}", line.name, line.url);
+                    // 将每一行写入文件 b
+                    writeln!(file_b, "{}", txt).unwrap();
+                }
             }
         }
     }
@@ -669,7 +719,7 @@ impl M3uObjectList {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct M3uExt {
-    pub(crate) x_tv_url: Vec<String>,
+    pub x_tv_url: Vec<String>,
 }
 
 impl From<String> for M3uObjectList {
@@ -697,26 +747,24 @@ pub enum CheckDataStatus {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct OtherStatus {
-    video: Option<VideoInfo>,     //视频信息
-    audio: Option<AudioInfo>,     //音频信息
-    network: Option<NetworkInfo>, //网路状态信息
+    delay: i32,
+    ffmpeg_info: Option<FfmpegInfo>,
 }
 
 impl OtherStatus {
     pub fn new() -> OtherStatus {
         OtherStatus {
-            video: None,
-            audio: None,
-            network: None,
+            ffmpeg_info: None,
+            delay: 0,
         }
     }
 
-    pub fn set_video(&mut self, video: VideoInfo) {
-        self.video = Some(video)
+    pub fn set_delay(&mut self, delay: i32) {
+        self.delay = delay
     }
 
-    pub fn set_audio(&mut self, audio: AudioInfo) {
-        self.audio = Some(audio)
+    pub fn set_ffmpeg_info(&mut self, ffmpeg_info: Option<FfmpegInfo>) {
+        self.ffmpeg_info = ffmpeg_info
     }
 }
 
@@ -815,7 +863,7 @@ pub enum SourceType {
 pub mod m3u {
     use crate::common::util::{get_url_body, is_url, parse_normal_str, parse_quota_str};
     use crate::common::SourceType::{Normal, Quota};
-    use crate::common::{M3uObject, M3uObjectList, SourceType};
+    use crate::common::{M3uObjectList, SourceType};
     use core::option::Option;
     use log::{error, info};
     use std::fs::File;
@@ -841,14 +889,14 @@ pub mod m3u {
         None
     }
 
-    pub(crate) fn body_normal(_body: String, not_show_input_type: bool) -> M3uObjectList {
+    pub fn body_normal(_body: String, not_show_input_type: bool) -> M3uObjectList {
         if !not_show_input_type {
             info!("您输入是：标准格式m3u格式文件");
         }
         parse_normal_str(_body)
     }
 
-    pub(crate) fn body_quota(_body: String, not_show_input_type: bool) -> M3uObjectList {
+    pub fn body_quota(_body: String, not_show_input_type: bool) -> M3uObjectList {
         if !not_show_input_type {
             info!("您输入是：非标准格式m3u格式文件，尝试解析中");
         }
@@ -864,52 +912,7 @@ pub mod m3u {
     //     };
     // }
 
-    pub fn filter_by_keyword(
-        mut list: Vec<M3uObject>,
-        keyword_like: Vec<String>,
-        keyword_dislike: Vec<String>,
-        rename: bool,
-    ) -> Vec<M3uObject> {
-        if rename {
-            for item in &mut list {
-                item.rename_name();
-            }
-        }
-        if keyword_like.len() == 0 && keyword_dislike.len() == 0 {
-            return list;
-        }
-        let mut save_list = vec![];
-        for i in list {
-            let mut save = true;
-            if keyword_like.len() > 0 {
-                save = false;
-                for lk in keyword_like.to_owned() {
-                    if i.search_name.contains(&lk.to_lowercase()) {
-                        save = true
-                    }
-                }
-            }
-            if keyword_dislike.len() > 0 {
-                for dk in keyword_dislike.to_owned() {
-                    if i.search_name.contains(&dk.to_lowercase()) {
-                        save = false
-                    }
-                }
-            }
-            if save {
-                save_list.push(i);
-            }
-        }
-        save_list
-    }
-
-    pub fn from_body_arr(
-        str_arr: Vec<String>,
-        keyword_like: Vec<String>,
-        keyword_dislike: Vec<String>,
-        now_show_input_top: bool,
-        rename: bool,
-    ) -> M3uObjectList {
+    pub fn list_str2obj(str_arr: Vec<String>, now_show_input_top: bool) -> M3uObjectList {
         let mut obj = M3uObjectList::new();
         let mut header = vec![];
         let mut list = vec![];
@@ -939,13 +942,12 @@ pub mod m3u {
                 None => {}
             };
         }
-        let save_keyword = filter_by_keyword(list, keyword_like, keyword_dislike, rename);
-        obj.set_list(save_keyword);
+        obj.set_list(list);
         obj
     }
 
     // 提取前缀和数字的函数
-    pub(crate) fn extract_prefix_and_number(s: &str) -> (&str, Option<usize>) {
+    pub fn extract_prefix_and_number(s: &str) -> (&str, Option<usize>) {
         // 找到数字的起始位置
         let numeric_start = s.find(|c: char| c.is_digit(10));
 
@@ -973,13 +975,7 @@ pub mod m3u {
     //     return from_body(&contents);
     // }
 
-    pub async fn from_arr(
-        _url: Vec<String>,
-        _timeout: u64,
-        keyword_like: Vec<String>,
-        keyword_dislike: Vec<String>,
-        rename: bool,
-    ) -> M3uObjectList {
+    pub async fn from_arr(_url: Vec<String>, _timeout: u64) -> Vec<String> {
         let mut body_arr = vec![];
         for x in _url {
             if is_url(x.clone()) {
@@ -1006,6 +1002,6 @@ pub mod m3u {
                 }
             }
         }
-        from_body_arr(body_arr, keyword_like, keyword_dislike, false, rename)
+        body_arr
     }
 }

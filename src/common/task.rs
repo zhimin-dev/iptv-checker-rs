@@ -22,10 +22,10 @@ pub struct TaskInfo {
     // next run time, (s)
     next_run_time: i32,
 
-    pub(crate) is_running: bool,
+    pub is_running: bool,
 
     // 任务状态
-    pub(crate) task_status: TaskStatus,
+    pub task_status: TaskStatus,
 }
 
 #[warn(private_interfaces)]
@@ -292,7 +292,7 @@ pub struct Task {
     create_time: u64,
 
     //任务详情
-    pub(crate) task_info: TaskInfo,
+    pub task_info: TaskInfo,
 }
 
 fn now() -> u64 {

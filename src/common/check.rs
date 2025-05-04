@@ -1,25 +1,46 @@
-use crate::common::{AudioInfo, CheckOptions, VideoInfo};
+use crate::common::m3u::m3u::list_str2obj;
+use crate::common::{AudioInfo, CheckOptions, SearchOptions, VideoInfo};
+use crate::r#const::constant::OUTPUT_FOLDER;
 use crate::{common, utils};
 use log::info;
 use serde::{Deserialize, Serialize};
 use std::fmt::Error;
-use crate::r#const::constant::OUTPUT_FOLDER;
 
 /// URL检查响应结构体
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CheckUrlIsAvailableResponse {
-    pub(crate) delay: i32,               // 延迟时间（毫秒）
-    pub(crate) video: Option<VideoInfo>, // 视频信息
-    pub(crate) audio: Option<AudioInfo>, // 音频信息
+    pub delay: i32, // 延迟时间（毫秒）
+    pub ffmpeg_info: Option<FfmpegInfo>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct FfmpegInfo {
+    pub video: Vec<VideoInfo>,    // 视频信息
+    pub audio: Option<AudioInfo>, // 音频信息
+}
+
+impl FfmpegInfo {
+    pub fn new() -> FfmpegInfo {
+        FfmpegInfo {
+            video: Vec::new(),
+            audio: None,
+        }
+    }
+
+    pub fn set_audio(&mut self, audio: AudioInfo) {
+        self.audio = Some(audio);
+    }
+
+    pub fn set_video(&mut self, video: Vec<VideoInfo>) {
+        self.video = video;
+    }
+}
 impl CheckUrlIsAvailableResponse {
     /// 创建新的检查响应
     pub fn new() -> CheckUrlIsAvailableResponse {
         CheckUrlIsAvailableResponse {
             delay: 0,
-            video: None,
-            audio: None,
+            ffmpeg_info: None,
         }
     }
 
@@ -29,22 +50,17 @@ impl CheckUrlIsAvailableResponse {
     }
 
     /// 设置视频信息
-    pub fn set_video(&mut self, video: VideoInfo) {
-        self.video = Some(video)
-    }
-
-    /// 设置音频信息
-    pub fn set_audio(&mut self, audio: AudioInfo) {
-        self.audio = Some(audio)
+    pub fn set_ffmpeg_info(&mut self, video: FfmpegInfo) {
+        self.ffmpeg_info = Some(video)
     }
 }
 
 // #[derive(Serialize, Deserialize)]
 // pub struct CheckUrlIsAvailableRespAudio {
-//     pub(crate) codec: String,
-//     pub(crate) channels: i32,
+//     pub codec: String,
+//     pub channels: i32,
 //     #[serde(rename = "bitRate")]
-//     pub(crate) bit_rate: i32,
+//     pub bit_rate: i32,
 // }
 
 // impl CheckUrlIsAvailableRespAudio {
@@ -108,7 +124,7 @@ pub struct FfprobeStream {
 /// 检查模块
 pub mod check {
     use crate::common::util::check_body_is_m3u8_format;
-    use crate::common::{AudioInfo, CheckUrlIsAvailableResponse, Ffprobe, VideoInfo};
+    use crate::common::{AudioInfo, CheckUrlIsAvailableResponse, FfmpegInfo, Ffprobe, VideoInfo};
     use chrono::Utc;
     use log::debug;
     use std::io::{Error, ErrorKind, Read};
@@ -295,6 +311,8 @@ pub mod check {
 
         // 11. 处理流信息
         let mut response = CheckUrlIsAvailableResponse::new();
+        let mut audio = None;
+        let mut video_list = vec![];
         for stream in ffprobe.streams {
             match stream.codec_type.as_str() {
                 "video" => {
@@ -306,7 +324,7 @@ pub mod check {
                         video_info.set_height(height);
                     }
                     video_info.set_codec(stream.codec_name);
-                    response.set_video(video_info);
+                    video_list.push(video_info);
                 }
                 "audio" => {
                     let mut audio_info = AudioInfo::new();
@@ -314,12 +332,19 @@ pub mod check {
                         audio_info.set_channels(channels);
                     }
                     audio_info.set_codec(stream.codec_name);
-                    response.set_audio(audio_info);
+                    audio = Some(audio_info);
                 }
                 _ => {}
             }
         }
-
+        if audio.is_some() || !video_list.is_empty() {
+            let mut ffmpeg_info = FfmpegInfo::new();
+            if audio.is_some() {
+                ffmpeg_info.set_audio(audio.unwrap());
+            }
+            ffmpeg_info.set_video(video_list);
+            response.set_ffmpeg_info(ffmpeg_info);
+        }
         Ok(response)
     }
 
@@ -337,7 +362,6 @@ pub mod check {
     pub async fn check_link_is_valid(
         _url: String,
         timeout: u64,
-        need_video_info: bool,
         ffmpeg_check: bool,
         not_http_skip: bool,
     ) -> Result<CheckUrlIsAvailableResponse, Error> {
@@ -381,31 +405,19 @@ pub mod check {
                     Ok(res) => {
                         if res.status().is_success() {
                             let delay = Utc::now().timestamp_millis() - curr_timestamp;
-                            if need_video_info {
-                                let ffmpeg_info =
-                                    run_command_with_timeout_new(_url.to_owned(), timeout).await;
-                                match ffmpeg_info {
-                                    Ok(mut data) => {
-                                        data.set_delay(delay as i32);
-                                        Ok(data)
+                            let _body = res.text().await;
+                            match _body {
+                                Ok(body) => {
+                                    if check_body_is_m3u8_format(body.clone()) {
+                                        let mut body: CheckUrlIsAvailableResponse =
+                                            CheckUrlIsAvailableResponse::new();
+                                        body.set_delay(delay as i32);
+                                        Ok(body)
+                                    } else {
+                                        Err(Error::new(ErrorKind::Other, "not a m3u8 file"))
                                     }
-                                    Err(err) => Err(Error::new(ErrorKind::Other, err.to_string())),
                                 }
-                            } else {
-                                let _body = res.text().await;
-                                match _body {
-                                    Ok(body) => {
-                                        if check_body_is_m3u8_format(body.clone()) {
-                                            let mut body: CheckUrlIsAvailableResponse =
-                                                CheckUrlIsAvailableResponse::new();
-                                            body.set_delay(delay as i32);
-                                            Ok(body)
-                                        } else {
-                                            Err(Error::new(ErrorKind::Other, "not a m3u8 file"))
-                                        }
-                                    }
-                                    Err(e) => Err(Error::new(ErrorKind::Other, format!("{:?}", e))),
-                                }
+                                Err(e) => Err(Error::new(ErrorKind::Other, format!("{:?}", e))),
                             }
                         } else {
                             Err(Error::new(ErrorKind::Other, "status is not 200"))
@@ -470,15 +482,31 @@ pub async fn do_check(
     same_save_num: i32,
     not_http_skip: bool,
 ) -> Result<bool, Error> {
-    let mut data = common::m3u::m3u::from_arr(
-        input_files.to_owned(),
-        timeout as u64,
-        keyword_like.to_owned(),
-        keyword_dislike.to_owned(),
-        rename,
-    )
+    // 将文件转换为数组
+    let list = common::m3u::m3u::from_arr(input_files.to_owned(), timeout as u64).await;
+    // 将数组转换为对象
+    let mut data = list_str2obj(list, false);
+    // 将频道名繁体转简体
+    data.t2s();
+    if rename {
+        // 去除name中无效的字符
+        data.remove_useless_char();
+    }
+    // 搜索关键字
+    data.search(SearchOptions {
+        keyword_full_match: vec![],
+        keyword_like,
+        keyword_dislike,
+        ipv4: false,
+        ipv6: false,
+        exclude_url: vec![],
+        exclude_host: vec![],
+        quality: vec![],
+    })
     .await;
+    // 输出文件
     let output_file = utils::get_out_put_filename(OUTPUT_FOLDER, output_file.clone());
+    // 检查数据
     data.check_data_new(CheckOptions {
         request_time: request_timeout,
         concurrent,
@@ -493,7 +521,8 @@ pub async fn do_check(
     if print_result {
         info!("输出文件: {}", output_file);
     }
-    data.output_file(output_file).await;
+    // 导出数据
+    data.output_file(output_file, true).await;
     if print_result {
         if !no_check {
             let status_string = data.print_result();
@@ -527,8 +556,9 @@ mod tests {
             println!("Running command: {} {:?}", _url, timeout);
             match run_command_with_timeout_new(_url.to_string(), (timeout as u64)).await {
                 Ok(ed) => {
-                    let v = ed.video.clone().unwrap();
-                    println!("Command finished successfully.{} {}", v.width, v.height)
+                    for v in ed.ffmpeg_info.unwrap().video.clone() {
+                        println!("Command finished successfully.{} {}", v.width, v.height)
+                    }
                 }
                 Err(e) => println!("Command failed: {}", e),
             }
