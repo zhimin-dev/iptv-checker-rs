@@ -388,6 +388,7 @@ impl Task {
                 ffmpeg_check,
                 same_save_num,
                 not_http_skip,
+                vec![],
             )
             .await;
             debug!("end taskId: {}", task_id);

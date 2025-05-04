@@ -3,13 +3,14 @@ use crate::common::cmd::capture_stream_pic;
 use crate::common::task::md5_str;
 use crate::common::CheckDataStatus::{Failed, Success, Unchecked};
 use crate::common::FfmpegInfo;
-use crate::common::QualityType::Unknown;
+use crate::common::QualityType::QualityUnknown;
 use crate::common::SourceType::{Normal, Quota};
 use crate::search::generate_channel_thumbnail_folder_name;
 use crate::utils::{remove_other_char, replace_char};
 use actix_rt::time;
 use log::{debug, error, info};
 use serde::{Deserialize, Serialize};
+use std::cmp::PartialEq;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{self, Write};
@@ -295,7 +296,6 @@ pub struct CheckOptions {
     pub ffmpeg_check: bool,
     pub same_save_num: i32,
     pub not_http_skip: bool,
-    pub search_clarity: Vec<QualityType>,
 }
 
 impl M3uObjectList {
@@ -384,6 +384,43 @@ impl M3uObjectList {
             }
         }
         self.set_list(save_list)
+    }
+
+    pub fn search_video_quality(&mut self, quality_list: Vec<QualityType>) {
+        if quality_list.is_empty() {
+            return;
+        }
+        println!("-----quality_list len {}", quality_list.len());
+
+        let mut filtered_list = vec![];
+        let mut quality_map:HashMap<QualityType, i32> = HashMap::new();
+        for item in quality_list {
+            quality_map.insert(item, 1);
+        }
+
+        for item in &self.list {
+            let mut is_save = false;
+            if item.status != Success {
+                continue;
+            }
+
+            if let Some(info) = &item.other_status.ffmpeg_info {
+                if info.video.len() > 0 {
+                    for v_q in info.video.clone() {
+                        for (k, _ ) in quality_map.clone() {
+                            if k == v_q.quality_type {
+                                is_save = true
+                            }
+                        }
+                    }
+                    if is_save {
+                        filtered_list.push(item.clone());
+                    }
+                }
+            }
+        }
+
+        self.set_list(filtered_list);
     }
 
     pub async fn search(&mut self, search: SearchOptions) {
@@ -773,14 +810,18 @@ pub struct NetworkInfo {
     delay: i32,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Eq, Hash, PartialEq)]
 pub enum QualityType {
-    Unknown,
-    Sd,
-    Hd,
-    Fhd,
-    Uhd,
-    Fuhd,
+    QualityUnknown,
+    Quality240P,
+    Quality360P,
+    Quality480P,
+    Quality720P,
+    Quality1080P,
+    Quality2K,
+    Quality4K,
+    Quality8K,
 }
 
 // fn video_type_string(vt: VideoType) -> *const str {
@@ -808,7 +849,7 @@ impl VideoInfo {
             width: 0,
             height: 0,
             codec: "".to_string(),
-            quality_type: Unknown,
+            quality_type: QualityUnknown,
         }
     }
 

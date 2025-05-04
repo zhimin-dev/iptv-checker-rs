@@ -118,6 +118,10 @@ pub struct CheckArgs {
     #[arg(short = 'c', long = "concurrency", default_value_t = 1)]
     concurrency: i32,
 
+    /// 视频质量 240p,360p,480p,720p,1080p,2k,4k,8k
+    #[arg(long = "video_quality")]
+    video_quality: Vec<String>,
+
     /// 频道名称包含的关键词
     #[arg(long = "like")]
     keyword_like: Vec<String>,
@@ -259,6 +263,7 @@ pub async fn main() {
                     args.ffmpeg_check,
                     args.same_save_num,
                     args.not_http_skip,
+                    args.video_quality,
                 )
                 .await
                 .unwrap();

@@ -1,4 +1,8 @@
-use crate::common::{M3uExt, M3uExtend, M3uObject, M3uObjectList};
+use crate::common::QualityType::{
+    Quality1080P, Quality240P, Quality2K, Quality360P, Quality480P, Quality4K,
+    Quality720P, Quality8K, QualityUnknown,
+};
+use crate::common::{M3uExt, M3uExtend, M3uObject, M3uObjectList, QualityType};
 use crate::utils::translator_t2s;
 use reqwest::Error;
 use url::Url;
@@ -270,4 +274,40 @@ pub fn is_url(_str: String) -> bool {
         Ok(_) => true,
         Err(_) => false,
     };
+}
+
+pub fn get_video_resolution(height: u32) -> QualityType {
+    match height {
+        h if h <= 240 => Quality240P,              // 240p: 高度 <= 240
+        h if h > 240 && h <= 360 => Quality360P,   // 360p: 240 < 高度 <= 360
+        h if h > 360 && h <= 480 => Quality480P,   // 480p: 360 < 高度 <= 480
+        h if h > 480 && h <= 720 => Quality720P,   // 720p: 480 < 高度 <= 720
+        h if h > 720 && h <= 1080 => Quality1080P, // 1080p: 720 < 高度 <= 1080
+        h if h > 1080 && h <= 1440 => Quality2K,   // 2K: 1080 < 高度 <= 1440
+        h if h > 1440 && h <= 2160 => Quality4K,   // 4K: 1440 < 高度 <= 2160
+        h if h > 2160 => Quality8K,                // 8K: 高度 > 2160
+        _ => QualityUnknown,                       // 未知分辨率
+    }
+}
+
+pub fn from_video_resolution(list: Vec<String>) -> Vec<QualityType> {
+    let mut result = Vec::new();
+    for x in list {
+        if x.to_lowercase().eq("240p") {
+            result.push(Quality240P);
+        } else if x.to_lowercase().eq("360p") {
+            result.push(Quality360P);
+        } else if x.to_lowercase().eq("480p") {
+            result.push(Quality480P);
+        } else if x.to_lowercase().eq("720p") {
+            result.push(Quality720P);
+        } else if x.to_lowercase().eq("1080p") {
+            result.push(Quality1080P);
+        } else if x.to_lowercase().eq("2k") {
+            result.push(Quality2K);
+        } else if x.to_lowercase().eq("4k") {
+            result.push(Quality4K);
+        }
+    }
+    result
 }

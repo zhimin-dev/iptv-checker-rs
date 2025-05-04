@@ -5,6 +5,7 @@ use crate::{common, utils};
 use log::info;
 use serde::{Deserialize, Serialize};
 use std::fmt::Error;
+use crate::common::util::from_video_resolution;
 
 /// URL检查响应结构体
 #[derive(Debug, Serialize, Deserialize)]
@@ -123,7 +124,7 @@ pub struct FfprobeStream {
 
 /// 检查模块
 pub mod check {
-    use crate::common::util::check_body_is_m3u8_format;
+    use crate::common::util::{check_body_is_m3u8_format, get_video_resolution};
     use crate::common::{AudioInfo, CheckUrlIsAvailableResponse, FfmpegInfo, Ffprobe, VideoInfo};
     use chrono::Utc;
     use log::debug;
@@ -322,6 +323,7 @@ pub mod check {
                     }
                     if let Some(height) = stream.height {
                         video_info.set_height(height);
+                        video_info.quality_type = get_video_resolution(height as u32);
                     }
                     video_info.set_codec(stream.codec_name);
                     video_list.push(video_info);
@@ -481,6 +483,7 @@ pub async fn do_check(
     ffmpeg_check: bool,
     same_save_num: i32,
     not_http_skip: bool,
+    video_quality: Vec<String>,
 ) -> Result<bool, Error> {
     // 将文件转换为数组
     let list = common::m3u::m3u::from_arr(input_files.to_owned(), timeout as u64).await;
@@ -515,9 +518,10 @@ pub async fn do_check(
         ffmpeg_check,
         same_save_num,
         not_http_skip,
-        search_clarity: vec![],
     })
     .await;
+    println!("entry video quality {:?}", video_quality.clone());
+    data.search_video_quality(from_video_resolution(video_quality));
     if print_result {
         info!("输出文件: {}", output_file);
     }
