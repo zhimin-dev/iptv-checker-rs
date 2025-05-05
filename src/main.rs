@@ -15,10 +15,12 @@ use crate::r#const::constant::{
 };
 use crate::search::{clear_search_folder, do_search};
 use crate::utils::{create_folder, get_out_put_filename};
+use chrono::Local;
 use clap::{arg, Args as clapArgs, Parser, Subcommand};
 use log::{error, info, LevelFilter};
 use simplelog::{CombinedLogger, Config, WriteLogger};
 use std::env;
+use std::fs::File;
 use tempfile::tempdir;
 
 const DEFAULT_HTTP_PORT: u16 = 8089;
@@ -217,20 +219,53 @@ pub fn show_status() {
     }
 }
 
-#[actix_web::main]
-pub async fn main() {
+fn init_console_log() {
     CombinedLogger::init(vec![WriteLogger::new(
         LevelFilter::Debug,
         Config::default(),
         std::io::stdout(),
     )])
     .unwrap();
+}
 
+fn init_file_log() {
+    // 初始化日志系统
+    let log_file = File::create(format!(
+        "{}app-{}.log",
+        LOGS_FOLDER,
+        Local::now().format("%Y%m%d%H:%M").to_string()
+    ))
+        .unwrap();
+    let mut log_config = Config::default();
+    log_config.time = Some(simplelog::Level::Debug);
+    log_config.time_format = Some("%Y-%m-%d %H:%M:%S%.3f");
+
+    let cb_logger = CombinedLogger::init(vec![
+        WriteLogger::new(LevelFilter::Debug, log_config.clone(), log_file),
+        WriteLogger::new(LevelFilter::Debug, log_config, std::io::stdout()),
+    ]);
+    match cb_logger {
+        Ok(_) => {}
+        Err(e) => {
+            error!("cb_logger: {}", e)
+        }
+    }
+}
+
+#[actix_web::main]
+pub async fn main() {
+    let args = Args::parse();
+    match args.command {
+        Commands::Web(_) => {
+            init_file_log();
+        }
+        _ => {
+            init_console_log();
+        }
+    }
     init_config();
-
     init_folder();
     let pid_name = get_pid_file();
-    let args = Args::parse();
     match args.command {
         Commands::Web(args) => {
             if args.status {
@@ -278,7 +313,7 @@ pub async fn main() {
                 }
             } else {
                 let output_file = get_out_put_filename(OUTPUT_FOLDER, args.output_file.to_owned());
-                
+
                 println!("output file: {}", output_file.clone());
                 let data = do_search(SearchParams {
                     thumbnail: args.thumbnail,

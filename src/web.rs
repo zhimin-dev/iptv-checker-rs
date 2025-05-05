@@ -6,18 +6,15 @@ use crate::common::task::{
 };
 use crate::config::config::init_config;
 use crate::config::{get_check, get_task, save_task};
-use crate::r#const::constant::{INPUT_FOLDER, LOGS_FOLDER, STATIC_FOLDER};
+use crate::r#const::constant::{INPUT_FOLDER, STATIC_FOLDER};
 use actix_files as fs;
 use actix_files::NamedFile;
 use actix_multipart::form::{tempfile::TempFile, MultipartForm};
 use actix_web::middleware::Logger;
 use actix_web::{get, post, web, App, HttpResponse, HttpServer, Responder};
-use chrono::Local;
 use clokwerk::{Scheduler, TimeUnits};
-use log::{error, info, LevelFilter};
+use log::{error, info};
 use serde::{Deserialize, Serialize};
-use simplelog::{CombinedLogger, Config, WriteLogger};
-use std::fs::File;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time;
@@ -60,8 +57,7 @@ async fn check_url_is_available(req: web::Query<CheckUrlIsAvailableRequest>) -> 
     if let Some(i) = req.timeout {
         timeout = i;
     }
-    let res =
-        check::check::check_link_is_valid(req.url.to_owned(), timeout as u64, true, false);
+    let res = check::check::check_link_is_valid(req.url.to_owned(), timeout as u64, true, false);
     match res.await {
         Ok(data) => {
             let obj = serde_json::to_string(&data).unwrap();
@@ -182,28 +178,6 @@ async fn upload(MultipartForm(form): MultipartForm<UploadFormReq>) -> impl Respo
 
 /// 启动Web服务器
 pub async fn start_web(port: u16) {
-    // 初始化日志系统
-    let log_file = File::create(format!(
-        "{}app-{}.log",
-        LOGS_FOLDER,
-        Local::now().format("%Y%m%d%H:%M").to_string()
-    ))
-    .unwrap();
-    let mut log_config = Config::default();
-    log_config.time = Some(simplelog::Level::Debug);
-    log_config.time_format = Some("%Y-%m-%d %H:%M:%S%.3f");
-
-    let cb_logger = CombinedLogger::init(vec![
-        WriteLogger::new(LevelFilter::Debug, log_config.clone(), log_file),
-        WriteLogger::new(LevelFilter::Debug, log_config, std::io::stdout()),
-    ]);
-    match cb_logger {
-        Ok(_) => {}
-        Err(e) => {
-            error!("cb_logger: {}", e)
-        }
-    }
-
     // 初始化配置
     init_config();
 
