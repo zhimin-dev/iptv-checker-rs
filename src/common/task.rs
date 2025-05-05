@@ -1,4 +1,5 @@
 use crate::common::do_check;
+use crate::common::task::TaskStatus::InProgress;
 use crate::config::config::file_config;
 use actix_web::{web, HttpResponse, Responder};
 use log::{debug, info};
@@ -349,11 +350,11 @@ impl Task {
         if self.task_info.is_running {
             return;
         }
+        self.task_info.is_running = true;
+        self.task_info.task_status = InProgress;
         if self.task_info.next_run_time != 0 && self.task_info.next_run_time > now() as i32 {
             return;
         }
-        self.task_info.is_running = true;
-        self.task_info.task_status = TaskStatus::InProgress;
         let urls = self.clone().original.get_urls();
         let out_out_file = self.clone().original.result_name;
         let mut keyword_like = vec![];

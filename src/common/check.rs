@@ -1,17 +1,19 @@
 use crate::common::m3u::m3u::list_str2obj;
+use crate::common::util::from_video_resolution;
 use crate::common::{AudioInfo, CheckOptions, SearchOptions, VideoInfo};
 use crate::r#const::constant::OUTPUT_FOLDER;
 use crate::{common, utils};
 use log::info;
 use serde::{Deserialize, Serialize};
 use std::fmt::Error;
-use crate::common::util::from_video_resolution;
 
 /// URL检查响应结构体
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize,Clone)]
 pub struct CheckUrlIsAvailableResponse {
     pub delay: i32, // 延迟时间（毫秒）
     pub ffmpeg_info: Option<FfmpegInfo>,
+    pub video: Option<VideoInfo>, // 视频信息
+    pub audio: Option<AudioInfo>, // 音频信息
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -42,6 +44,8 @@ impl CheckUrlIsAvailableResponse {
         CheckUrlIsAvailableResponse {
             delay: 0,
             ffmpeg_info: None,
+            video: None,
+            audio: None,
         }
     }
 

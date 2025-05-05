@@ -1,5 +1,4 @@
-use crate::common::check;
-use crate::common::task::TaskStatus::InProgress;
+use crate::common::{check};
 use crate::common::task::{
     add_task, delete_task, get_download_body, list_task, run_task, system_tasks_export,
     system_tasks_import, update_task, TaskManager,
@@ -57,10 +56,18 @@ async fn check_url_is_available(req: web::Query<CheckUrlIsAvailableRequest>) -> 
     if let Some(i) = req.timeout {
         timeout = i;
     }
-    let res = check::check::check_link_is_valid(req.url.to_owned(), timeout as u64, true, false);
-    match res.await {
-        Ok(data) => {
-            let obj = serde_json::to_string(&data).unwrap();
+    let res = check::check::check_link_is_valid(req.url.to_owned(), 
+                                                timeout as u64, true, false).await;
+    match res {
+        Ok(mut data) => {
+            if data.ffmpeg_info.is_some() {
+                let ff = data.clone().ffmpeg_info.unwrap();
+                data.audio = ff.audio;
+                if ff.video.len() > 0 {
+                    data.video = Some(ff.video[0].clone());
+                }
+            }
+            let obj = serde_json::to_string(&data.clone()).unwrap();
             return HttpResponse::Ok().body(obj);
         }
         Err(e) => {
@@ -209,10 +216,6 @@ pub async fn start_web(port: u16) {
                     // 运行任务
                     if let Ok(task) = get_task(&id) {
                         if let Some(mut task) = task {
-                            // 更新任务状态
-                            task.task_info.is_running = true;
-                            task.task_info.task_status = InProgress;
-
                             // 运行任务
                             task.run();
 
