@@ -99,6 +99,10 @@ pub struct TaskContent {
 
     #[serde(default)]
     not_http_skip: bool,
+
+    // 视频质量
+    #[serde(default)]
+    video_quality: Vec<String>,
 }
 
 const DEFAULT_TIMEOUT: i32 = 30000;
@@ -128,6 +132,7 @@ impl TaskContent {
             ffmpeg_check: false,
             same_save_num: 0,
             not_http_skip: false,
+            video_quality: vec![],
         }
     }
 
@@ -173,6 +178,7 @@ impl TaskContent {
         if self.not_http_skip {
             ori.set_not_http_skip(self.not_http_skip);
         }
+        ori.set_video_quality(self.video_quality.clone());
         ori.set_same_save_num(self.same_save_num);
         ori.set_run_type(self.run_type.clone());
         ori.gen_md5();
@@ -220,6 +226,10 @@ impl TaskContent {
 
     pub fn set_ffmpeg_check(&mut self, ffmpeg_check: bool) {
         self.ffmpeg_check = ffmpeg_check
+    }
+
+    pub fn set_video_quality(&mut self, qualities: Vec<String>) {
+        self.video_quality = qualities
     }
 
     pub fn set_rename(&mut self, rename: bool) {
@@ -367,6 +377,7 @@ impl Task {
         let ffmpeg_check = self.clone().original.ffmpeg_check;
         let same_save_num = self.clone().original.same_save_num;
         let not_http_skip = self.clone().original.not_http_skip;
+        let video_quality = self.clone().original.video_quality;
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -388,7 +399,7 @@ impl Task {
                 ffmpeg_check,
                 same_save_num,
                 not_http_skip,
-                vec![],
+                video_quality,
             )
             .await;
             debug!("end taskId: {}", task_id);

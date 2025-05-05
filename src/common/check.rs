@@ -521,7 +521,9 @@ pub async fn do_check(
     })
     .await;
     println!("entry video quality {:?}", video_quality.clone());
-    data.search_video_quality(from_video_resolution(video_quality));
+    if ffmpeg_check {
+        data.search_video_quality(from_video_resolution(video_quality));
+    }
     if print_result {
         info!("输出文件: {}", output_file);
     }
