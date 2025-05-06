@@ -1,4 +1,5 @@
 use crate::common::do_check;
+use crate::common::task::TaskStatus::InProgress;
 use crate::config::config::file_config;
 use actix_web::{web, HttpResponse, Responder};
 use log::{debug, info};
@@ -22,10 +23,10 @@ pub struct TaskInfo {
     // next run time, (s)
     next_run_time: i32,
 
-    pub(crate) is_running: bool,
+    pub is_running: bool,
 
     // 任务状态
-    pub(crate) task_status: TaskStatus,
+    pub task_status: TaskStatus,
 }
 
 #[warn(private_interfaces)]
@@ -99,6 +100,10 @@ pub struct TaskContent {
 
     #[serde(default)]
     not_http_skip: bool,
+
+    // 视频质量
+    #[serde(default)]
+    video_quality: Vec<String>,
 }
 
 const DEFAULT_TIMEOUT: i32 = 30000;
@@ -128,6 +133,7 @@ impl TaskContent {
             ffmpeg_check: false,
             same_save_num: 0,
             not_http_skip: false,
+            video_quality: vec![],
         }
     }
 
@@ -173,6 +179,7 @@ impl TaskContent {
         if self.not_http_skip {
             ori.set_not_http_skip(self.not_http_skip);
         }
+        ori.set_video_quality(self.video_quality.clone());
         ori.set_same_save_num(self.same_save_num);
         ori.set_run_type(self.run_type.clone());
         ori.gen_md5();
@@ -220,6 +227,10 @@ impl TaskContent {
 
     pub fn set_ffmpeg_check(&mut self, ffmpeg_check: bool) {
         self.ffmpeg_check = ffmpeg_check
+    }
+
+    pub fn set_video_quality(&mut self, qualities: Vec<String>) {
+        self.video_quality = qualities
     }
 
     pub fn set_rename(&mut self, rename: bool) {
@@ -292,7 +303,7 @@ pub struct Task {
     create_time: u64,
 
     //任务详情
-    pub(crate) task_info: TaskInfo,
+    pub task_info: TaskInfo,
 }
 
 fn now() -> u64 {
@@ -339,11 +350,11 @@ impl Task {
         if self.task_info.is_running {
             return;
         }
+        self.task_info.is_running = true;
+        self.task_info.task_status = InProgress;
         if self.task_info.next_run_time != 0 && self.task_info.next_run_time > now() as i32 {
             return;
         }
-        self.task_info.is_running = true;
-        self.task_info.task_status = TaskStatus::InProgress;
         let urls = self.clone().original.get_urls();
         let out_out_file = self.clone().original.result_name;
         let mut keyword_like = vec![];
@@ -367,6 +378,7 @@ impl Task {
         let ffmpeg_check = self.clone().original.ffmpeg_check;
         let same_save_num = self.clone().original.same_save_num;
         let not_http_skip = self.clone().original.not_http_skip;
+        let video_quality = self.clone().original.video_quality;
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -388,6 +400,7 @@ impl Task {
                 ffmpeg_check,
                 same_save_num,
                 not_http_skip,
+                video_quality,
             )
             .await;
             debug!("end taskId: {}", task_id);

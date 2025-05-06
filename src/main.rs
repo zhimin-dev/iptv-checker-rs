@@ -6,7 +6,7 @@ mod search;
 mod utils;
 mod web;
 
-use crate::common::do_check;
+use crate::common::{do_check, SearchOptions, SearchParams};
 use crate::config::config::init_config;
 use crate::live::do_ob;
 use crate::r#const::constant::{
@@ -15,10 +15,12 @@ use crate::r#const::constant::{
 };
 use crate::search::{clear_search_folder, do_search};
 use crate::utils::{create_folder, get_out_put_filename};
+use chrono::Local;
 use clap::{arg, Args as clapArgs, Parser, Subcommand};
 use log::{error, info, LevelFilter};
 use simplelog::{CombinedLogger, Config, WriteLogger};
 use std::env;
+use std::fs::File;
 use tempfile::tempdir;
 
 const DEFAULT_HTTP_PORT: u16 = 8089;
@@ -37,9 +39,17 @@ enum Commands {
 
 #[derive(clapArgs)]
 pub struct SearchArgs {
-    /// 搜索频道名称，支持多个名称用英文逗号分隔
-    #[arg(long = "search", default_value_t = String::from(""))]
-    search: String,
+    /// 频道名称包含的关键词
+    #[arg(long = "like")]
+    keyword_like: Vec<String>,
+
+    /// 频道名称不包含的关键词
+    #[arg(long = "dislike")]
+    keyword_dislike: Vec<String>,
+
+    /// 频道名称不包含的关键词
+    #[arg(long = "fmword")]
+    keyword_full: Vec<String>,
 
     /// 是否生成频道缩略图
     #[arg(long = "thumbnail", default_value_t = false)]
@@ -110,6 +120,10 @@ pub struct CheckArgs {
     #[arg(short = 'c', long = "concurrency", default_value_t = 1)]
     concurrency: i32,
 
+    /// 视频质量 240p,360p,480p,720p,1080p,2k,4k,8k
+    #[arg(long = "video_quality")]
+    video_quality: Vec<String>,
+
     /// 频道名称包含的关键词
     #[arg(long = "like")]
     keyword_like: Vec<String>,
@@ -117,6 +131,10 @@ pub struct CheckArgs {
     /// 频道名称不包含的关键词
     #[arg(long = "dislike")]
     keyword_dislike: Vec<String>,
+
+    /// 频道名称不包含的关键词
+    #[arg(long = "fmword")]
+    keyword_full: Vec<String>,
 
     /// 是否对频道进行排序
     #[arg(long = "sort", default_value_t = false)]
@@ -201,20 +219,53 @@ pub fn show_status() {
     }
 }
 
-#[actix_web::main]
-pub async fn main() {
+fn init_console_log() {
     CombinedLogger::init(vec![WriteLogger::new(
         LevelFilter::Debug,
         Config::default(),
         std::io::stdout(),
     )])
     .unwrap();
+}
 
+fn init_file_log() {
+    // 初始化日志系统
+    let log_file = File::create(format!(
+        "{}app-{}.log",
+        LOGS_FOLDER,
+        Local::now().format("%Y%m%d%H:%M").to_string()
+    ))
+        .unwrap();
+    let mut log_config = Config::default();
+    log_config.time = Some(simplelog::Level::Debug);
+    log_config.time_format = Some("%Y-%m-%d %H:%M:%S%.3f");
+
+    let cb_logger = CombinedLogger::init(vec![
+        WriteLogger::new(LevelFilter::Debug, log_config.clone(), log_file),
+        WriteLogger::new(LevelFilter::Debug, log_config, std::io::stdout()),
+    ]);
+    match cb_logger {
+        Ok(_) => {}
+        Err(e) => {
+            error!("cb_logger: {}", e)
+        }
+    }
+}
+
+#[actix_web::main]
+pub async fn main() {
+    let args = Args::parse();
+    match args.command {
+        Commands::Web(_) => {
+            init_file_log();
+        }
+        _ => {
+            init_console_log();
+        }
+    }
     init_config();
-
     init_folder();
     let pid_name = get_pid_file();
-    let args = Args::parse();
     match args.command {
         Commands::Web(args) => {
             if args.status {
@@ -247,6 +298,7 @@ pub async fn main() {
                     args.ffmpeg_check,
                     args.same_save_num,
                     args.not_http_skip,
+                    args.video_quality,
                 )
                 .await
                 .unwrap();
@@ -260,24 +312,32 @@ pub async fn main() {
                     error!("clear failed 😞")
                 }
             } else {
-                if args.search.len() > 0 {
-                    let output_file =
-                        get_out_put_filename(OUTPUT_FOLDER, args.output_file.to_owned());
-                    let data = do_search(
-                        args.search.clone(),
-                        args.thumbnail,
-                        args.concurrency,
-                        args.timeout,
-                        output_file.clone(),
-                    )
-                    .await;
-                    match data {
-                        Ok(()) => {
-                            info!("成功 ---")
-                        }
-                        Err(e) => {
-                            error!("获取失败---{}", e)
-                        }
+                let output_file = get_out_put_filename(OUTPUT_FOLDER, args.output_file.to_owned());
+
+                println!("output file: {}", output_file.clone());
+                let data = do_search(SearchParams {
+                    thumbnail: args.thumbnail,
+                    concurrent: args.concurrency,
+                    timeout: args.timeout,
+                    output_file,
+                    search_options: SearchOptions {
+                        keyword_full_match: args.keyword_full,
+                        keyword_like: args.keyword_like,
+                        keyword_dislike: args.keyword_dislike,
+                        ipv4: false,
+                        ipv6: false,
+                        exclude_url: vec![],
+                        exclude_host: vec![],
+                        quality: vec![],
+                    },
+                })
+                .await;
+                match data {
+                    Ok(()) => {
+                        info!("成功 ---")
+                    }
+                    Err(e) => {
+                        error!("获取失败---{}", e)
                     }
                 }
             }
