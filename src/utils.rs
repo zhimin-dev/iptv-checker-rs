@@ -123,7 +123,24 @@ pub fn translator_t2s(str: &str) -> String {
 /// 测试模块
 #[cfg(test)]
 mod tests {
+    use crate::common::util::parse_normal_str;
     use crate::utils::{remove_other_char, translator_t2s};
+
+    #[tokio::test]
+    async fn parse_data_normal () {
+        let data = parse_normal_str(String::from(r#"#EXTM3U
+#EXTINF:-1 tvg-name="CCTV5(backup)" tvg-id="378823" tvg-country="中国大陆" tvg-language="国语" tvg-logo="https://epg.pw/media/images/channel/2025/01/25/large/20250125001815951580_60.jpg" group-title="运动",cctv5-体育
+https://stream1.freetv.fun/8c0a0439191a3ba401897378bc2226a7edda1e571cb356ac7c7f4c15f6a2f380.m3u8"#));
+        for i in data.get_list() {
+            println!("{}", i.get_extend().unwrap().group_title);
+            println!("{}", i.get_extend().unwrap().tv_logo);
+            println!("{}", i.get_extend().unwrap().tv_language);
+            println!("{}", i.get_extend().unwrap().tv_country);
+            println!("{}", i.get_extend().unwrap().tv_id);
+            println!("{}", i.get_extend().unwrap().user_agent);
+            println!("{}", i.get_extend().unwrap().tv_name);
+        }
+    }
 
     #[tokio::test]
     async fn test_str() {

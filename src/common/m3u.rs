@@ -21,15 +21,14 @@ use std::time::Duration;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct M3uExtend {
-    group_title: String,       //group title
-    tv_logo: String,           //台标
-    tv_language: String,       //语言
-    tv_country: String,        //国家
-    tv_id: String,             //电视id
-    user_agent: String,        // user-agent
-    thumbnail: Option<String>, //缩略图
-    video_width: u32,          //视频宽
-    video_height: u32,         // 视频高
+    pub group_title: String,       //group title
+    pub tv_logo: String,           //台标
+    pub tv_language: String,       //语言
+    pub tv_name: String,           //名称
+    pub tv_country: String,        //国家
+    pub tv_id: String,             //电视id
+    pub user_agent: String,        // user-agent
+    pub thumbnail: Option<String>, //缩略图
 }
 
 impl M3uExtend {
@@ -42,8 +41,7 @@ impl M3uExtend {
             tv_id: "".to_string(),
             user_agent: "".to_string(),
             thumbnail: None,
-            video_width: 0,
-            video_height: 0,
+            tv_name: "".to_string(),
         }
     }
 
@@ -69,6 +67,10 @@ impl M3uExtend {
 
     pub fn set_tv_id(&mut self, tv_id: String) {
         self.tv_id = tv_id
+    }
+
+    pub fn set_tv_name(&mut self, tv_name: String) {
+        self.tv_name = tv_name
     }
 
     pub fn set_user_agent(&mut self, user_agent: String) {
@@ -190,20 +192,45 @@ impl M3uObject {
         let mut tv_id = "".to_string();
         let mut tv_logo = "".to_string();
         let mut group_title = "".to_string();
+        let mut tv_language = "".to_string();
+        let mut tvg_country = "".to_string();
+        let mut tvg_name = "".to_string();
         if self.extend.is_some() {
-            tv_id = format!(" tvg-id=\"{}\"", self.extend.clone().unwrap().tv_id.clone());
-            tv_logo = format!(
-                " tvg-logo=\"{}\"",
-                self.extend.clone().unwrap().tv_id.clone()
-            );
-            group_title = format!(
-                " group-title=\"{}\"",
-                self.extend.clone().unwrap().tv_id.clone()
-            );
+            let extend = self.extend.clone().unwrap();
+            if !extend.tv_id.is_empty() {
+                tv_id = format!(" tvg-id=\"{}\"", extend.tv_id.clone());
+            }
+            if !extend.tv_logo.is_empty() {
+                tv_logo = format!(" tvg-logo=\"{}\"", extend.tv_logo);
+            }
+            if !extend.group_title.is_empty() {
+                group_title = format!(
+                    " group-title=\"{}\"",
+                    extend.group_title.clone()
+                );
+            }
+            if !extend.tv_language.is_empty() {
+                tv_language = format!(
+                    " tvg-language=\"{}\"",
+                    extend.tv_language.clone()
+                );
+            }
+            if !extend.tv_country.is_empty() {
+                tvg_country = format!(
+                    " tvg-country=\"{}\"",
+                    extend.tv_country.clone()
+                );
+            }
+            if !extend.tv_name.is_empty() {
+                tvg_name = format!(
+                    " tvg-name=\"{}\"",
+                    extend.tv_name.clone()
+                );
+            }
         }
         self.raw = format!(
-            "#EXTINF:-1 {}{}{},{}\n{}",
-            tv_id, tv_logo, group_title, self.name, self.url
+            "#EXTINF:-1 {}{}{}{}{}{},{}\n{}",
+            tvg_name, tv_id, tv_logo, group_title, tvg_country, tv_language, self.name, self.url,
         );
     }
 
@@ -393,7 +420,7 @@ impl M3uObjectList {
         println!("-----quality_list len {}", quality_list.len());
 
         let mut filtered_list = vec![];
-        let mut quality_map:HashMap<QualityType, i32> = HashMap::new();
+        let mut quality_map: HashMap<QualityType, i32> = HashMap::new();
         for item in quality_list {
             quality_map.insert(item, 1);
         }
@@ -407,7 +434,7 @@ impl M3uObjectList {
             if let Some(info) = &item.other_status.ffmpeg_info {
                 if info.video.len() > 0 {
                     for v_q in info.video.clone() {
-                        for (k, _ ) in quality_map.clone() {
+                        for (k, _) in quality_map.clone() {
                             if k == v_q.quality_type {
                                 is_save = true
                             }
@@ -810,8 +837,7 @@ pub struct NetworkInfo {
     delay: i32,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[derive(Eq, Hash, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, Eq, Hash, PartialEq)]
 pub enum QualityType {
     QualityUnknown,
     Quality240P,

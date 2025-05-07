@@ -170,6 +170,9 @@ fn parse_one_m3u(_arr: Vec<&str>, index: i32) -> Option<M3uObject> {
         if let Some(tv_id) = _arr.first().unwrap().split("tvg-id=\"").nth(1) {
             extend.set_tv_id(tv_id.split('"').next().unwrap().to_owned())
         }
+        if let Some(tv_name) = _arr.first().unwrap().split("tvg-name=\"").nth(1) {
+            extend.set_tv_name(tv_name.split('"').next().unwrap().to_owned())
+        }
         if let Some(tv_logo) = _arr.first().unwrap().split("tvg-logo=\"").nth(1) {
             extend.set_tv_logo(tv_logo.split('"').next().unwrap().to_owned())
         }
