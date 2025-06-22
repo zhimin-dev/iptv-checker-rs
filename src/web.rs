@@ -1,10 +1,10 @@
-use crate::common::{check};
+use crate::common::check;
 use crate::common::task::{
     add_task, delete_task, get_download_body, list_task, run_task, system_tasks_export,
     system_tasks_import, update_task, TaskManager,
 };
 use crate::config::config::init_config;
-use crate::config::{get_check, get_task, save_task};
+use crate::config::{get_check, get_now_check_task_id, get_task, save_task};
 use crate::r#const::constant::{INPUT_FOLDER, STATIC_FOLDER};
 use actix_files as fs;
 use actix_files::NamedFile;
@@ -12,8 +12,9 @@ use actix_multipart::form::{tempfile::TempFile, MultipartForm};
 use actix_web::middleware::Logger;
 use actix_web::{get, post, web, App, HttpResponse, HttpServer, Responder};
 use clokwerk::{Scheduler, TimeUnits};
-use log::{error, info};
+use log::{debug, error, info};
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time;
@@ -56,8 +57,8 @@ async fn check_url_is_available(req: web::Query<CheckUrlIsAvailableRequest>) -> 
     if let Some(i) = req.timeout {
         timeout = i;
     }
-    let res = check::check::check_link_is_valid(req.url.to_owned(), 
-                                                timeout as u64, true, false).await;
+    let res =
+        check::check::check_link_is_valid(req.url.to_owned(), timeout as u64, true, false).await;
     match res {
         Ok(mut data) => {
             if data.ffmpeg_info.is_some() {
@@ -206,10 +207,21 @@ pub async fn start_web(port: u16) {
         })
     };
 
+    // Use atomic bool for thread-safe locking
+    let lock = Arc::new(Mutex::new(false));
+
     // 设置定时任务
     {
         let mut scheduler = scheduler.lock().unwrap();
+        let lock_clone = Arc::clone(&lock);
         scheduler.every(30.seconds()).run(move || {
+            // 判断当前是否有任务在并行运行，如果有，再判断任务是否已经运行了超过10分钟，如果超过了，可以再次运行
+            let mut locked_flag = lock_clone.lock().unwrap();
+            if  *locked_flag {
+                debug!("scheduler thread lock");
+                return;
+            }
+            *locked_flag = true;
             // 获取所有任务
             if let Ok(tasks) = get_check() {
                 for (id, _) in tasks.task {
@@ -218,15 +230,11 @@ pub async fn start_web(port: u16) {
                         if let Some(mut task) = task {
                             // 运行任务
                             task.run();
-
-                            // 更新任务信息
-                            if let Err(e) = save_task(id.clone(), task) {
-                                error!("Failed to update task {}: {}", id, e);
-                            }
                         }
                     }
                 }
             }
+            *locked_flag = false;
         });
     }
 
