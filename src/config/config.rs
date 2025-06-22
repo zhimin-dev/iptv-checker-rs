@@ -218,6 +218,16 @@ pub mod file_config {
     //     Ok(config.clone())
     // }
 
+    pub fn get_now_check_task_id() -> Option<String> {
+        let config = GLOBAL_CONFIG.lock().unwrap();
+        config.check.now.clone()
+    }
+
+    pub fn set_now_check_id(now: Option<String>){
+        let mut config = GLOBAL_CONFIG.lock().unwrap();
+        config.check.now = now;
+    }
+
     /// 获取检查配置
     pub fn get_check() -> Result<Check, Error> {
         let config = GLOBAL_CONFIG.lock().unwrap();

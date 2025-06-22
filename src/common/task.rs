@@ -1,8 +1,9 @@
 use crate::common::do_check;
 use crate::common::task::TaskStatus::InProgress;
 use crate::config::config::file_config;
+use crate::config::{get_now_check_task_id, save_task, set_now_check_id};
 use actix_web::{web, HttpResponse, Responder};
-use log::{debug, info};
+use log::{debug, error, info};
 use md5;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -18,10 +19,10 @@ pub struct TaskInfo {
     run_type: RunTime,
 
     // 最后一次运行时间, (s)
-    last_run_time: i32,
+    pub last_run_time: i32,
 
     // next run time, (s)
-    next_run_time: i32,
+    pub next_run_time: i32,
 
     pub is_running: bool,
 
@@ -346,15 +347,17 @@ impl Task {
         self.task_info
     }
 
+    pub fn get_task(self) -> Task {
+        return self.clone();
+    }
+
     pub fn run(&mut self) {
-        if self.task_info.is_running {
+        // 如果当前时间大于最后运行时间，那么就运行
+        if self.task_info.next_run_time != 0 && self.task_info.next_run_time - now() as i32 > 0 {
             return;
         }
         self.task_info.is_running = true;
-        self.task_info.task_status = InProgress;
-        if self.task_info.next_run_time != 0 && self.task_info.next_run_time > now() as i32 {
-            return;
-        }
+        let _ = save_task(self.id.clone(), self.clone().get_task());
         let urls = self.clone().original.get_urls();
         let out_out_file = self.clone().original.result_name;
         let mut keyword_like = vec![];
@@ -370,6 +373,8 @@ impl Task {
             sort = self.clone().original.sort;
         }
         let task_id = self.clone().id.clone();
+        // 设置当前任务id
+        set_now_check_id(Some(self.clone().id.clone()));
         let http_timeout = self.clone().original.get_http_timeout();
         let concurrent = self.clone().original.get_current();
         let no_check = self.clone().original.no_check;
@@ -407,8 +412,9 @@ impl Task {
         });
         self.task_info.task_status = TaskStatus::Pending;
         self.task_info.is_running = false;
-        self.task_info.last_run_time = now() as i32;
         let now_time = now() as i32;
+        // 设置当前为空
+        set_now_check_id(None);
         match self.task_info.run_type {
             RunTime::EveryDay => {
                 self.task_info.next_run_time = now_time + 86400;
@@ -416,6 +422,10 @@ impl Task {
             RunTime::EveryHour => {
                 self.task_info.next_run_time = now_time + 3600;
             }
+        }
+        // 更新任务信息
+        if let Err(e) = save_task(self.id.clone(), self.clone().get_task()) {
+            error!("Failed to update task {}: {}", self.id.clone(), e);
         }
     }
 }
@@ -451,7 +461,7 @@ impl TaskManager {
 
     pub fn run_task(&self, id: String) -> Result<bool> {
         if let Ok(Some(mut task)) = file_config::get_task(&id) {
-            task.task_info.set_next_run_time(now() as i32);
+            task.task_info.set_next_run_time(now() as i32 + 60);
             if let Err(_) = file_config::save_task(id, task) {
                 return Ok(false);
             }
@@ -676,13 +686,35 @@ pub async fn delete_task(
     }
 }
 
-pub async fn list_task(task_manager: web::Data<Arc<TaskManager>>) -> impl Responder {
-    let mut resp = HashMap::new();
-    match task_manager.list_task() {
-        Ok(data) => {
-            resp.insert("list", data);
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct TaskListResponse {
+    pub list: Vec<Task>,
+    pub now_id: Option<String>,
+}
+
+impl TaskListResponse {
+    pub fn new() -> TaskListResponse {
+        TaskListResponse {
+            list: Vec::new(),
+            now_id: None,
         }
-        Err(_) => {}
     }
+    pub fn set_list(&mut self, list: Vec<Task>) {
+        self.list = list;
+    }
+
+    pub fn set_now_id(&mut self, now_id: Option<String>) {
+        self.now_id = now_id;
+    }
+}
+
+pub async fn list_task(task_manager: web::Data<Arc<TaskManager>>) -> impl Responder {
+    let mut resp = TaskListResponse::new();
+
+    if let Ok(data) = task_manager.list_task() {
+        resp.set_list(data);
+        resp.set_now_id(get_now_check_task_id());
+    }
+
     HttpResponse::Ok().json(resp)
 }
