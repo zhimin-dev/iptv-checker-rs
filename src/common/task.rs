@@ -60,9 +60,9 @@ impl TaskInfo {
         self.next_run_time = time
     }
 
-    // pub fn set_last_run_time(&mut self, time: i32) {
-    //     self.next_run_time = time
-    // }
+    pub fn set_last_run_time(&mut self, time: i32) {
+        self.next_run_time = time
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -423,6 +423,7 @@ impl Task {
                 self.task_info.next_run_time = now_time + 3600;
             }
         }
+        self.task_info.last_run_time = now_time;
         // 更新任务信息
         if let Err(e) = save_task(self.id.clone(), self.clone().get_task()) {
             error!("Failed to update task {}: {}", self.id.clone(), e);
