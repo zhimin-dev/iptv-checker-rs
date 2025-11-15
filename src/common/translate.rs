@@ -4,14 +4,14 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::io::Write;
-use crate::r#const::constant::TRANSLATE_TXT;
+use crate::r#const::constant::{TRANSLATE_TXT};
 
 /// 全局懒加载映射表（key: 繁体字符, value: 简体字符）
 static TRANSLATE_MAP: OnceLock<HashMap<char, char>> = OnceLock::new();
 
 fn default_translate_file_path() -> PathBuf {
     // 使用编译时的工作目录（crate 根目录）
-    Path::new(env!("CARGO_MANIFEST_DIR")).join(TRANSLATE_TXT)
+    Path::new(format!("{}", TRANSLATE_TXT).as_mut_str()).to_owned()
 }
 
 /// 从指定文件加载映射表：第一行为简体，第二行为繁体，按字符位置一一映射
