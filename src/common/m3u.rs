@@ -6,7 +6,7 @@ use crate::common::FfmpegInfo;
 use crate::common::QualityType::QualityUnknown;
 use crate::common::SourceType::{Normal, Quota};
 use crate::search::generate_channel_thumbnail_folder_name;
-use crate::utils::{remove_other_char, replace_char};
+use crate::utils::{remove_other_char};
 use actix_rt::time;
 use log::{debug, error, info};
 use serde::{Deserialize, Serialize};
@@ -18,6 +18,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
+use crate::common::translate::trad_to_simp;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct M3uExtend {
@@ -144,17 +145,58 @@ impl M3uObject {
         self.extend.clone()
     }
 
+    // 提供不产生额外克隆的访问器，避免不必要的内存开销
+    pub fn get_extend_ref(&self) -> Option<&M3uExtend> {
+        self.extend.as_ref()
+    }
+
+    pub fn get_extend_mut(&mut self) -> Option<&mut M3uExtend> {
+        self.extend.as_mut()
+    }
+
+    // 将 extend 的所有权移出（移动而非克隆），使用后 self.extend 变为 None
+    pub fn take_extend(&mut self) -> Option<M3uExtend> {
+        self.extend.take()
+    }
+    
     pub fn t2s(&mut self) {
         let name = self.name.clone();
-        let rename = replace_char(self.search_name.clone());
+        let rename = trad_to_simp(&self.search_name.clone());
         self.search_name = rename.clone();
         self.name = rename.clone();
         self.raw = self
             .raw
             .replace(name.clone().as_str(), rename.clone().as_str());
+
+        if self.extend.is_some() {
+            let mut ext = self.extend.clone().unwrap();
+            let old_tv_name = ext.tv_name.clone();
+            let old_tv_language = ext.tv_language.clone();
+            let old_tv_country = ext.tv_country.clone();
+            let old_group_title = ext.group_title.clone();
+
+            let tv_name_s = trad_to_simp(&old_tv_name);
+            let tv_language_s = trad_to_simp(&old_tv_language);
+            let tv_country_s = trad_to_simp(&old_tv_country);
+            let group_title_s = trad_to_simp(&old_group_title);
+
+            ext.tv_name = tv_name_s.clone();
+            ext.tv_language = tv_language_s.clone();
+            ext.tv_country = tv_country_s.clone();
+            ext.group_title = group_title_s.clone();
+
+            // 更新 extend 和 raw 内容中的繁体字段为简体
+            self.extend = Some(ext);
+            self.raw = self
+            .raw
+            .replace(&old_tv_name, &tv_name_s)
+            .replace(&old_tv_language, &tv_language_s)
+            .replace(&old_tv_country, &tv_country_s)
+            .replace(&old_group_title, &group_title_s);
+        }
     }
 
-    pub fn rename_name(&mut self) {
+    pub fn remove_useless_char(&mut self) {
         let name = self.name.clone();
         let rename = remove_other_char(self.search_name.clone());
         self.search_name = rename.clone();
@@ -368,7 +410,7 @@ impl M3uObjectList {
 
     pub fn remove_useless_char(&mut self) {
         for item in &mut self.list {
-            item.rename_name();
+            item.remove_useless_char();
         }
     }
 

@@ -1,11 +1,12 @@
-use crate::common::check;
+use std::fmt::format;
+use crate::common::{check, replace};
 use crate::common::task::{
     add_task, delete_task, get_download_body, list_task, run_task, system_tasks_export,
     system_tasks_import, update_task, TaskManager,
 };
 use crate::config::config::init_config;
 use crate::config::{get_check, get_now_check_task_id, get_task, save_task};
-use crate::r#const::constant::{INPUT_FOLDER, STATIC_FOLDER};
+use crate::r#const::constant::{INPUT_FOLDER, REPLACE_JSON, STATIC_FOLDER};
 use actix_files as fs;
 use actix_files::NamedFile;
 use actix_multipart::form::{tempfile::TempFile, MultipartForm};
@@ -76,6 +77,56 @@ async fn check_url_is_available(req: web::Query<CheckUrlIsAvailableRequest>) -> 
             return HttpResponse::InternalServerError().body("{\"msg\":\"internal error\"}");
         }
     };
+}
+
+/// 获取replace.json配置
+#[get("/system/replace")]
+async fn get_replace_config() -> impl Responder {
+    let replace_path = format!("{}", REPLACE_JSON);
+    match std::fs::read_to_string(&replace_path) {
+        Ok(content) => {
+            HttpResponse::Ok()
+                .append_header(("Content-Type", "application/json"))
+                .body(content)
+        }
+        Err(_) => {
+            // 如果文件不存在，返回空数组
+            HttpResponse::Ok()
+                .append_header(("Content-Type", "application/json"))
+                .body("[]")
+        }
+    }
+}
+
+/// 更新replace.json配置请求结构体
+#[derive(Serialize, Deserialize)]
+struct UpdateReplaceRequest {
+    content: String,
+}
+
+/// 更新replace.json配置
+#[post("/system/replace")]
+async fn update_replace_config(req: web::Json<UpdateReplaceRequest>) -> impl Responder {
+    let replace_path = format!("{}", REPLACE_JSON);
+    
+    // 验证JSON格式
+    if let Err(_) = serde_json::from_str::<serde_json::Value>(&req.content) {
+        return HttpResponse::BadRequest()
+            .body("{\"msg\":\"Invalid JSON format\"}");
+    }
+    
+    match std::fs::write(&replace_path, &req.content) {
+        Ok(_) => {
+            HttpResponse::Ok()
+                .append_header(("Content-Type", "application/json"))
+                .body("{\"msg\":\"success\"}")
+        }
+        Err(e) => {
+            error!("Failed to write replace.json: {}", e);
+            HttpResponse::InternalServerError()
+                .body("{\"msg\":\"Failed to save configuration\"}")
+        }
+    }
 }
 
 /// 获取M3U文件内容请求结构体
@@ -243,6 +294,8 @@ pub async fn start_web(port: u16) {
             .service(check_url_is_available)
             .service(fetch_m3u_body)
             .service(system_status)
+             .service(update_replace_config)
+              .service(get_replace_config)
             .service(index)
             .service(upload)
             .service(fs::Files::new("/static", STATIC_FOLDER.to_owned()).show_files_listing())

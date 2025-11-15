@@ -1,4 +1,3 @@
-use crate::config::get_others;
 use lazy_static::lazy_static;
 use rand::distr::Alphanumeric;
 use rand::Rng;
@@ -7,6 +6,7 @@ use std::fs;
 use std::fs::File;
 use std::io::{Error, ErrorKind, Read};
 use std::process::Command;
+use crate::common::replace::replace;
 
 /// 获取输出文件名，如果未指定则生成随机文件名
 pub fn get_out_put_filename(folder: &str, output_file: String) -> String {
@@ -17,7 +17,7 @@ pub fn get_out_put_filename(folder: &str, output_file: String) -> String {
     filename
 }
 
-/// 生成随机的输出文件名
+/// 生成随机输出文件名
 fn get_random_output_filename() -> String {
     let rng = rand::rng();
 
@@ -57,20 +57,6 @@ lazy_static! {
     static ref RE: Regex = Regex::new(r"(?m)(\d+\s)?\[\w+\]").unwrap(); // 仅编译一次
     // 匹配开头的数字
     static ref RegexPrefixNum:  Regex = Regex::new(r"^\d+\s*").unwrap();
-    // open cc
-    // static ref Translator:OpenCC = OpenCC::new(DefaultConfig::T2S).unwrap();
-}
-
-pub fn replace_char(mut str: String) -> String {
-    let others_config = get_others().expect("TODO: panic message");
-
-    if !others_config.replace_chars.is_empty() {
-        for i in others_config.replace_chars.iter() {
-            str = str.replace(i.name.as_str(), i.replace.as_str());
-        }
-    }
-
-    return str;
 }
 
 /// 清理频道名称中的特殊字符和标记
@@ -83,25 +69,6 @@ pub fn remove_other_char(str: String) -> String {
             res_str = res_str.replace(mat.get(0).unwrap().as_str(), "");
         }
     }
-    // 移除特定的频道标记
-    let mut rename_channel_list: Vec<&str> = vec![
-        "[geo-blocked]",
-        "[ipv6]",
-        "hevc",
-        "50 fps",
-        "[not 24/7]",
-        " (600p) ",
-    ];
-    let others_config = get_others().expect("TODO: panic message");
-    if others_config.replace_chars.len() != 0 {
-        for i in others_config.replace_empty.iter() {
-            rename_channel_list.push(i);
-        }
-    }
-    for change in rename_channel_list {
-        res_str = res_str.replace(change, "")
-    }
-
     let binding = res_str.to_string();
     // 移除开头的数字
     let pre_num_result = RegexPrefixNum.captures_iter(&binding);
@@ -109,6 +76,11 @@ pub fn remove_other_char(str: String) -> String {
         if mat.len() >= 1 {
             res_str = res_str.replace(mat.get(0).unwrap().as_str(), "");
         }
+    }
+
+    // 移除无用的字符串
+    for i in 0..2 {
+        res_str = replace(&res_str.clone());
     }
 
     res_str

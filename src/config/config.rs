@@ -20,8 +20,8 @@ pub struct Core {
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Others {
-    pub replace_chars: Vec<ReplaceChar>,
-    pub replace_empty: Vec<String>,
+    pub translate_dic: String,
+    pub replace_dic: String,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -100,8 +100,8 @@ impl Default for Core {
                 task: HashMap::new(),
             },
             others: Others {
-                replace_chars: Vec::new(),
-                replace_empty: Vec::new(),
+                translate_dic:String::default(),
+                replace_dic: String::default(),
             },
             ob: Ob { list: Vec::new() },
             search: Search {
