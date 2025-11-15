@@ -2,14 +2,14 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-use crate::r#const::constant::REPLACE_JSON;
+use crate::r#const::constant::{REPLACE_JSON};
 
 /// 全局只读替换表，首次调用时从 "replace.json" 读取并解析为 HashMap<String, String>
 static REPLACE_MAP: OnceLock<HashMap<String, String>> = OnceLock::new();
 
 fn default_replace_file_path() -> PathBuf {
     // 使用编译时的工作目录（crate 根目录）
-    Path::new(env!("CARGO_MANIFEST_DIR")).join(REPLACE_JSON)
+    Path::new(format!("{}", REPLACE_JSON).as_mut_str()).to_owned()
 }
 
 /// 尝试从指定路径读取 JSON 并解析为 HashMap<String, String>，若失败返回空映射
