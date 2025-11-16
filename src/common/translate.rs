@@ -1,23 +1,21 @@
 use std::collections::HashMap;
-use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::io::Write;
-use crate::r#const::constant::{TRANSLATE_TXT};
 
 /// 全局懒加载映射表（key: 繁体字符, value: 简体字符）
 static TRANSLATE_MAP: OnceLock<HashMap<char, char>> = OnceLock::new();
 
-fn default_translate_file_path() -> PathBuf {
-    // 使用编译时的工作目录（crate 根目录）
-    Path::new(format!("{}", TRANSLATE_TXT).as_mut_str()).to_owned()
-}
+// fn default_translate_file_path() -> PathBuf {
+//     // 使用编译时的工作目录（crate 根目录）
+//     Path::new(format!("{}", TRANSLATE_TXT).as_mut_str()).to_owned()
+// }
 
 /// 从指定文件加载映射表：第一行为简体，第二行为繁体，按字符位置一一映射
-fn load_map_from_path(path: &Path) -> io::Result<HashMap<char, char>> {
-    let s = fs::read_to_string(path)?;
-    let mut lines = s.lines();
+fn load_map_from_path() -> io::Result<HashMap<char, char>> {
+    // let s = fs::read_to_string(path)?;
+    let file_content = include_str!(".././assets/translate.txt");
+    let mut lines = file_content.lines();
     let simp_line = lines.next().unwrap_or("").trim_end_matches('\r');
     let trad_line = lines.next().unwrap_or("").trim_end_matches('\r');
 
@@ -34,13 +32,13 @@ fn load_map_from_path(path: &Path) -> io::Result<HashMap<char, char>> {
 /// 初始化全局映射（首次调用自动使用项目根目录下的 translate.txt）
 /// 如果加载失败，返回 io::Error；随后可继续使用 `trad_to_simp`（失败时会降级为不做替换）
 pub fn init_from_default_file() -> io::Result<()> {
-    let path = default_translate_file_path();
-    init_from_file(&path)
+    // let path = default_translate_file_path();
+    init_from_file()
 }
 
 /// 使用指定文件初始化全局映射
-pub fn init_from_file(path: impl AsRef<Path>) -> io::Result<()> {
-    let map = load_map_from_path(path.as_ref())?;
+pub fn init_from_file() -> io::Result<()> {
+    let map = load_map_from_path()?;
     // OnceLock::set 返回 Err(map) 如果已经设置过，这里忽略已设置的情况
     let _ = TRANSLATE_MAP.set(map);
     Ok(())
@@ -52,7 +50,7 @@ pub fn init_from_file(path: impl AsRef<Path>) -> io::Result<()> {
 pub fn trad_to_simp(input: &str) -> String {
     let map = TRANSLATE_MAP.get_or_init(|| {
         // 尝试自动加载，加载失败则返回空映射
-        load_map_from_path(&default_translate_file_path()).unwrap_or_default()
+        load_map_from_path().unwrap_or_default()
     });
 
     let mut out = String::with_capacity(input.len());

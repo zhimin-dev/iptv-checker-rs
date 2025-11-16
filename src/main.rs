@@ -22,6 +22,7 @@ use simplelog::{CombinedLogger, Config, WriteLogger};
 use std::env;
 use std::fs::File;
 use tempfile::tempdir;
+use crate::common::replace::create_replace_file;
 
 const DEFAULT_HTTP_PORT: u16 = 8089;
 
@@ -256,6 +257,10 @@ fn init_translate() {
     common::translate::init_from_default_file().unwrap();
 }
 
+fn init_replace_json() {
+    create_replace_file();
+}
+
 #[actix_web::main]
 pub async fn main() {
     let args = Args::parse();
@@ -270,6 +275,7 @@ pub async fn main() {
     init_config();
     init_folder();
     init_translate();
+    init_replace_json();
     let pid_name = get_pid_file();
     match args.command {
         Commands::Web(args) => {

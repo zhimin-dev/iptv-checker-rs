@@ -1,11 +1,24 @@
 use std::collections::HashMap;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-use crate::r#const::constant::{REPLACE_JSON};
+use crate::r#const::constant::{REPLACE_JSON, REPLACE_TXT_CONTENT};
+use crate::utils::file_exists;
 
 /// 全局只读替换表，首次调用时从 "replace.json" 读取并解析为 HashMap<String, String>
 static REPLACE_MAP: OnceLock<HashMap<String, String>> = OnceLock::new();
+
+pub fn create_replace_file() {
+    if !file_exists(&REPLACE_JSON.to_string()) {
+        let mut fd = fs::File::create(REPLACE_JSON)
+            .expect(&format!("Failed to create file: {}", REPLACE_JSON.to_string()));
+        fd.write_all(REPLACE_TXT_CONTENT.to_string().as_bytes())
+            .expect(&format!("Failed to write file: {}", REPLACE_JSON.to_string()));
+        fd.flush()
+            .expect(&format!("Failed to flush file: {}", REPLACE_JSON.to_string()));
+    }
+}
 
 fn default_replace_file_path() -> PathBuf {
     // 使用编译时的工作目录（crate 根目录）

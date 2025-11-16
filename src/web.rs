@@ -21,6 +21,7 @@ use std::thread;
 use std::time;
 use std::time::Duration;
 use tokio::signal;
+use crate::common::translate::init_from_default_file;
 
 /// 删除任务请求结构体
 #[derive(Debug, Deserialize, Serialize)]
@@ -117,6 +118,7 @@ async fn update_replace_config(req: web::Json<UpdateReplaceRequest>) -> impl Res
     
     match std::fs::write(&replace_path, &req.content) {
         Ok(_) => {
+            let _ = init_from_default_file();
             HttpResponse::Ok()
                 .append_header(("Content-Type", "application/json"))
                 .body("{\"msg\":\"success\"}")
