@@ -9,13 +9,21 @@ pub static INPUT_LIVE_FOLDER: &str = "./static/input/live/";
 
 pub static OUTPUT_FOLDER: &str = "./static/output/";
 
-pub static TRANSLATE_TXT: &str = "./translate.txt";
-
 pub static REPLACE_JSON: &str = "./replace.json";
 
 pub static OUTPUT_THUMBNAIL_FOLDER: &str = "./static/output/thumbnail/";
 
 pub static LOGS_FOLDER: &str = "./static/logs/";
+
+pub static REPLACE_TXT_CONTENT:&str = r#"{
+    "[geo-blocked]": "",
+    "[ipv6]": "",
+    "hevc": "",
+    "50 fps": "",
+    "[not 24/7]": "",
+    " (600p)": "",
+    " ": ""
+}"#;
 
 pub static CORE_DATA:&str = r#"{
   "check": {
