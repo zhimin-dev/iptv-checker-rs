@@ -4,7 +4,7 @@ use crate::common::task::{
 };
 use crate::common::translate::init_from_default_file;
 use crate::common::{check};
-use crate::config::config::init_config;
+use crate::config::config::{init_config, Search};
 use crate::config::global::{get_config, init_data_from_file, update_config};
 use crate::config::{get_check, get_task, save_task};
 use crate::r#const::constant::{INPUT_FOLDER, REPLACE_JSON, STATIC_FOLDER};
@@ -27,6 +27,7 @@ use tokio::signal;
 #[derive(Serialize, Deserialize)]
 struct UpdateGlobalConfigRequest {
     remote_url2local_images: bool,
+    search: Search,
 }
 
 /// 更新全局配置
@@ -34,6 +35,7 @@ struct UpdateGlobalConfigRequest {
 async fn update_global_config(req: web::Json<UpdateGlobalConfigRequest>) -> impl Responder {
     let result = update_config(|config| {
         config.remote_url2local_images = req.remote_url2local_images;
+        config.search = req.search.clone();
     });
     if result.is_ok() {
         let _ = init_data_from_file();
@@ -197,14 +199,16 @@ async fn fetch_m3u_body(req: web::Query<FetchM3uBodyRequest>) -> impl Responder 
 /// 系统状态响应结构体
 #[derive(Serialize, Deserialize)]
 struct SystemStatusResp {
-    remote_url2local_url: bool, //是否需要转换远程图片
+    remote_url2local_images: bool, //是否需要转换远程图片
+    search: Search,
 }
 
 /// 获取系统信息的API端点
 #[get("/system/info")]
 async fn system_status() -> impl Responder {
     let system_status = SystemStatusResp {
-        remote_url2local_url: get_config().remote_url2local_images,
+        remote_url2local_images: get_config().remote_url2local_images,
+        search: get_config().search,
     };
     let obj = serde_json::to_string(&system_status).unwrap();
     return HttpResponse::Ok()
