@@ -23,6 +23,7 @@ use std::env;
 use std::fs::File;
 use tempfile::tempdir;
 use crate::common::replace::create_replace_file;
+use crate::config::global::{get_config, init_global_config};
 
 const DEFAULT_HTTP_PORT: u16 = 8089;
 
@@ -273,6 +274,7 @@ pub async fn main() {
         }
     }
     init_config();
+    init_global_config();
     init_folder();
     init_translate();
     init_replace_json();

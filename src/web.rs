@@ -1,11 +1,12 @@
-use std::fmt::format;
-use crate::common::{check, replace};
 use crate::common::task::{
     add_task, delete_task, get_download_body, list_task, run_task, system_tasks_export,
     system_tasks_import, update_task, TaskManager,
 };
+use crate::common::translate::init_from_default_file;
+use crate::common::{check};
 use crate::config::config::init_config;
-use crate::config::{get_check, get_now_check_task_id, get_task, save_task};
+use crate::config::global::{get_config, init_data_from_file, update_config};
+use crate::config::{get_check, get_task, save_task};
 use crate::r#const::constant::{INPUT_FOLDER, REPLACE_JSON, STATIC_FOLDER};
 use actix_files as fs;
 use actix_files::NamedFile;
@@ -15,13 +16,33 @@ use actix_web::{get, post, web, App, HttpResponse, HttpServer, Responder};
 use clokwerk::{Scheduler, TimeUnits};
 use log::{debug, error, info};
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time;
 use std::time::Duration;
 use tokio::signal;
-use crate::common::translate::init_from_default_file;
+
+/// 更新全局配置请求结构体
+#[derive(Serialize, Deserialize)]
+struct UpdateGlobalConfigRequest {
+    remote_url2local_images: bool,
+}
+
+/// 更新全局配置
+#[post("/system/global-config")]
+async fn update_global_config(req: web::Json<UpdateGlobalConfigRequest>) -> impl Responder {
+    let result = update_config(|config| {
+        config.remote_url2local_images = req.remote_url2local_images;
+    });
+    if result.is_ok() {
+        let _ = init_data_from_file();
+        return HttpResponse::Ok()
+            .append_header(("Content-Type", "application/json"))
+            .body("{\"msg\":\"success\"}");
+    }
+    return HttpResponse::InternalServerError().body("{\"msg\":\"Failed to save configuration\"}");
+}
 
 /// 删除任务请求结构体
 #[derive(Debug, Deserialize, Serialize)]
@@ -35,15 +56,15 @@ struct TaskDelResp {
     result: bool, // 操作是否成功
 }
 
-/// 检查系统是否支持IPv6
-pub async fn check_ipv6() -> bool {
-    let result = reqwest::get("http://[2606:2800:220:1:248:1893:25c8:1946]").await;
-
-    match result {
-        Ok(_) => true,
-        Err(_) => false,
-    }
-}
+// /// 检查系统是否支持IPv6
+// pub async fn check_ipv6() -> bool {
+//     let result = reqwest::get("http://[2606:2800:220:1:248:1893:25c8:1946]").await;
+//
+//     match result {
+//         Ok(_) => true,
+//         Err(_) => false,
+//     }
+// }
 
 /// URL可用性检查请求结构体
 #[derive(Serialize, Deserialize)]
@@ -85,11 +106,9 @@ async fn check_url_is_available(req: web::Query<CheckUrlIsAvailableRequest>) -> 
 async fn get_replace_config() -> impl Responder {
     let replace_path = format!("{}", REPLACE_JSON);
     match std::fs::read_to_string(&replace_path) {
-        Ok(content) => {
-            HttpResponse::Ok()
-                .append_header(("Content-Type", "application/json"))
-                .body(content)
-        }
+        Ok(content) => HttpResponse::Ok()
+            .append_header(("Content-Type", "application/json"))
+            .body(content),
         Err(_) => {
             // 如果文件不存在，返回空数组
             HttpResponse::Ok()
@@ -109,13 +128,12 @@ struct UpdateReplaceRequest {
 #[post("/system/replace")]
 async fn update_replace_config(req: web::Json<UpdateReplaceRequest>) -> impl Responder {
     let replace_path = format!("{}", REPLACE_JSON);
-    
+
     // 验证JSON格式
     if let Err(_) = serde_json::from_str::<serde_json::Value>(&req.content) {
-        return HttpResponse::BadRequest()
-            .body("{\"msg\":\"Invalid JSON format\"}");
+        return HttpResponse::BadRequest().body("{\"msg\":\"Invalid JSON format\"}");
     }
-    
+
     match std::fs::write(&replace_path, &req.content) {
         Ok(_) => {
             let _ = init_from_default_file();
@@ -125,8 +143,7 @@ async fn update_replace_config(req: web::Json<UpdateReplaceRequest>) -> impl Res
         }
         Err(e) => {
             error!("Failed to write replace.json: {}", e);
-            HttpResponse::InternalServerError()
-                .body("{\"msg\":\"Failed to save configuration\"}")
+            HttpResponse::InternalServerError().body("{\"msg\":\"Failed to save configuration\"}")
         }
     }
 }
@@ -180,19 +197,14 @@ async fn fetch_m3u_body(req: web::Query<FetchM3uBodyRequest>) -> impl Responder 
 /// 系统状态响应结构体
 #[derive(Serialize, Deserialize)]
 struct SystemStatusResp {
-    can_ipv6: bool,  // 是否支持IPv6
-    version: String, // 系统版本
-    output: String,  // 输出目录
+    remote_url2local_url: bool, //是否需要转换远程图片
 }
 
 /// 获取系统信息的API端点
 #[get("/system/info")]
 async fn system_status() -> impl Responder {
-    let check_ipv6 = check_ipv6().await;
     let system_status = SystemStatusResp {
-        can_ipv6: check_ipv6,
-        version: env!("CARGO_PKG_VERSION").to_string(),
-        output: format!("{}{}", STATIC_FOLDER, "upload".to_string()),
+        remote_url2local_url: get_config().remote_url2local_images,
     };
     let obj = serde_json::to_string(&system_status).unwrap();
     return HttpResponse::Ok()
@@ -270,7 +282,7 @@ pub async fn start_web(port: u16) {
         scheduler.every(30.seconds()).run(move || {
             // 判断当前是否有任务在并行运行，如果有，再判断任务是否已经运行了超过10分钟，如果超过了，可以再次运行
             let mut locked_flag = lock_clone.lock().unwrap();
-            if  *locked_flag {
+            if *locked_flag {
                 debug!("scheduler thread lock");
                 return;
             }
@@ -296,8 +308,9 @@ pub async fn start_web(port: u16) {
             .service(check_url_is_available)
             .service(fetch_m3u_body)
             .service(system_status)
-             .service(update_replace_config)
-              .service(get_replace_config)
+            .service(update_replace_config)
+            .service(get_replace_config)
+            .service(update_global_config)
             .service(index)
             .service(upload)
             .service(fs::Files::new("/static", STATIC_FOLDER.to_owned()).show_files_listing())

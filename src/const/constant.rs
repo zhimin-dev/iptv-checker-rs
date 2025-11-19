@@ -15,6 +15,12 @@ pub static OUTPUT_THUMBNAIL_FOLDER: &str = "./static/output/thumbnail/";
 
 pub static LOGS_FOLDER: &str = "./static/logs/";
 
+pub static GLOBAL_CONFIG_FILE_NAME: &str = "./global_config.json";
+
+pub static GLOBAL_CONFIG_CONTENT:&str= r#"{
+    "remote_url2local_images": false
+}"#;
+
 pub static REPLACE_TXT_CONTENT:&str = r#"{
     "[geo-blocked]": "",
     "[ipv6]": "",
