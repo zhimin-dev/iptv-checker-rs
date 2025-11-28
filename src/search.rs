@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::Error;
 use std::io::Write;
+use std::os::unix::raw::time_t;
 use std::{fs, vec};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -322,7 +323,8 @@ async fn get_url_body(_url: String) -> Result<String, Error> {
 }
 
 fn check_search_data_exists() -> std::io::Result<bool> {
-    let path = std::path::Path::new(INPUT_SEARCH_FOLDER);
+    let folder_name = get_search_folder();
+    let path = std::path::Path::new(&folder_name);
     if path.is_dir() {
         for entry in fs::read_dir(path)? {
             let entry = entry?;
@@ -335,14 +337,24 @@ fn check_search_data_exists() -> std::io::Result<bool> {
         Ok(false)
     }
 }
+pub fn get_search_folder() -> String {
+    let now = chrono::Local::now();
+    format!(
+        "{}{:04}{:02}{:02}/",
+        INPUT_SEARCH_FOLDER,
+        now.year(),
+        now.month(),
+        now.day()
+    )
+}
 
-async fn init_search_data() -> Result<(), Error> {
+pub async fn init_search_data() -> Result<(), Error> {
     let exists = check_search_data_exists().expect("Failed to check search data");
     if exists {
         return Ok(());
     }
     // 初始化search文件夹
-    let _ = create_folder(&INPUT_SEARCH_FOLDER.to_string()).expect("文件夹创建失败");
+    let _ = create_folder(&get_search_folder()).expect("文件夹创建失败");
 
     // 下线相关文件
     let config = read_search_configs().await.expect("配置获取失败");
@@ -355,7 +367,7 @@ async fn init_search_data() -> Result<(), Error> {
                     let list = fetch_epg_page(fetch_url.clone()).await;
                     // 将list转换成m3u文件
                     let save_status =
-                        epg_list_to_m3u_file(list, format!("{}100-{}.m3u", INPUT_SEARCH_FOLDER, i));
+                        epg_list_to_m3u_file(list, format!("{}100-{}.m3u", get_search_folder(), i));
                     match save_status {
                         Ok(()) => {
                             info!("{} file save success", fetch_url.clone());
@@ -381,7 +393,7 @@ async fn init_search_data() -> Result<(), Error> {
                         i += 1;
                         save_data(
                             _url.download_url.clone(),
-                            format!("{}200-{}{}", INPUT_SEARCH_FOLDER, i, _url.extension),
+                            format!("{}200-{}{}", get_search_folder(), i, _url.extension),
                         )
                         .await;
                     }
@@ -401,7 +413,7 @@ async fn init_search_data() -> Result<(), Error> {
                         i += 1;
                         save_data(
                             _url.download_url.clone(),
-                            format!("{}300-{}{}", INPUT_SEARCH_FOLDER, i, _url.extension),
+                            format!("{}300-{}{}", get_search_folder(), i, _url.extension),
                         )
                         .await;
                     }
@@ -416,7 +428,7 @@ async fn init_search_data() -> Result<(), Error> {
                     i += 1;
                     save_data(
                         url.clone(),
-                        format!("{}400-{}{}", INPUT_SEARCH_FOLDER, i, ext),
+                        format!("{}400-{}{}", get_search_folder(), i, ext),
                     )
                     .await;
                 }
@@ -583,10 +595,14 @@ pub async fn do_search(search_params: SearchParams) -> Result<(), Error> {
             m3u_data.t2s();
             m3u_data.search(search_params.search_options).await;
             if search_params.thumbnail {
-                m3u_data.generate_thumbnail(search_params.concurrent, search_params.timeout).await;
+                m3u_data
+                    .generate_thumbnail(search_params.concurrent, search_params.timeout)
+                    .await;
             }
             info!("list2 --- total {}", m3u_data.get_list_len());
-            m3u_data.output_file(search_params.output_file.clone(), false).await;
+            m3u_data
+                .output_file(search_params.output_file.clone(), false)
+                .await;
             Ok(())
         }
         Err(e) => {
@@ -597,15 +613,15 @@ pub async fn do_search(search_params: SearchParams) -> Result<(), Error> {
 }
 
 pub fn clear_search_folder() -> std::io::Result<()> {
-    let p = INPUT_SEARCH_FOLDER;
-    fs::remove_dir_all(p)?;
-    info!("Deleted directory: {}", p);
+    let p = get_search_folder();
+    fs::remove_dir_all(p.clone())?;
+    info!("Deleted directory: {}", &p.clone());
     Ok(())
 }
 
 fn load_m3u_data() -> std::io::Result<M3uObjectList> {
-    let p = INPUT_SEARCH_FOLDER;
-    let path = std::path::Path::new(p);
+    let p = get_search_folder();
+    let path = std::path::Path::new(&p);
     let mut file_names = vec![];
     if path.is_dir() {
         for entry in fs::read_dir(path)? {

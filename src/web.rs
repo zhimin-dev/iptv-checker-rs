@@ -1,22 +1,24 @@
+use crate::common::check;
 use crate::common::task::{
     add_task, delete_task, get_download_body, list_task, run_task, system_tasks_export,
     system_tasks_import, update_task, TaskManager,
 };
 use crate::common::translate::init_from_default_file;
-use crate::common::{check};
 use crate::config::config::{init_config, Search};
 use crate::config::global::{get_config, init_data_from_file, update_config};
-use crate::config::{get_check, get_task, save_task};
+use crate::config::{get_check, get_task};
 use crate::r#const::constant::{INPUT_FOLDER, REPLACE_JSON, STATIC_FOLDER};
+use crate::search::init_search_data;
+use std::path::Path;
 use actix_files as fs;
 use actix_files::NamedFile;
 use actix_multipart::form::{tempfile::TempFile, MultipartForm};
 use actix_web::middleware::Logger;
 use actix_web::{get, post, web, App, HttpResponse, HttpServer, Responder};
 use clokwerk::{Scheduler, TimeUnits};
+use chrono::Local;
 use log::{debug, error, info};
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time;
@@ -201,14 +203,122 @@ async fn fetch_m3u_body(req: web::Query<FetchM3uBodyRequest>) -> impl Responder 
 struct SystemStatusResp {
     remote_url2local_images: bool, //是否需要转换远程图片
     search: Search,
+    today_fetch: bool,// 是否处理爬取
 }
+
+/// 文件列表和内容响应体
+#[derive(Serialize, Deserialize)]
+struct FileContent {
+    label: String,
+    content: String,
+}
+
+/// 清空今日搜索文件夹的API端点
+#[get("/system/clear-search-folder")]
+async fn system_clear_search_folder() -> impl Responder {
+    use crate::search;
+    match search::clear_search_folder() {
+        Ok(_) => HttpResponse::Ok().json(serde_json::json!({"msg": "clear search folder success"})),
+        Err(e) => {
+            log::error!("clear search folder failed: {}", e);
+            HttpResponse::InternalServerError()
+                .json(serde_json::json!({"msg": "internal error, clear search folder failed"}))
+        }
+    }
+}
+
+/// 初始化今日搜索数据的API端点
+#[get("/system/init-search-data")]
+async fn system_init_search_data() -> impl Responder {
+    use crate::search::init_search_data;
+
+    match init_search_data().await {
+        Ok(_) => HttpResponse::Ok().json(serde_json::json!({"msg": "init search data success"})),
+        Err(e) => {
+            log::error!("init search data failed: {}", e);
+            HttpResponse::InternalServerError()
+                .json(serde_json::json!({"msg": format!("internal error, init search data failed: {}", e)}))
+        }
+    }
+}
+
+
+/// 获取今日搜索文件夹下所有文件及其内容的API端点
+#[get("/system/list-today-files")]
+async fn system_list_today_files() -> impl Responder {
+    use std::fs;
+    use std::io::Read;
+    use chrono::Local;
+
+    // 拼出今日的路径
+    let today = Local::now().format("%Y%m%d").to_string();
+    let folder_path = format!("{}/input/search/{}", STATIC_FOLDER, today);
+
+    let dir = std::path::Path::new(&folder_path);
+    let mut result: Vec<FileContent> = vec![];
+    if dir.exists() && dir.is_dir() {
+        match fs::read_dir(dir) {
+            Ok(entries) => {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_file() {
+                        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                            let mut file = match fs::File::open(&path) {
+                                Ok(f) => f,
+                                Err(e) => {
+                                    log::error!("读取文件失败 {}: {}", name, e);
+                                    continue;
+                                }
+                            };
+                            let mut content = String::new();
+                            if let Err(e) = file.read_to_string(&mut content) {
+                                log::error!("读取文件内容失败 {}: {}", name, e);
+                                continue;
+                            }
+                            result.push(FileContent {
+                                label: name.to_string(),
+                                content,
+                            });
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                log::error!("目录读取失败: {}", e);
+                return HttpResponse::InternalServerError()
+                    .body("{\"msg\":\"internal error, cannot read dir\"}");
+            }
+        }
+    } else {
+        return HttpResponse::Ok()
+            .append_header(("Content-Type", "application/json"))
+            .body("[]");
+    }
+    let resp = match serde_json::to_string(&result) {
+        Ok(json) => json,
+        Err(e) => {
+            log::error!("序列化文件内容失败: {}", e);
+            return HttpResponse::InternalServerError()
+                .body("{\"msg\":\"internal error, cannot serialize\"}");
+        }
+    };
+    HttpResponse::Ok()
+        .append_header(("Content-Type", "application/json"))
+        .body(resp)
+}
+
 
 /// 获取系统信息的API端点
 #[get("/system/info")]
 async fn system_status() -> impl Responder {
+    let today = Local::now().format("%Y%m%d").to_string();
+    let search_path = format!("{}/input/search/{}", STATIC_FOLDER, today);
+    let today_fetch = Path::new(&search_path).exists();
+    
     let system_status = SystemStatusResp {
         remote_url2local_images: get_config().remote_url2local_images,
         search: get_config().search,
+        today_fetch,
     };
     let obj = serde_json::to_string(&system_status).unwrap();
     return HttpResponse::Ok()
@@ -283,6 +393,23 @@ pub async fn start_web(port: u16) {
     {
         let mut scheduler = scheduler.lock().unwrap();
         let lock_clone = Arc::clone(&lock);
+        // 每10分钟运行一次，检查
+        scheduler.every(2.minutes()).run(move || {
+            info!("start search task");
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+
+            rt.block_on(async {
+                let data = init_search_data().await;
+                if data.is_err() {
+                    error!("search data failed");
+                }
+                info!("search task finished");
+            });
+        });
+        // 检查任务
         scheduler.every(30.seconds()).run(move || {
             // 判断当前是否有任务在并行运行，如果有，再判断任务是否已经运行了超过10分钟，如果超过了，可以再次运行
             let mut locked_flag = lock_clone.lock().unwrap();
@@ -312,6 +439,9 @@ pub async fn start_web(port: u16) {
             .service(check_url_is_available)
             .service(fetch_m3u_body)
             .service(system_status)
+            .service(system_list_today_files)
+            .service(system_clear_search_folder)
+            .service(system_init_search_data)
             .service(update_replace_config)
             .service(get_replace_config)
             .service(update_global_config)
