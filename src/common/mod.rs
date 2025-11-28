@@ -6,6 +6,7 @@ pub mod task; // 任务管理相关功能
 pub mod util;
 pub mod translate;
 pub mod replace;
+pub mod favourite;
 // 通用工具函数
 
 // 重新导出模块内容

@@ -258,6 +258,10 @@ fn init_translate() {
     common::translate::init_from_default_file().unwrap();
 }
 
+fn init_favourite() {
+    common::favourite::create_favourite_file();
+}
+
 fn init_replace_json() {
     create_replace_file();
 }
@@ -276,6 +280,7 @@ pub async fn main() {
     init_config();
     init_global_config();
     init_folder();
+    init_favourite();
     init_translate();
     init_replace_json();
     let pid_name = get_pid_file();

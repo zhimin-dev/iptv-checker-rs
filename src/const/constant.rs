@@ -21,6 +21,13 @@ pub static SEARCH_CONFIG_JSON_FILE_NAME: &str = "./search_result.json";
 
 pub static GLOBAL_CONFIG_FILE_NAME: &str = "./global_config.json";
 
+pub static FAVOURITE_FILE_NAME: &str = "./favourite.json";
+
+pub static FAVOURITE_CONFIG_JSON_CONTENT: &str = r#"{
+  "like": [],
+  "equal": []
+}"#;
+
 pub static GLOBAL_CONFIG_CONTENT:&str= r#"{
     "remote_url2local_images": false,
     "search": {
