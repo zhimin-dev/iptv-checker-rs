@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::io;
 use std::sync::OnceLock;
-use std::io::Write;
+use std::fs;
 use crate::r#const::constant::TRANSLATE_FILE;
 
 /// 全局懒加载映射表（key: 繁体字符, value: 简体字符）
@@ -9,7 +9,8 @@ static TRANSLATE_MAP: OnceLock<HashMap<char, char>> = OnceLock::new();
 
 /// 从指定文件加载映射表：第一行为简体，第二行为繁体，按字符位置一一映射
 fn load_map_from_path() -> io::Result<HashMap<char, char>> {
-    let mut lines = TRANSLATE_FILE.lines();
+    let content = fs::read_to_string(TRANSLATE_FILE)?;
+    let mut lines = content.lines();
     let simp_line = lines.next().unwrap_or("").trim_end_matches('\r');
     let trad_line = lines.next().unwrap_or("").trim_end_matches('\r');
 
@@ -20,6 +21,7 @@ fn load_map_from_path() -> io::Result<HashMap<char, char>> {
     for i in 0..std::cmp::min(simp_chars.len(), trad_chars.len()) {
         m.insert(trad_chars[i], simp_chars[i]);
     }
+    println!("load_map_from_path --- m: {:?}", m.len());
     Ok(m)
 }
 

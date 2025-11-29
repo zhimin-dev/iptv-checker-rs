@@ -310,6 +310,44 @@ async fn system_list_today_files() -> impl Responder {
 
 /// 打开URL请求结构体
 #[derive(Serialize, Deserialize)]
+struct OpenUrlRequest {
+    url: String,
+}
+
+/// 获取URL内容的API端点
+#[get("/system/open-url")]
+async fn system_open_url(req: web::Query<OpenUrlRequest>) -> impl Responder {
+    let client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .build()
+        .unwrap();
+    
+    match client.get(&req.url).send().await {
+        Ok(resp) => {
+            if resp.status().is_success() {
+                match resp.text().await {
+                    Ok(text) => HttpResponse::Ok().body(text),
+                    Err(e) => {
+                        error!("Failed to read response text: {}", e);
+                        HttpResponse::InternalServerError()
+                            .json(serde_json::json!({"msg": format!("Failed to read response: {}", e)}))
+                    }
+                }
+            } else {
+                 HttpResponse::InternalServerError()
+                    .json(serde_json::json!({"msg": format!("Request failed with status: {}", resp.status())}))
+            }
+        }
+        Err(e) => {
+            error!("Failed to fetch URL: {}", e);
+            HttpResponse::InternalServerError()
+                .json(serde_json::json!({"msg": format!("Failed to fetch URL: {}", e)}))
+        }
+    }
+}
+
+/// 打开URL请求结构体
+#[derive(Serialize, Deserialize)]
 struct GetFavouriteChannelRequest {
     channel_type: String,
 }
@@ -522,6 +560,7 @@ pub async fn start_web(port: u16) {
             .service(system_list_today_files)
             .service(system_clear_search_folder)
             .service(system_init_search_data)
+            .service(system_open_url)
             .service(system_get_favourite_channel)
             .service(system_save_favourite)
             .service(system_get_favourite)

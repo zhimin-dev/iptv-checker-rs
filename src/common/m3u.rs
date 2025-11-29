@@ -161,8 +161,8 @@ impl M3uObject {
     
     pub fn t2s(&mut self) {
         let name = self.name.clone();
-        let rename = trad_to_simp(&self.search_name.clone());
-        self.search_name = rename.clone();
+        let rename = trad_to_simp(&name);
+        self.search_name = rename.clone().to_lowercase();
         self.name = rename.clone();
         self.raw = self
             .raw
@@ -198,9 +198,9 @@ impl M3uObject {
 
     pub fn remove_useless_char(&mut self) {
         let name = self.name.clone();
-        let rename = remove_other_char(self.search_name.clone());
-        self.search_name = rename.clone();
+        let rename = remove_other_char(self.name.clone());
         self.name = rename.clone();
+        self.search_name = rename.clone().to_lowercase();
         self.raw = self
             .raw
             .replace(name.clone().as_str(), rename.clone().as_str());
@@ -231,49 +231,28 @@ impl M3uObject {
     }
 
     pub fn generate_raw(&mut self) {
-        let mut tv_id = "".to_string();
-        let mut tv_logo = "".to_string();
-        let mut group_title = "".to_string();
-        let mut tv_language = "".to_string();
-        let mut tvg_country = "".to_string();
-        let mut tvg_name = "".to_string();
-        if self.extend.is_some() {
-            let extend = self.extend.clone().unwrap();
+        let mut header = String::from("#EXTINF:-1");
+        if let Some(extend) = &self.extend {
+            if !extend.tv_name.is_empty() {
+                header.push_str(&format!(" tvg-name=\"{}\"", extend.tv_name));
+            }
             if !extend.tv_id.is_empty() {
-                tv_id = format!(" tvg-id=\"{}\"", extend.tv_id.clone());
+                header.push_str(&format!(" tvg-id=\"{}\"", extend.tv_id));
             }
             if !extend.tv_logo.is_empty() {
-                tv_logo = format!(" tvg-logo=\"{}\"", extend.tv_logo);
+                header.push_str(&format!(" tvg-logo=\"{}\"", extend.tv_logo));
             }
             if !extend.group_title.is_empty() {
-                group_title = format!(
-                    " group-title=\"{}\"",
-                    extend.group_title.clone()
-                );
-            }
-            if !extend.tv_language.is_empty() {
-                tv_language = format!(
-                    " tvg-language=\"{}\"",
-                    extend.tv_language.clone()
-                );
+                header.push_str(&format!(" group-title=\"{}\"", extend.group_title));
             }
             if !extend.tv_country.is_empty() {
-                tvg_country = format!(
-                    " tvg-country=\"{}\"",
-                    extend.tv_country.clone()
-                );
+                header.push_str(&format!(" tvg-country=\"{}\"", extend.tv_country));
             }
-            if !extend.tv_name.is_empty() {
-                tvg_name = format!(
-                    " tvg-name=\"{}\"",
-                    extend.tv_name.clone()
-                );
+            if !extend.tv_language.is_empty() {
+                header.push_str(&format!(" tvg-language=\"{}\"", extend.tv_language));
             }
         }
-        self.raw = format!(
-            "#EXTINF:-1 {}{}{}{}{}{},{}\n{}",
-            tvg_name, tv_id, tv_logo, group_title, tvg_country, tv_language, self.name, self.url,
-        );
+        self.raw = format!("{},{}\n{}", header, self.name, self.url);
     }
 
     pub fn set_extend(&mut self, extend: M3uExtend) {

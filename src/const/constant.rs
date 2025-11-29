@@ -2,7 +2,7 @@ pub static CORE_JSON: &str = "core.json";
 
 pub static STATIC_FOLDER: &str = "./static/";
 
-pub static TRANSLATE_FILE: &str = ".././assets/translate.txt";
+pub static TRANSLATE_FILE: &str = "./src/assets/translate.txt";
 
 pub static INPUT_FOLDER: &str = "./static/input/";
 
@@ -16,8 +16,6 @@ pub static REPLACE_JSON: &str = "./replace.json";
 pub static OUTPUT_THUMBNAIL_FOLDER: &str = "./static/output/thumbnail/";
 
 pub static LOGS_FOLDER: &str = "./static/logs/";
-
-pub static SEARCH_CONFIG_JSON_FILE_NAME: &str = "./search_result.json";
 
 pub static GLOBAL_CONFIG_FILE_NAME: &str = "./global_config.json";
 
