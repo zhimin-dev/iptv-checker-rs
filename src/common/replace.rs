@@ -11,6 +11,10 @@ static REPLACE_MAP: OnceLock<HashMap<String, String>> = OnceLock::new();
 
 pub fn create_replace_file() {
     if !file_exists(&REPLACE_JSON.to_string()) {
+        // 确保 core 目录存在
+        if let Some(parent) = std::path::Path::new(REPLACE_JSON).parent() {
+            fs::create_dir_all(parent).expect(&format!("Failed to create directory: {:?}", parent));
+        }
         let mut fd = fs::File::create(REPLACE_JSON)
             .expect(&format!("Failed to create file: {}", REPLACE_JSON.to_string()));
         fd.write_all(REPLACE_TXT_CONTENT.to_string().as_bytes())
