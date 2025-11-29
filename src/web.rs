@@ -532,8 +532,8 @@ pub async fn start_web(port: u16) {
     {
         let mut scheduler = scheduler.lock().unwrap();
         let lock_clone = Arc::clone(&lock);
-        // 每10分钟运行一次，检查
-        scheduler.every(2.minutes()).run(move || {
+        // 每1小时运行一次，检查
+        scheduler.every(1.hour()).run(move || {
             info!("start search task");
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
