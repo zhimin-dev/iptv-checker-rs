@@ -4,7 +4,7 @@ use crate::common::task::{
     system_tasks_import, update_task, TaskManager,
 };
 use crate::common::translate::init_from_default_file;
-use crate::common::favourite::get_favourite_map;
+use crate::common::favourite::{get_favourite_map, reload_favourite_map};
 use crate::config::config::{init_config, Search};
 use crate::config::global::{get_config, init_data_from_file, update_config};
 use crate::config::{get_check, get_task};
@@ -137,6 +137,14 @@ async fn update_replace_config(req: web::Json<UpdateReplaceRequest>) -> impl Res
     // 验证JSON格式
     if let Err(_) = serde_json::from_str::<serde_json::Value>(&req.content) {
         return HttpResponse::BadRequest().body("{\"msg\":\"Invalid JSON format\"}");
+    }
+
+    // 确保 core 目录存在
+    if let Some(parent) = std::path::Path::new(&replace_path).parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            error!("Failed to create directory: {:?}: {}", parent, e);
+            return HttpResponse::InternalServerError().body("{\"msg\":\"Failed to create directory\"}");
+        }
     }
 
     match std::fs::write(&replace_path, &req.content) {
@@ -394,8 +402,21 @@ async fn system_save_favourite(req: web::Json<SaveFavouriteRequest>) -> impl Res
     match serde_json::to_string_pretty(&map) {
         Ok(json_str) => {
              let file_path = crate::r#const::constant::FAVOURITE_FILE_NAME;
+             // 确保 core 目录存在
+             if let Some(parent) = std::path::Path::new(file_path).parent() {
+                 if let Err(e) = std::fs::create_dir_all(parent) {
+                     log::error!("Failed to create directory: {:?}: {}", parent, e);
+                     return HttpResponse::InternalServerError().json(serde_json::json!({"msg": "Failed to create directory"}));
+                 }
+             }
              match std::fs::write(file_path, json_str) {
-                 Ok(_) => HttpResponse::Ok().json(serde_json::json!({"msg": "success"})),
+                 Ok(_) => {
+                     // 重新加载 favourite map
+                     if let Err(e) = reload_favourite_map() {
+                         log::error!("Failed to reload favourite map: {}", e);
+                     }
+                     HttpResponse::Ok().json(serde_json::json!({"msg": "success"}))
+                 },
                  Err(e) => {
                      log::error!("Failed to write favourite file: {}", e);
                      HttpResponse::InternalServerError().json(serde_json::json!({"msg": "save failed"}))

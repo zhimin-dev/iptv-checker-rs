@@ -7,6 +7,7 @@ Cargo.lock
 tasks.json
 .cargo
 static/*
+core/*
 core.json
 replace.json
 global_config.json

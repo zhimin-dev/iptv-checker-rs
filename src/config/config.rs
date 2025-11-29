@@ -115,6 +115,10 @@ impl Default for Core {
 
 pub fn create_config_file() {
     if !file_exists(&CORE_JSON.to_string()) {
+        // 确保 core 目录存在
+        if let Some(parent) = std::path::Path::new(CORE_JSON).parent() {
+            fs::create_dir_all(parent).expect(&format!("Failed to create directory: {:?}", parent));
+        }
         let mut fd = fs::File::create(CORE_JSON)
             .expect(&format!("Failed to create file: {}", CORE_JSON.to_string()));
         fd.write(CORE_DATA.to_string().as_bytes())

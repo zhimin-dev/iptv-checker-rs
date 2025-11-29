@@ -32,6 +32,10 @@ static GLOBAL_CONFIG_DATA: Lazy<RwLock<GlobalConfig>> = Lazy::new(|| RwLock::new
 
 pub fn init_global_config() {
     if !file_exists(&GLOBAL_CONFIG_FILE_NAME.to_string()) {
+        // 确保 core 目录存在
+        if let Some(parent) = Path::new(GLOBAL_CONFIG_FILE_NAME).parent() {
+            fs::create_dir_all(parent).expect(&format!("Failed to create directory: {:?}", parent));
+        }
         let mut fd = fs::File::create(GLOBAL_CONFIG_FILE_NAME).expect(&format!(
             "Failed to create file: {}",
             GLOBAL_CONFIG_FILE_NAME.to_string()
@@ -101,6 +105,11 @@ where
     // 序列化配置
     let json_str = serde_json::to_string_pretty(&config)
         .map_err(|e| format!("Failed to serialize config: {}", e))?;
+    
+    // 确保 core 目录存在
+    if let Some(parent) = Path::new(GLOBAL_CONFIG_FILE_NAME).parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("Failed to create directory: {:?}: {}", parent, e))?;
+    }
     
     // 写入文件
     fs::write(GLOBAL_CONFIG_FILE_NAME, json_str)
