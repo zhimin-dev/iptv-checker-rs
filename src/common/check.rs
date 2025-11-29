@@ -1,3 +1,4 @@
+use crate::common::favourite::get_favourite_list;
 use crate::common::m3u::m3u::list_str2obj;
 use crate::common::util::from_video_resolution;
 use crate::common::{AudioInfo, CheckOptions, SearchOptions, VideoInfo};
@@ -470,6 +471,65 @@ pub mod check {
         //     }
         // }
     }
+}
+
+pub async fn get_favourite_channel(channel_type: String) -> Result<String, Error> {
+    // 获取今日日期对应目录
+    let today = chrono::Local::now().format("%Y%m%d").to_string();
+    let search_path = format!("static/input/search/{}", today);
+
+    let mut all_files = Vec::new();
+    let dir_entries = match std::fs::read_dir(&search_path) {
+        Ok(entries) => entries,
+        Err(e) => {
+            return Ok("".to_string());
+        }
+    };
+
+    for entry in dir_entries {
+        match entry {
+            Ok(entry) => {
+                let path = entry.path();
+                if path.is_file() {
+                    if let Some(file_str) = path.to_str() {
+                        all_files.push(file_str.to_string());
+                    }
+                }
+            }
+            Err(e) => {
+                // 遇到单个文件错误也继续处理其他文件
+                continue;
+            }
+        }
+    }
+
+    // 将文件转换为数组
+    let list = common::m3u::m3u::from_arr(all_files.to_owned(), 0).await;
+    // 将数组转换为对象
+    let mut data = list_str2obj(list, false);
+    // 将频道名繁体转简体
+    data.t2s();
+    // 去除name中无效的字符
+    data.remove_useless_char();
+    let mut keyword_full_match = vec![];
+    let mut keyword_like = vec![];
+    if channel_type == "like" {
+        keyword_full_match = get_favourite_list("equal").to_owned();
+        keyword_like = get_favourite_list("like").to_owned();
+    }
+    // 搜索关键字
+    data.search(SearchOptions {
+        keyword_full_match: keyword_full_match,
+        keyword_like: keyword_like,
+        keyword_dislike: vec![],
+        ipv4: false,
+        ipv6: false,
+        exclude_url: vec![],
+        exclude_host: vec![],
+        quality: vec![],
+    })
+    .await;
+    return Ok(data.get_m3u_content());
 }
 
 pub async fn do_check(

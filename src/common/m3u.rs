@@ -16,7 +16,7 @@ use std::fs::File;
 use std::io::{self, Write};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
-use std::thread;
+use std::{thread, vec};
 use std::time::Duration;
 use crate::common::translate::trad_to_simp;
 
@@ -765,6 +765,27 @@ impl M3uObjectList {
             // 如果前缀相同，再比较数字
             a_num.cmp(&b_num)
         });
+    }
+
+    pub fn get_m3u_content(&mut self) -> String {
+        let mut result_m3u_content = vec![];
+        match &self.header {
+            None => result_m3u_content.push(String::from("#EXTM3U")),
+            Some(data) => {
+                if data.x_tv_url.len() > 0 {
+                    let exp = data.x_tv_url.join(",");
+                    let header_line = format!("#EXTM3U x-tvg-url=\"{}\"", exp);
+                    result_m3u_content.push(header_line.to_owned());
+                } else {
+                    result_m3u_content.push(String::from("#EXTM3U"))
+                }
+            }
+        }
+        for mut x in self.list.clone() {
+            x.generate_raw();
+            result_m3u_content.push(x.raw.clone());
+        }
+        result_m3u_content.join("\n")
     }
 
     pub fn generate_m3u_file(&mut self, output_file: String, only_succ: bool) {

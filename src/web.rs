@@ -4,10 +4,11 @@ use crate::common::task::{
     system_tasks_import, update_task, TaskManager,
 };
 use crate::common::translate::init_from_default_file;
+use crate::common::favourite::get_favourite_map;
 use crate::config::config::{init_config, Search};
 use crate::config::global::{get_config, init_data_from_file, update_config};
 use crate::config::{get_check, get_task};
-use crate::r#const::constant::{FAVOURITE_FILE_NAME, INPUT_FOLDER, REPLACE_JSON, STATIC_FOLDER};
+use crate::r#const::constant::{INPUT_FOLDER, REPLACE_JSON, STATIC_FOLDER};
 use crate::search::init_search_data;
 use std::path::Path;
 use actix_files as fs;
@@ -24,7 +25,6 @@ use std::thread;
 use std::time;
 use std::time::Duration;
 use tokio::signal;
-use std::fs as fs_lib;
 
 /// 更新全局配置请求结构体
 #[derive(Serialize, Deserialize)]
@@ -243,63 +243,6 @@ async fn system_init_search_data() -> impl Responder {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-struct FavouriteList {
-    like: Vec<String>,
-    equal: Vec<String>,
-}
-
-// 线程安全的全局锁, 避免竞态条件
-lazy_static::lazy_static! {
-    static ref FAVOURITE_FILE_MUTEX: Mutex<()> = Mutex::new(());
-}
-
-/// 保存用户喜欢频道和equal频道的API
-#[post("/system/save-favourite")]
-async fn save_favourite(fav: web::Json<FavouriteList>) -> impl Responder {
-    let _guard = FAVOURITE_FILE_MUTEX.lock().unwrap();
-
-    let serialized = match serde_json::to_string_pretty(&fav.into_inner()) {
-        Ok(s) => s,
-        Err(e) => {
-            log::error!("序列化 favourite 失败: {}", e);
-            return HttpResponse::InternalServerError()
-                .json(serde_json::json!({"msg": "internal error, cannot serialize"}));
-        }
-    };
-    if let Err(e) = fs_lib::write(FAVOURITE_FILE_NAME, serialized) {
-        log::error!("写入 favourite 文件失败: {}", e);
-        return HttpResponse::InternalServerError()
-            .json(serde_json::json!({"msg": "internal error, cannot write file"}));
-    }
-
-    HttpResponse::Ok().json(serde_json::json!({"msg": "save success"}))
-}
-
-/// 获取用户喜欢的频道和equal频道的API
-#[get("/system/get-favourite")]
-async fn get_favourite() -> impl Responder {
-    let _guard = FAVOURITE_FILE_MUTEX.lock().unwrap();
-    match fs_lib::read_to_string(FAVOURITE_FILE_NAME) {
-        Ok(content) => {
-            match serde_json::from_str::<FavouriteList>(&content) {
-                Ok(fav_list) => HttpResponse::Ok().json(fav_list),
-                Err(e) => {
-                    log::error!("解析 favourite 文件失败: {}", e);
-                    HttpResponse::InternalServerError()
-                        .json(serde_json::json!({"msg": "internal error, cannot parse file"}))
-                }
-            }
-        }
-        Err(e) => {
-            log::warn!("读取 favourite 文件失败: {}", e);
-            // 文件不存在即返回空
-            HttpResponse::Ok().json(FavouriteList { like: vec![], equal: vec![] })
-        }
-    }
-}
-
-
 
 /// 获取今日搜索文件夹下所有文件及其内容的API端点
 #[get("/system/list-today-files")]
@@ -365,6 +308,85 @@ async fn system_list_today_files() -> impl Responder {
         .body(resp)
 }
 
+/// 打开URL请求结构体
+#[derive(Serialize, Deserialize)]
+struct GetFavouriteChannelRequest {
+    channel_type: String,
+}
+
+/// 获取URL内容的API端点
+#[get("/system/get-favourite-channel")]
+async fn system_get_favourite_channel(req: web::Query<GetFavouriteChannelRequest>) -> impl Responder {
+    let channel_type = req.channel_type.to_owned();
+    if channel_type != "all" && channel_type != "like"  {
+        return HttpResponse::BadRequest().body("{\"msg\":\"invalid channel type\"}");
+    }
+    let data = match check::get_favourite_channel(channel_type).await {
+        Ok(data) => data,
+        Err(_e) => {
+            return HttpResponse::InternalServerError().body("{\"msg\":\"internal error, get favourite channel failed\"}");
+        }
+    };
+    return HttpResponse::Ok()
+        .append_header(("Content-Type", "text/plain; charset=utf-8"))
+        .body(data);
+}
+
+#[derive(Serialize, Deserialize)]
+struct FavouriteListResponse {
+    like: Vec<String>,
+    equal: Vec<String>,
+    all_channel_url: String,
+    liked_channel_url: String,
+    checked_liked_channel_url: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SaveFavouriteRequest {
+    like: Vec<String>,
+    equal: Vec<String>,
+}
+
+#[post("/system/save-favourite")]
+async fn system_save_favourite(req: web::Json<SaveFavouriteRequest>) -> impl Responder {
+    let mut map = std::collections::HashMap::new();
+    map.insert("like", req.like.clone());
+    map.insert("equal", req.equal.clone());
+
+    match serde_json::to_string_pretty(&map) {
+        Ok(json_str) => {
+             let file_path = crate::r#const::constant::FAVOURITE_FILE_NAME;
+             match std::fs::write(file_path, json_str) {
+                 Ok(_) => HttpResponse::Ok().json(serde_json::json!({"msg": "success"})),
+                 Err(e) => {
+                     log::error!("Failed to write favourite file: {}", e);
+                     HttpResponse::InternalServerError().json(serde_json::json!({"msg": "save failed"}))
+                 }
+             }
+        },
+        Err(e) => {
+            log::error!("Failed to serialize favourite list: {}", e);
+            HttpResponse::InternalServerError().json(serde_json::json!({"msg": "serialize failed"}))
+        }
+    }
+}
+
+#[get("/system/get-favourite")]
+async fn system_get_favourite() -> impl Responder {
+    let fav_map = get_favourite_map();
+    let like = fav_map.get("like").cloned().unwrap_or_default();
+    let equal = fav_map.get("equal").cloned().unwrap_or_default();
+
+    let resp = FavouriteListResponse {
+        like,
+        equal,
+        all_channel_url: "/system/get-favourite-channel?channel_type=all".to_string(),
+        liked_channel_url: "/system/get-favourite-channel?channel_type=like".to_string(),
+        checked_liked_channel_url: "".to_string(),
+    };
+
+    HttpResponse::Ok().json(resp)
+}
 
 /// 获取系统信息的API端点
 #[get("/system/info")]
@@ -498,10 +520,11 @@ pub async fn start_web(port: u16) {
             .service(fetch_m3u_body)
             .service(system_status)
             .service(system_list_today_files)
-            .service(save_favourite)
-            .service(get_favourite)
             .service(system_clear_search_folder)
             .service(system_init_search_data)
+            .service(system_get_favourite_channel)
+            .service(system_save_favourite)
+            .service(system_get_favourite)
             .service(update_replace_config)
             .service(get_replace_config)
             .service(update_global_config)
