@@ -604,6 +604,7 @@ pub async fn start_web(port: u16) {
             .service(fs::Files::new("/", "./web/"))
             .wrap(Logger::default())
     })
+    .workers(16)  // 增加工作线程数到 16，避免本地请求死锁
     .bind(("0.0.0.0", port))
     .expect("Failed to bind address")
     .shutdown_timeout(60)
