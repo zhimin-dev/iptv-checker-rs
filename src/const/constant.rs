@@ -17,6 +17,9 @@ pub static OUTPUT_THUMBNAIL_FOLDER: &str = "./static/output/thumbnail/";
 
 pub static LOGS_FOLDER: &str = "./static/logs/";
 
+pub static LOGOS_FOLDER: &str = "./static/input/logos/";
+pub static LOGOS_JSON_FILE: &str = "core/logos.json";
+
 pub static GLOBAL_CONFIG_FILE_NAME: &str = "core/global_config.json";
 
 pub static FAVOURITE_FILE_NAME: &str = "core/favourite.json";

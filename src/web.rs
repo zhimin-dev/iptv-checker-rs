@@ -9,7 +9,7 @@ use crate::common::favourite::{get_favourite_map, reload_favourite_map};
 use crate::config::config::{init_config, Search};
 use crate::config::global::{get_config, init_data_from_file, update_config};
 use crate::config::{get_check, get_task};
-use crate::r#const::constant::{INPUT_FOLDER, REPLACE_JSON, STATIC_FOLDER};
+use crate::r#const::constant::{INPUT_FOLDER, LOGOS_FOLDER, LOGOS_JSON_FILE, REPLACE_JSON, STATIC_FOLDER};
 use crate::search::init_search_data;
 use std::path::Path;
 use actix_files as fs;
@@ -520,6 +520,100 @@ async fn upload(MultipartForm(form): MultipartForm<UploadFormReq>) -> impl Respo
     }
 }
 
+/// 多文件上传请求结构体
+#[derive(Debug, MultipartForm)]
+struct UploadLogosReq {
+    #[multipart(rename = "files")]
+    files: Vec<TempFile>,
+}
+
+/// 更新 logos.json 文件
+fn update_logos_json_file() -> std::io::Result<()> {
+    use std::fs;
+    let folder = std::path::Path::new(LOGOS_FOLDER);
+    let mut map = std::collections::HashMap::new();
+
+    if folder.exists() && folder.is_dir() {
+        for entry in fs::read_dir(folder)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_file() {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    if name == "logos.json" || name.starts_with(".") { continue; }
+                    let url = format!("/static/input/logos/{}", name);
+                    let key = path.file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or(name);
+                    map.insert(key.to_string(), url);
+                }
+            }
+        }
+    }
+
+    // 确保目录存在
+    if let Some(parent) = std::path::Path::new(LOGOS_JSON_FILE).parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let json = serde_json::to_string_pretty(&map)?;
+    fs::write(LOGOS_JSON_FILE, json)?;
+    Ok(())
+}
+
+/// Logo多文件上传API端点
+#[post("/media/upload-logos")]
+async fn upload_logos(MultipartForm(form): MultipartForm<UploadLogosReq>) -> impl Responder {
+    let mut uploaded_files = Vec::new();
+
+    // Ensure directory exists
+    if let Err(e) = std::fs::create_dir_all(LOGOS_FOLDER) {
+        log::error!("Failed to create logos directory: {}", e);
+        return HttpResponse::InternalServerError()
+            .json(serde_json::json!({"msg": "Failed to create directory"}));
+    }
+
+    for file in form.files {
+        let file_name = match file.file_name {
+            Some(name) => name,
+            None => continue,
+        };
+
+        let path = format!("{}{}", LOGOS_FOLDER, file_name);
+
+        if let Err(e) = file.file.persist(path.clone()) {
+            log::error!("Failed to save logo {}: {}", file_name, e);
+            continue;
+        }
+        uploaded_files.push(file_name);
+    }
+
+    // Update JSON index
+    if let Err(e) = update_logos_json_file() {
+        log::error!("Failed to update logos json: {}", e);
+    }
+
+    HttpResponse::Ok().json(serde_json::json!({"msg": "success", "uploaded": uploaded_files}))
+}
+
+/// 获取Logo列表API端点
+#[get("/media/logos")]
+async fn get_logos_list() -> impl Responder {
+    match std::fs::read_to_string(LOGOS_JSON_FILE) {
+        Ok(content) => HttpResponse::Ok()
+            .append_header(("Content-Type", "application/json"))
+            .body(content),
+        Err(_) => {
+            let _ = update_logos_json_file();
+            match std::fs::read_to_string(LOGOS_JSON_FILE) {
+                Ok(c) => HttpResponse::Ok()
+                    .append_header(("Content-Type", "application/json"))
+                    .body(c),
+                Err(_) => HttpResponse::Ok().json(serde_json::json!({})),
+            }
+        }
+    }
+}
+
 /// 启动Web服务器
 pub async fn start_web(port: u16) {
     // 初始化配置
@@ -611,6 +705,8 @@ pub async fn start_web(port: u16) {
             .service(update_global_config)
             .service(index)
             .service(upload)
+            .service(upload_logos)
+            .service(get_logos_list)
             .service(fs::Files::new("/static", STATIC_FOLDER.to_owned()).show_files_listing())
             .app_data(web::Data::new(scheduler.clone()))
             .app_data(web::Data::new(Arc::clone(&task_manager)))
