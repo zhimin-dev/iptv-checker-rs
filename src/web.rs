@@ -9,7 +9,7 @@ use crate::common::favourite::{get_favourite_map, reload_favourite_map};
 use crate::config::config::{init_config, Search};
 use crate::config::global::{get_config, init_data_from_file, update_config};
 use crate::config::{get_check, get_task};
-use crate::r#const::constant::{INPUT_FOLDER, LOGOS_FOLDER, LOGOS_JSON_FILE, REPLACE_JSON, STATIC_FOLDER};
+use crate::r#const::constant::{INPUT_FOLDER, INPUT_SEARCH_FOLDER, LOGOS_FOLDER, LOGOS_JSON_FILE, REPLACE_JSON, STATIC_FOLDER};
 use crate::search::init_search_data;
 use std::path::Path;
 use actix_files as fs;
@@ -262,7 +262,7 @@ async fn system_list_today_files() -> impl Responder {
 
     // 拼出今日的路径
     let today = Local::now().format("%Y%m%d").to_string();
-    let folder_path = format!("{}/input/search/{}", STATIC_FOLDER, today);
+    let folder_path = format!("{}/{}", INPUT_SEARCH_FOLDER, today);
 
     let dir = std::path::Path::new(&folder_path);
     let mut result: Vec<FileContent> = vec![];
@@ -452,7 +452,7 @@ async fn system_get_favourite() -> impl Responder {
 #[get("/system/info")]
 async fn system_status() -> impl Responder {
     let today = Local::now().format("%Y%m%d").to_string();
-    let search_path = format!("{}/input/search/{}", STATIC_FOLDER, today);
+    let search_path = format!("{}/{}", INPUT_SEARCH_FOLDER, today);
     let today_fetch = Path::new(&search_path).exists();
     
     let system_status = SystemStatusResp {
@@ -540,7 +540,7 @@ fn update_logos_json_file() -> std::io::Result<()> {
             if path.is_file() {
                 if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                     if name == "logos.json" || name.starts_with(".") { continue; }
-                    let url = format!("/static/input/logos/{}", name);
+                    let url = format!("{}/{}", LOGOS_FOLDER, name);
                     let key = path.file_stem()
                         .and_then(|s| s.to_str())
                         .unwrap_or(name);
@@ -612,6 +612,46 @@ async fn get_logos_list() -> impl Responder {
             }
         }
     }
+}
+
+/// M3U解析和Logo替换请求结构体
+#[derive(Serialize, Deserialize)]
+struct QRequest {
+    url: String,
+    host: String,
+}
+
+/// M3U解析和Logo替换API端点
+#[get("/q")]
+async fn q_m3u(req: web::Query<QRequest>) -> impl Responder {
+    use crate::common::M3uObjectList;
+    use std::fs;
+
+    // 1. 读取 logos.json
+    let logos_map: std::collections::HashMap<String, String> = match fs::read_to_string(LOGOS_JSON_FILE) {
+        Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+        Err(_) => std::collections::HashMap::new(),
+    };
+
+    // 2. 读取 M3U 文件
+    let file_path = &req.url;
+    let content = match fs::read_to_string(file_path) {
+        Ok(c) => c,
+        Err(e) => return HttpResponse::BadRequest().body(format!("Failed to read file: {}", e)),
+    };
+
+    // 3. 解析 M3U
+    let mut m3u_list = M3uObjectList::from(content);
+
+    // 4. 替换 Logo
+    m3u_list.replace_logos(req.host.to_string(),&logos_map);
+
+    // 5. 生成结果
+    let result = m3u_list.get_m3u_content();
+
+    HttpResponse::Ok()
+        .append_header(("Content-Type", "application/vnd.apple.mpegurl; charset=utf-8"))
+        .body(result)
 }
 
 /// 启动Web服务器
@@ -707,6 +747,7 @@ pub async fn start_web(port: u16) {
             .service(upload)
             .service(upload_logos)
             .service(get_logos_list)
+            .service(q_m3u)
             .service(fs::Files::new("/static", STATIC_FOLDER.to_owned()).show_files_listing())
             .app_data(web::Data::new(scheduler.clone()))
             .app_data(web::Data::new(Arc::clone(&task_manager)))

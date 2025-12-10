@@ -9,10 +9,7 @@ mod web;
 use crate::common::{do_check, SearchOptions, SearchParams};
 use crate::config::config::init_config;
 use crate::live::do_ob;
-use crate::r#const::constant::{
-    INPUT_FOLDER, INPUT_LIVE_FOLDER, INPUT_SEARCH_FOLDER, LOGS_FOLDER, OUTPUT_FOLDER,
-    OUTPUT_THUMBNAIL_FOLDER, STATIC_FOLDER,
-};
+use crate::r#const::constant::{INPUT_FOLDER, INPUT_LIVE_FOLDER, INPUT_SEARCH_FOLDER, LOGOS_FOLDER, LOGS_FOLDER, OUTPUT_FOLDER, OUTPUT_THUMBNAIL_FOLDER, STATIC_FOLDER};
 use crate::search::{clear_search_folder, do_search};
 use crate::utils::{create_folder, get_out_put_filename};
 use chrono::Local;
@@ -198,6 +195,7 @@ fn init_folder() {
         OUTPUT_FOLDER,
         OUTPUT_THUMBNAIL_FOLDER,
         LOGS_FOLDER,
+        LOGOS_FOLDER,
     ];
     for f in folder {
         create_folder(&f.to_string()).unwrap()

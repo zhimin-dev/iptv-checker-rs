@@ -1,28 +1,22 @@
 pub static CORE_JSON: &str = "core/core.json";
-
-pub static STATIC_FOLDER: &str = "./static/";
-
-pub static TRANSLATE_FILE: &str = "./src/assets/translate.txt";
-
-pub static INPUT_FOLDER: &str = "./static/input/";
-
-pub static INPUT_SEARCH_FOLDER: &str = "./static/input/search/";
-pub static INPUT_LIVE_FOLDER: &str = "./static/input/live/";
-
-pub static OUTPUT_FOLDER: &str = "./static/output/";
-
-pub static REPLACE_JSON: &str = "core/replace.json";
-
-pub static OUTPUT_THUMBNAIL_FOLDER: &str = "./static/output/thumbnail/";
-
-pub static LOGS_FOLDER: &str = "./static/logs/";
-
-pub static LOGOS_FOLDER: &str = "./static/input/logos/";
 pub static LOGOS_JSON_FILE: &str = "core/logos.json";
 
+pub static REPLACE_JSON: &str = "core/replace.json";
 pub static GLOBAL_CONFIG_FILE_NAME: &str = "core/global_config.json";
 
 pub static FAVOURITE_FILE_NAME: &str = "core/favourite.json";
+
+pub static TRANSLATE_FILE: &str = "./src/assets/translate.txt";
+
+pub static STATIC_FOLDER: &str = "./static/";
+
+pub static INPUT_FOLDER: &str = "./static/input/";
+pub static INPUT_SEARCH_FOLDER: &str = "./static/search/";
+pub static INPUT_LIVE_FOLDER: &str = "./static/live/";
+pub static OUTPUT_FOLDER: &str = "./static/output/";
+pub static OUTPUT_THUMBNAIL_FOLDER: &str = "./static/thumbnail/";
+pub static LOGS_FOLDER: &str = "./static/logs/";
+pub static LOGOS_FOLDER: &str = "./static/logos/";
 
 pub static FAVOURITE_CONFIG_JSON_CONTENT: &str = r#"{
   "like": [],

@@ -2,7 +2,7 @@ use crate::common::favourite::get_favourite_list;
 use crate::common::m3u::m3u::list_str2obj;
 use crate::common::util::from_video_resolution;
 use crate::common::{AudioInfo, CheckOptions, SearchOptions, VideoInfo};
-use crate::r#const::constant::OUTPUT_FOLDER;
+use crate::r#const::constant::{INPUT_SEARCH_FOLDER, OUTPUT_FOLDER};
 use crate::{common, utils};
 use log::info;
 use serde::{Deserialize, Serialize};
@@ -476,7 +476,7 @@ pub mod check {
 pub async fn get_favourite_channel(channel_type: String) -> Result<String, Error> {
     // 获取今日日期对应目录
     let today = chrono::Local::now().format("%Y%m%d").to_string();
-    let search_path = format!("static/input/search/{}", today);
+    let search_path = format!("{}/{}",INPUT_SEARCH_FOLDER, today);
 
     let mut all_files = Vec::new();
     let dir_entries = match std::fs::read_dir(&search_path) {

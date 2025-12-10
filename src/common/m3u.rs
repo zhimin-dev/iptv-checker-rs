@@ -750,6 +750,42 @@ impl M3uObjectList {
         });
     }
 
+    pub fn replace_logos(&mut self, host:String, logo_map: &HashMap<String, String>) {
+        for item in &mut self.list {
+            let mut found = false;
+            let mut new_logo_url = String::new();
+            
+            if let Some(extend) = &item.extend {
+                if !extend.tv_id.is_empty() {
+                    if let Some(url) = logo_map.get(&extend.tv_id) {
+                        new_logo_url = url.clone();
+                        found = true;
+                    }
+                }
+                if !found && !extend.tv_name.is_empty() {
+                    if let Some(url) = logo_map.get(&extend.tv_name) {
+                        new_logo_url = url.clone();
+                        found = true;
+                    }
+                }
+                if !found && !item.search_name.is_empty() {
+                    if let Some(url) = logo_map.get(&item.search_name) {
+                        new_logo_url = url.clone();
+                        found = true;
+                    }
+                }
+            }
+
+            if found {
+                if let Some(mut extend) = item.take_extend() {
+                    extend.set_tv_logo(format!("{}.{}", host, new_logo_url));
+                    item.set_extend(extend);
+                    item.generate_raw();
+                }
+            }
+        }
+    }
+
     pub fn get_m3u_content(&mut self) -> String {
         let mut result_m3u_content = vec![];
         match &self.header {
