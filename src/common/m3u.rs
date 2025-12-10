@@ -694,10 +694,14 @@ impl M3uObjectList {
 
     pub async fn output_file(&mut self, output_file: String, only_success: bool) {
         // 生成.m3u 文件
-        self.generate_m3u_file(output_file.clone(), only_success);
+        if let Err(e) = self.generate_m3u_file(output_file.clone(), only_success) {
+            error!("Failed to generate m3u file: {}", e);
+        }
         // 生成.txt 文件
         let txt_file = output_file.clone().replace(".m3u", ".txt");
-        self.generate_text_file(txt_file.clone(), only_success);
+        if let Err(e) = self.generate_text_file(txt_file.clone(), only_success) {
+            error!("Failed to generate text file: {}", e);
+        }
         time::sleep(Duration::from_millis(500)).await;
     }
 
@@ -767,7 +771,7 @@ impl M3uObjectList {
         result_m3u_content.join("\n")
     }
 
-    pub fn generate_m3u_file(&mut self, output_file: String, only_succ: bool) {
+    pub fn generate_m3u_file(&mut self, output_file: String, only_succ: bool) -> io::Result<()> {
         if self.list.len() > 0 {
             let mut result_m3u_content: Vec<String> = vec![];
             match &self.header {
@@ -792,18 +796,19 @@ impl M3uObjectList {
                     result_m3u_content.push(x.raw.clone());
                 }
             }
-            let mut fd = File::create(output_file.to_owned()).unwrap();
+            let mut fd = File::create(output_file.to_owned())?;
             for x in result_m3u_content {
-                let _ = fd.write(format!("{}\n", x).as_bytes());
+                let _ = fd.write(format!("{}\n", x).as_bytes())?;
             }
-            let _ = fd.flush();
+            fd.flush()?;
         }
+        Ok(())
     }
 
-    pub fn generate_text_file(&mut self, output_file: String, only_succ: bool) {
+    pub fn generate_text_file(&mut self, output_file: String, only_succ: bool) -> io::Result<()> {
         if self.list.len() > 0 {
             // 打开文件 b 并准备写入
-            let mut file_b = File::create(output_file).unwrap();
+            let mut file_b = File::create(output_file)?;
 
             // 逐行读取文件 a 的内容
             for line in &self.list {
@@ -811,15 +816,16 @@ impl M3uObjectList {
                     if line.status == Success {
                         let txt = format!("{},{}", line.name, line.url);
                         // 将每一行写入文件 b
-                        writeln!(file_b, "{}", txt).unwrap();
+                        writeln!(file_b, "{}", txt)?;
                     }
                 } else {
                     let txt = format!("{},{}", line.name, line.url);
                     // 将每一行写入文件 b
-                    writeln!(file_b, "{}", txt).unwrap();
+                    writeln!(file_b, "{}", txt)?;
                 }
             }
         }
+        Ok(())
     }
 }
 

@@ -490,17 +490,34 @@ struct UploadResponse {
 /// 文件上传API端点
 #[post("/media/upload")]
 async fn upload(MultipartForm(form): MultipartForm<UploadFormReq>) -> impl Responder {
-    let path = format!("{}{}", INPUT_FOLDER, form.file.file_name.unwrap());
+    let file_name = match form.file.file_name {
+        Some(name) => name,
+        None => {
+            return HttpResponse::BadRequest()
+                .json(serde_json::json!({"msg": "Missing file name", "url": ""}))
+        }
+    };
+    let path = format!("{}{}", INPUT_FOLDER, file_name);
     log::info!("saving to {path}");
-    form.file.file.persist(path.clone()).unwrap();
+    if let Err(e) = form.file.file.persist(path.clone()) {
+        log::error!("Failed to save file: {}", e);
+        return HttpResponse::InternalServerError()
+            .json(serde_json::json!({"msg": format!("Failed to save file: {}", e), "url": ""}));
+    }
     let resp = UploadResponse {
         msg: "success".to_string(),
-        url: path.clone().to_string(),
+        url: path.clone(),
     };
-    let obj = serde_json::to_string(&resp).unwrap();
-    return HttpResponse::Ok()
-        .append_header(("Content-Type", "application/json"))
-        .body(obj);
+    match serde_json::to_string(&resp) {
+        Ok(obj) => HttpResponse::Ok()
+            .append_header(("Content-Type", "application/json"))
+            .body(obj),
+        Err(e) => {
+            log::error!("Serialization error: {}", e);
+            HttpResponse::InternalServerError()
+                .json(serde_json::json!({"msg": "Internal Error", "url": ""}))
+        }
+    }
 }
 
 /// 启动Web服务器

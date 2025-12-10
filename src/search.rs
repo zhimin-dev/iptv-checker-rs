@@ -316,7 +316,7 @@ fn epg_list_to_m3u_file(list: Vec<EpgM3u8Info>, file_name: String) -> Result<(),
         }
     }
     result.set_list(m3u8_list);
-    result.generate_m3u_file(file_name.clone(), false);
+    result.generate_m3u_file(file_name.clone(), false)?;
     Ok(())
 }
 
@@ -624,7 +624,7 @@ pub async fn read_search_configs() -> Result<SearchConfigs, Box<dyn std::error::
 pub async fn do_search(search_params: SearchParams) -> Result<(), Error> {
     match init_search_data().await {
         Ok(()) => {
-            let mut m3u_data = load_m3u_data().expect("load m3u data failed");
+            let mut m3u_data = load_m3u_data()?;
             m3u_data.t2s();
             m3u_data.search(search_params.search_options).await;
             if search_params.thumbnail {
@@ -660,7 +660,9 @@ fn load_m3u_data() -> std::io::Result<M3uObjectList> {
         for entry in fs::read_dir(path)? {
             let entry = entry?;
             if entry.file_type()?.is_file() {
-                file_names.push(entry.file_name().into_string().unwrap());
+                if let Ok(name) = entry.file_name().into_string() {
+                    file_names.push(name);
+                }
             }
         }
     }
@@ -682,7 +684,9 @@ pub fn generate_channel_thumbnail_folder_name() -> String {
     let day = now.day();
     let folder = format!("{}{}{}{}/", OUTPUT_THUMBNAIL_FOLDER, year, month, day);
     if !folder_exists(&folder) {
-        fs::create_dir_all(folder.clone()).unwrap()
+        if let Err(e) = fs::create_dir_all(folder.clone()) {
+            error!("Failed to create thumbnail folder: {}", e);
+        }
     }
     folder
 }
