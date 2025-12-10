@@ -158,7 +158,7 @@ impl M3uObject {
     pub fn take_extend(&mut self) -> Option<M3uExtend> {
         self.extend.take()
     }
-    
+
     pub fn t2s(&mut self) {
         let name = self.name.clone();
         let rename = trad_to_simp(&name);
@@ -439,7 +439,7 @@ impl M3uObjectList {
             return;
         }
         println!("-----quality_list len {}", quality_list.len());
-
+        
         let mut filtered_list = vec![];
         let mut quality_map: HashMap<QualityType, i32> = HashMap::new();
         for item in quality_list {
@@ -450,15 +450,15 @@ impl M3uObjectList {
             let mut is_save = false;
             if item.status != Success {
                 continue;
-            }
-
+                }
+                
             if let Some(info) = &item.other_status.ffmpeg_info {
                 if info.video.len() > 0 {
                     for v_q in info.video.clone() {
                         for (k, _) in quality_map.clone() {
                             if k == v_q.quality_type {
                                 is_save = true
-                            }
+                }
                         }
                     }
                     if is_save {

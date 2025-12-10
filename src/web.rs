@@ -1,3 +1,4 @@
+use std::fmt::format;
 use crate::common::check;
 use crate::common::task::{
     add_task, delete_task, get_download_body, list_task, run_task, system_tasks_export,
@@ -556,6 +557,8 @@ pub async fn start_web(port: u16) {
                 debug!("scheduler thread lock");
                 return;
             }
+            let now_time = Local::now().format("%Y%m%d-%H:%M:%s").to_string();
+            info!("{}", now_time.clone() +  "check task started");
             *locked_flag = true;
             // 获取所有任务
             if let Ok(tasks) = get_check() {
@@ -570,6 +573,7 @@ pub async fn start_web(port: u16) {
                 }
             }
             *locked_flag = false;
+            info!("{}", now_time.clone() +  "check task ended");
         });
     }
 
