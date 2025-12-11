@@ -527,11 +527,40 @@ struct UploadLogosReq {
     files: Vec<TempFile>,
 }
 
+/// Logo配置项结构体
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct LogoConfig {
+    url: String,
+    name: Vec<String>,
+}
+
 /// 更新 logos.json 文件
 fn update_logos_json_file() -> std::io::Result<()> {
     use std::fs;
+    use std::collections::{HashMap, HashSet};
+
     let folder = std::path::Path::new(LOGOS_FOLDER);
-    let mut map = std::collections::HashMap::new();
+    
+    // 读取现有的配置以保留别名
+    let mut existing_data: HashMap<String, HashSet<String>> = HashMap::new();
+    
+    if let Ok(content) = fs::read_to_string(LOGOS_JSON_FILE) {
+        // 尝试解析为新的 List 格式
+        if let Ok(list) = serde_json::from_str::<Vec<LogoConfig>>(&content) {
+            for item in list {
+                existing_data.insert(item.url, item.name.into_iter().collect());
+            }
+        } 
+        // 尝试解析为旧的 Map 格式 (迁移)
+        else if let Ok(map) = serde_json::from_str::<HashMap<String, String>>(&content) {
+            for (name, url) in map {
+                existing_data.entry(url).or_default().insert(name);
+            }
+        }
+    }
+
+    let mut final_list: Vec<LogoConfig> = Vec::new();
+    let mut processed_urls = HashSet::new();
 
     if folder.exists() && folder.is_dir() {
         for entry in fs::read_dir(folder)? {
@@ -540,22 +569,45 @@ fn update_logos_json_file() -> std::io::Result<()> {
             if path.is_file() {
                 if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                     if name == "logos.json" || name.starts_with(".") { continue; }
+                    
                     let url = format!("{}/{}", LOGOS_FOLDER, name);
-                    let key = path.file_stem()
+                    let stem = path.file_stem()
                         .and_then(|s| s.to_str())
-                        .unwrap_or(name);
-                    map.insert(key.to_string(), url);
+                        .unwrap_or(name)
+                        .to_string();
+
+                    // 获取该URL已有的别名集合，如果不存在则创建
+                    let names = existing_data.entry(url.clone()).or_default();
+                    // 确保文件名本身作为别名存在
+                    names.insert(stem);
+                    
+                    processed_urls.insert(url.clone());
                 }
             }
         }
     }
+    
+    // 将处理后的数据转换为 Vec<LogoConfig>
+    for url in processed_urls {
+        if let Some(names) = existing_data.get(&url) {
+            let mut name_list: Vec<String> = names.iter().cloned().collect();
+            name_list.sort(); // 排序以便输出稳定
+            final_list.push(LogoConfig {
+                url,
+                name: name_list,
+            });
+        }
+    }
+    
+    // 按照 URL 排序
+    final_list.sort_by(|a, b| a.url.cmp(&b.url));
 
     // 确保目录存在
     if let Some(parent) = std::path::Path::new(LOGOS_JSON_FILE).parent() {
         fs::create_dir_all(parent)?;
     }
 
-    let json = serde_json::to_string_pretty(&map)?;
+    let json = serde_json::to_string_pretty(&final_list)?;
     fs::write(LOGOS_JSON_FILE, json)?;
     Ok(())
 }
@@ -606,12 +658,58 @@ async fn get_logos_list() -> impl Responder {
             let _ = update_logos_json_file();
             match std::fs::read_to_string(LOGOS_JSON_FILE) {
                 Ok(c) => HttpResponse::Ok()
-                    .append_header(("Content-Type", "application/json"))
+        .append_header(("Content-Type", "application/json"))
                     .body(c),
-                Err(_) => HttpResponse::Ok().json(serde_json::json!({})),
+                Err(_) => HttpResponse::Ok().json(serde_json::json!([])),
             }
         }
     }
+}
+
+/// 更新Logo配置API端点
+#[post("/media/logos/update")]
+async fn update_logo_config(req: web::Json<LogoConfig>) -> impl Responder {
+    use std::fs;
+    let target_url = &req.url;
+    let new_names = &req.name;
+
+    // 1. 读取
+    let content = match fs::read_to_string(LOGOS_JSON_FILE) {
+        Ok(c) => c,
+        Err(_) => return HttpResponse::InternalServerError().json(serde_json::json!({"msg": "Failed to read logos.json"})),
+    };
+
+    // 2. 解析
+    let mut list: Vec<LogoConfig> = match serde_json::from_str(&content) {
+        Ok(l) => l,
+        Err(_) => return HttpResponse::InternalServerError().json(serde_json::json!({"msg": "Failed to parse logos.json"})),
+    };
+
+    // 3. 查找并更新
+    let mut found = false;
+    for item in &mut list {
+        if &item.url == target_url {
+            item.name = new_names.clone();
+            found = true;
+            break;
+        }
+    }
+
+    if !found {
+        return HttpResponse::NotFound().json(serde_json::json!({"msg": "Logo URL not found"}));
+    }
+
+    // 4. 保存
+    match serde_json::to_string_pretty(&list) {
+        Ok(json) => {
+            if let Err(e) = fs::write(LOGOS_JSON_FILE, json) {
+                 return HttpResponse::InternalServerError().json(serde_json::json!({"msg": format!("Failed to write file: {}", e)}));
+            }
+        }
+        Err(e) => return HttpResponse::InternalServerError().json(serde_json::json!({"msg": format!("Serialization error: {}", e)})),
+    }
+
+    HttpResponse::Ok().json(serde_json::json!({"msg": "success"}))
 }
 
 /// M3U解析和Logo替换请求结构体
@@ -628,10 +726,21 @@ async fn q_m3u(req: web::Query<QRequest>) -> impl Responder {
     use std::fs;
 
     // 1. 读取 logos.json
-    let logos_map: std::collections::HashMap<String, String> = match fs::read_to_string(LOGOS_JSON_FILE) {
-        Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
-        Err(_) => std::collections::HashMap::new(),
-    };
+    let mut logos_map = std::collections::HashMap::new();
+    if let Ok(content) = fs::read_to_string(LOGOS_JSON_FILE) {
+        // 尝试解析为新的 List 格式
+        if let Ok(list) = serde_json::from_str::<Vec<LogoConfig>>(&content) {
+            for item in list {
+                for name in item.name {
+                    logos_map.insert(name, item.url.clone());
+                }
+            }
+        } 
+        // 尝试解析为旧的 Map 格式 (兼容旧数据)
+        else if let Ok(map) = serde_json::from_str::<std::collections::HashMap<String, String>>(&content) {
+            logos_map = map;
+        }
+    }
 
     // 2. 读取 M3U 文件
     let file_path = &req.url;
@@ -747,6 +856,7 @@ pub async fn start_web(port: u16) {
             .service(upload)
             .service(upload_logos)
             .service(get_logos_list)
+            .service(update_logo_config)
             .service(q_m3u)
             .service(fs::Files::new("/static", STATIC_FOLDER.to_owned()).show_files_listing())
             .app_data(web::Data::new(scheduler.clone()))
