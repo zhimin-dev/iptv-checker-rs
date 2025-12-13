@@ -1,6 +1,6 @@
 use crate::common::QualityType::{
-    Quality1080P, Quality240P, Quality2K, Quality360P, Quality480P, Quality4K,
-    Quality720P, Quality8K, QualityUnknown,
+    Quality1080P, Quality240P, Quality2K, Quality360P, Quality480P, Quality4K, Quality720P,
+    Quality8K, QualityUnknown,
 };
 use crate::common::{M3uExt, M3uExtend, M3uObject, M3uObjectList, QualityType};
 use crate::utils::translator_t2s;

@@ -1,11 +1,11 @@
-use std::fs;
 use crate::r#const::constant::{FAVOURITE_CONFIG_JSON_CONTENT, FAVOURITE_FILE_NAME};
 use crate::utils::file_exists;
-use std::io::Write;
+use once_cell::sync::Lazy;
 use std::collections::HashMap;
+use std::fs;
+use std::io::Write;
 use std::path::Path;
 use std::sync::RwLock;
-use once_cell::sync::Lazy;
 /// 获取某个分组（如 "频道收藏夹"）下的所有收藏频道列表
 pub fn get_favourite_list(group: &str) -> Vec<String> {
     let map = get_favourite_map();
@@ -59,16 +59,24 @@ fn read_favourite_json<P: AsRef<Path>>(path: P) -> HashMap<String, Vec<String>> 
             }
             match serde_json::from_str::<HashMap<String, Vec<String>>>(&s) {
                 Ok(m) => {
-                    eprintln!("favourite: successfully loaded {} entries from {:?}", m.len(), path.as_ref());
+                    eprintln!(
+                        "favourite: successfully loaded {} entries from {:?}",
+                        m.len(),
+                        path.as_ref()
+                    );
                     m
-                },
+                }
                 Err(e) => {
-                    eprintln!("favourite: failed to parse JSON from {:?}: {}", path.as_ref(), e);
+                    eprintln!(
+                        "favourite: failed to parse JSON from {:?}: {}",
+                        path.as_ref(),
+                        e
+                    );
                     eprintln!("favourite: file content: {}", s);
                     HashMap::new()
                 }
             }
-        },
+        }
         Err(e) => {
             eprintln!("favourite: failed to read {:?}: {}", path.as_ref(), e);
             HashMap::new()
@@ -82,11 +90,18 @@ pub fn create_favourite_file() {
         if let Some(parent) = std::path::Path::new(FAVOURITE_FILE_NAME).parent() {
             fs::create_dir_all(parent).expect(&format!("Failed to create directory: {:?}", parent));
         }
-        let mut fd = fs::File::create(FAVOURITE_FILE_NAME.to_string())
-            .expect(&format!("Failed to create file: {}", FAVOURITE_FILE_NAME.to_string()));
+        let mut fd = fs::File::create(FAVOURITE_FILE_NAME.to_string()).expect(&format!(
+            "Failed to create file: {}",
+            FAVOURITE_FILE_NAME.to_string()
+        ));
         fd.write_all(FAVOURITE_CONFIG_JSON_CONTENT.to_string().as_bytes())
-            .expect(&format!("Failed to write file: {}", FAVOURITE_FILE_NAME.to_string()));
-        fd.flush()
-            .expect(&format!("Failed to flush file: {}", FAVOURITE_FILE_NAME.to_string()));
+            .expect(&format!(
+                "Failed to write file: {}",
+                FAVOURITE_FILE_NAME.to_string()
+            ));
+        fd.flush().expect(&format!(
+            "Failed to flush file: {}",
+            FAVOURITE_FILE_NAME.to_string()
+        ));
     }
 }

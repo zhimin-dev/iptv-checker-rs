@@ -23,7 +23,7 @@ pub static FAVOURITE_CONFIG_JSON_CONTENT: &str = r#"{
   "equal": []
 }"#;
 
-pub static GLOBAL_CONFIG_CONTENT:&str= r#"{
+pub static GLOBAL_CONFIG_CONTENT: &str = r#"{
     "remote_url2local_images": false,
     "search": {
         "source": [
@@ -71,7 +71,7 @@ pub static GLOBAL_CONFIG_CONTENT:&str= r#"{
     }
 }"#;
 
-pub static REPLACE_TXT_CONTENT:&str = r#"{
+pub static REPLACE_TXT_CONTENT: &str = r#"{
     "[geo-blocked]": "",
     "[ipv6]": "",
     "hevc": "",
@@ -81,7 +81,7 @@ pub static REPLACE_TXT_CONTENT:&str = r#"{
     " ": ""
 }"#;
 
-pub static CORE_DATA:&str = r#"{
+pub static CORE_DATA: &str = r#"{
   "check": {
     "now": null,
     "task": {

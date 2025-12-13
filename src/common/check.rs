@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt::Error;
 
 /// URL检查响应结构体
-#[derive(Debug, Serialize, Deserialize,Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CheckUrlIsAvailableResponse {
     pub delay: i32, // 延迟时间（毫秒）
     pub ffmpeg_info: Option<FfmpegInfo>,
@@ -476,7 +476,7 @@ pub mod check {
 pub async fn get_favourite_channel(channel_type: String) -> Result<String, Error> {
     // 获取今日日期对应目录
     let today = chrono::Local::now().format("%Y%m%d").to_string();
-    let search_path = format!("{}/{}",INPUT_SEARCH_FOLDER, today);
+    let search_path = format!("{}/{}", INPUT_SEARCH_FOLDER, today);
 
     let mut all_files = Vec::new();
     let dir_entries = match std::fs::read_dir(&search_path) {

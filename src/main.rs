@@ -6,10 +6,15 @@ mod search;
 mod utils;
 mod web;
 
+use crate::common::replace::create_replace_file;
 use crate::common::{do_check, SearchOptions, SearchParams};
 use crate::config::config::init_config;
+use crate::config::global::{get_config, init_global_config};
 use crate::live::do_ob;
-use crate::r#const::constant::{INPUT_FOLDER, INPUT_LIVE_FOLDER, INPUT_SEARCH_FOLDER, LOGOS_FOLDER, LOGS_FOLDER, OUTPUT_FOLDER, OUTPUT_THUMBNAIL_FOLDER, STATIC_FOLDER};
+use crate::r#const::constant::{
+    INPUT_FOLDER, INPUT_LIVE_FOLDER, INPUT_SEARCH_FOLDER, LOGOS_FOLDER, LOGS_FOLDER, OUTPUT_FOLDER,
+    OUTPUT_THUMBNAIL_FOLDER, STATIC_FOLDER,
+};
 use crate::search::{clear_search_folder, do_search};
 use crate::utils::{create_folder, get_out_put_filename};
 use chrono::Local;
@@ -19,8 +24,6 @@ use simplelog::{CombinedLogger, Config, WriteLogger};
 use std::env;
 use std::fs::File;
 use tempfile::tempdir;
-use crate::common::replace::create_replace_file;
-use crate::config::global::{get_config, init_global_config};
 
 const DEFAULT_HTTP_PORT: u16 = 8089;
 
@@ -235,7 +238,7 @@ fn init_file_log() {
         LOGS_FOLDER,
         Local::now().format("%Y%m%d%H:%M").to_string()
     ))
-        .unwrap();
+    .unwrap();
     let mut log_config = Config::default();
     log_config.time = Some(simplelog::Level::Debug);
     log_config.time_format = Some("%Y-%m-%d %H:%M:%S%.3f");

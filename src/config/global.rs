@@ -2,11 +2,11 @@ use crate::r#const::constant::{GLOBAL_CONFIG_CONTENT, GLOBAL_CONFIG_FILE_NAME, R
 use crate::utils::file_exists;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
-use std::{fs, io};
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
 use std::sync::RwLock;
+use std::{fs, io};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GlobalConfig {
@@ -28,7 +28,8 @@ impl GlobalConfig {
     }
 }
 
-static GLOBAL_CONFIG_DATA: Lazy<RwLock<GlobalConfig>> = Lazy::new(|| RwLock::new(read_global_config()));
+static GLOBAL_CONFIG_DATA: Lazy<RwLock<GlobalConfig>> =
+    Lazy::new(|| RwLock::new(read_global_config()));
 
 pub fn init_global_config() {
     if !file_exists(&GLOBAL_CONFIG_FILE_NAME.to_string()) {
@@ -52,7 +53,6 @@ pub fn init_global_config() {
     }
 }
 
-
 pub fn init_data_from_file() -> io::Result<()> {
     let map = read_global_config();
     {
@@ -67,15 +67,9 @@ fn read_global_config() -> GlobalConfig {
     let path = Path::new(format!("{}", GLOBAL_CONFIG_FILE_NAME).as_mut_str()).to_owned();
     match fs::read_to_string(&path) {
         Ok(s) => match serde_json::from_str::<GlobalConfig>(&s) {
-            Ok(m) => {
-                m
-            },
+            Ok(m) => m,
             Err(e) => {
-                eprintln!(
-                    "replace: failed to parse JSON from {:?}: {}",
-                    path,
-                    e
-                );
+                eprintln!("replace: failed to parse JSON from {:?}: {}", path, e);
                 GlobalConfig::new()
             }
         },
@@ -85,8 +79,6 @@ fn read_global_config() -> GlobalConfig {
         }
     }
 }
-
-
 
 pub fn get_config() -> GlobalConfig {
     GLOBAL_CONFIG_DATA.read().unwrap().clone()
@@ -98,19 +90,20 @@ where
 {
     // 读取当前配置
     let mut config = read_global_config();
-    
+
     // 应用更新
     updater(&mut config);
-    
+
     // 序列化配置
     let json_str = serde_json::to_string_pretty(&config)
         .map_err(|e| format!("Failed to serialize config: {}", e))?;
-    
+
     // 确保 core 目录存在
     if let Some(parent) = Path::new(GLOBAL_CONFIG_FILE_NAME).parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("Failed to create directory: {:?}: {}", parent, e))?;
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create directory: {:?}: {}", parent, e))?;
     }
-    
+
     // 写入文件
     fs::write(GLOBAL_CONFIG_FILE_NAME, json_str)
         .map_err(|e| format!("Failed to write config file: {}", e))?;
@@ -118,7 +111,7 @@ where
     if let Ok(mut guard) = GLOBAL_CONFIG_DATA.write() {
         *guard = config.clone();
     }
-    
+
     Ok(())
 }
 
@@ -194,4 +187,3 @@ mod tests {
         assert_eq!(config.remote_url2local_images, true);
     }
 }
-

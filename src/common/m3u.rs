@@ -1,12 +1,13 @@
 use crate::common::check::check::check_link_is_valid;
 use crate::common::cmd::capture_stream_pic;
 use crate::common::task::md5_str;
+use crate::common::translate::trad_to_simp;
 use crate::common::CheckDataStatus::{Failed, Success, Unchecked};
 use crate::common::FfmpegInfo;
 use crate::common::QualityType::QualityUnknown;
 use crate::common::SourceType::{Normal, Quota};
 use crate::search::generate_channel_thumbnail_folder_name;
-use crate::utils::{remove_other_char};
+use crate::utils::remove_other_char;
 use actix_rt::time;
 use log::{debug, error, info};
 use serde::{Deserialize, Serialize};
@@ -16,9 +17,8 @@ use std::fs::File;
 use std::io::{self, Write};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
-use std::{thread, vec};
 use std::time::Duration;
-use crate::common::translate::trad_to_simp;
+use std::{thread, vec};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct M3uExtend {
@@ -188,11 +188,11 @@ impl M3uObject {
             // 更新 extend 和 raw 内容中的繁体字段为简体
             self.extend = Some(ext);
             self.raw = self
-            .raw
-            .replace(&old_tv_name, &tv_name_s)
-            .replace(&old_tv_language, &tv_language_s)
-            .replace(&old_tv_country, &tv_country_s)
-            .replace(&old_group_title, &group_title_s);
+                .raw
+                .replace(&old_tv_name, &tv_name_s)
+                .replace(&old_tv_language, &tv_language_s)
+                .replace(&old_tv_country, &tv_country_s)
+                .replace(&old_group_title, &group_title_s);
         }
     }
 
@@ -439,7 +439,7 @@ impl M3uObjectList {
             return;
         }
         println!("-----quality_list len {}", quality_list.len());
-        
+
         let mut filtered_list = vec![];
         let mut quality_map: HashMap<QualityType, i32> = HashMap::new();
         for item in quality_list {
@@ -450,15 +450,15 @@ impl M3uObjectList {
             let mut is_save = false;
             if item.status != Success {
                 continue;
-                }
-                
+            }
+
             if let Some(info) = &item.other_status.ffmpeg_info {
                 if info.video.len() > 0 {
                     for v_q in info.video.clone() {
                         for (k, _) in quality_map.clone() {
                             if k == v_q.quality_type {
                                 is_save = true
-                }
+                            }
                         }
                     }
                     if is_save {
@@ -750,11 +750,11 @@ impl M3uObjectList {
         });
     }
 
-    pub fn replace_logos(&mut self, host:String, logo_map: &HashMap<String, String>) {
+    pub fn replace_logos(&mut self, host: String, logo_map: &HashMap<String, String>) {
         for item in &mut self.list {
             let mut found = false;
             let mut new_logo_url = String::new();
-            
+
             if let Some(extend) = &item.extend {
                 if !extend.tv_id.is_empty() {
                     if let Some(url) = logo_map.get(&extend.tv_id) {
@@ -773,12 +773,20 @@ impl M3uObjectList {
                         new_logo_url = url.clone();
                         found = true;
                     }
+                    if let Some(url) = logo_map.get(&item.search_name.to_uppercase()) {
+                        new_logo_url = url.clone();
+                        found = true;
+                    }
                 }
             }
 
             if found {
                 if let Some(mut extend) = item.take_extend() {
-                    extend.set_tv_logo(format!("{}.{}", host, new_logo_url));
+                    extend.set_tv_logo(format!(
+                        "{}{}",
+                        host,
+                        new_logo_url.replace("./static", "/static")
+                    ));
                     item.set_extend(extend);
                     item.generate_raw();
                 }

@@ -100,7 +100,7 @@ impl Default for Core {
                 task: HashMap::new(),
             },
             others: Others {
-                translate_dic:String::default(),
+                translate_dic: String::default(),
                 replace_dic: String::default(),
             },
             ob: Ob { list: Vec::new() },
@@ -227,7 +227,7 @@ pub mod file_config {
         config.check.now.clone()
     }
 
-    pub fn set_now_check_id(now: Option<String>){
+    pub fn set_now_check_id(now: Option<String>) {
         let mut config = GLOBAL_CONFIG.lock().unwrap();
         config.check.now = now;
     }

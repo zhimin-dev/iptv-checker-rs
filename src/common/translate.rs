@@ -1,8 +1,8 @@
+use crate::r#const::constant::TRANSLATE_FILE;
 use std::collections::HashMap;
+use std::fs;
 use std::io;
 use std::sync::OnceLock;
-use std::fs;
-use crate::r#const::constant::TRANSLATE_FILE;
 
 /// 编译时嵌入的翻译文件内容
 const EMBEDDED_TRANSLATE_CONTENT: &str = include_str!("../assets/translate.txt");
