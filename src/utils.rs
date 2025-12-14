@@ -1,3 +1,4 @@
+use crate::common::replace::replace;
 use lazy_static::lazy_static;
 use rand::distr::Alphanumeric;
 use rand::Rng;
@@ -6,7 +7,6 @@ use std::fs;
 use std::fs::File;
 use std::io::{Error, ErrorKind, Read};
 use std::process::Command;
-use crate::common::replace::replace;
 
 /// 获取输出文件名，如果未指定则生成随机文件名
 pub fn get_out_put_filename(folder: &str, output_file: String) -> String {
@@ -99,10 +99,12 @@ mod tests {
     use crate::utils::{remove_other_char, translator_t2s};
 
     #[tokio::test]
-    async fn parse_data_normal () {
-        let data = parse_normal_str(String::from(r#"#EXTM3U
+    async fn parse_data_normal() {
+        let data = parse_normal_str(String::from(
+            r#"#EXTM3U
 #EXTINF:-1 tvg-name="CCTV5(backup)" tvg-id="378823" tvg-country="中国大陆" tvg-language="国语" tvg-logo="https://epg.pw/media/images/channel/2025/01/25/large/20250125001815951580_60.jpg" group-title="运动",cctv5-体育
-https://stream1.freetv.fun/8c0a0439191a3ba401897378bc2226a7edda1e571cb356ac7c7f4c15f6a2f380.m3u8"#));
+https://stream1.freetv.fun/8c0a0439191a3ba401897378bc2226a7edda1e571cb356ac7c7f4c15f6a2f380.m3u8"#,
+        ));
         for i in data.get_list() {
             println!("{}", i.get_extend().unwrap().group_title);
             println!("{}", i.get_extend().unwrap().tv_logo);

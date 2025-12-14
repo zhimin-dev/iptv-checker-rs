@@ -1,10 +1,10 @@
+use crate::r#const::constant::{REPLACE_JSON, REPLACE_TXT_CONTENT};
+use crate::utils::file_exists;
 use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-use crate::r#const::constant::{REPLACE_JSON, REPLACE_TXT_CONTENT};
-use crate::utils::file_exists;
 
 /// 全局只读替换表，首次调用时从 "replace.json" 读取并解析为 HashMap<String, String>
 static REPLACE_MAP: OnceLock<HashMap<String, String>> = OnceLock::new();
@@ -15,12 +15,19 @@ pub fn create_replace_file() {
         if let Some(parent) = std::path::Path::new(REPLACE_JSON).parent() {
             fs::create_dir_all(parent).expect(&format!("Failed to create directory: {:?}", parent));
         }
-        let mut fd = fs::File::create(REPLACE_JSON)
-            .expect(&format!("Failed to create file: {}", REPLACE_JSON.to_string()));
+        let mut fd = fs::File::create(REPLACE_JSON).expect(&format!(
+            "Failed to create file: {}",
+            REPLACE_JSON.to_string()
+        ));
         fd.write_all(REPLACE_TXT_CONTENT.to_string().as_bytes())
-            .expect(&format!("Failed to write file: {}", REPLACE_JSON.to_string()));
-        fd.flush()
-            .expect(&format!("Failed to flush file: {}", REPLACE_JSON.to_string()));
+            .expect(&format!(
+                "Failed to write file: {}",
+                REPLACE_JSON.to_string()
+            ));
+        fd.flush().expect(&format!(
+            "Failed to flush file: {}",
+            REPLACE_JSON.to_string()
+        ));
     }
 }
 
@@ -35,7 +42,11 @@ fn read_replace_json<P: AsRef<Path>>(path: P) -> HashMap<String, String> {
         Ok(s) => match serde_json::from_str::<HashMap<String, String>>(&s) {
             Ok(m) => m,
             Err(e) => {
-                eprintln!("replace: failed to parse JSON from {:?}: {}", path.as_ref(), e);
+                eprintln!(
+                    "replace: failed to parse JSON from {:?}: {}",
+                    path.as_ref(),
+                    e
+                );
                 HashMap::new()
             }
         },
@@ -79,8 +90,8 @@ pub fn replace(input: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::common::replace::{replace};
     use super::*;
+    use crate::common::replace::replace;
 
     #[test]
     fn test_trad_to_simp_basic() {

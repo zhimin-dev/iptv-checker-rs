@@ -138,6 +138,10 @@ impl TaskContent {
         }
     }
 
+    pub fn get_result_name(&self) -> String {
+        self.result_name.clone()
+    }
+
     pub fn valid(&self) -> Result<TaskContent> {
         let mut ori = TaskContent::new();
         if self.urls.is_empty() {
@@ -295,7 +299,7 @@ pub enum TaskStatus {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Task {
     //任务来源
-    original: TaskContent,
+    pub original: TaskContent,
 
     //任务id
     id: String,
@@ -633,7 +637,7 @@ pub async fn get_download_body(
     return HttpResponse::Ok().json(resp);
 }
 
-fn get_file_contents(file_name: String) -> Option<String> {
+pub fn get_file_contents(file_name: String) -> Option<String> {
     if let Ok(mut f) = File::open(file_name.clone()) {
         let mut contents = String::default();
         if let Ok(_) = f.read_to_string(&mut contents) {

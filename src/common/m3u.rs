@@ -1,12 +1,13 @@
 use crate::common::check::check::check_link_is_valid;
 use crate::common::cmd::capture_stream_pic;
 use crate::common::task::md5_str;
+use crate::common::translate::trad_to_simp;
 use crate::common::CheckDataStatus::{Failed, Success, Unchecked};
 use crate::common::FfmpegInfo;
 use crate::common::QualityType::QualityUnknown;
 use crate::common::SourceType::{Normal, Quota};
 use crate::search::generate_channel_thumbnail_folder_name;
-use crate::utils::{remove_other_char};
+use crate::utils::remove_other_char;
 use actix_rt::time;
 use log::{debug, error, info};
 use serde::{Deserialize, Serialize};
@@ -16,9 +17,8 @@ use std::fs::File;
 use std::io::{self, Write};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
-use std::{thread, vec};
 use std::time::Duration;
-use crate::common::translate::trad_to_simp;
+use std::{thread, vec};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct M3uExtend {
@@ -158,7 +158,7 @@ impl M3uObject {
     pub fn take_extend(&mut self) -> Option<M3uExtend> {
         self.extend.take()
     }
-    
+
     pub fn t2s(&mut self) {
         let name = self.name.clone();
         let rename = trad_to_simp(&name);
@@ -188,11 +188,11 @@ impl M3uObject {
             // 更新 extend 和 raw 内容中的繁体字段为简体
             self.extend = Some(ext);
             self.raw = self
-            .raw
-            .replace(&old_tv_name, &tv_name_s)
-            .replace(&old_tv_language, &tv_language_s)
-            .replace(&old_tv_country, &tv_country_s)
-            .replace(&old_group_title, &group_title_s);
+                .raw
+                .replace(&old_tv_name, &tv_name_s)
+                .replace(&old_tv_language, &tv_language_s)
+                .replace(&old_tv_country, &tv_country_s)
+                .replace(&old_group_title, &group_title_s);
         }
     }
 
@@ -694,10 +694,14 @@ impl M3uObjectList {
 
     pub async fn output_file(&mut self, output_file: String, only_success: bool) {
         // 生成.m3u 文件
-        self.generate_m3u_file(output_file.clone(), only_success);
+        if let Err(e) = self.generate_m3u_file(output_file.clone(), only_success) {
+            error!("Failed to generate m3u file: {}", e);
+        }
         // 生成.txt 文件
         let txt_file = output_file.clone().replace(".m3u", ".txt");
-        self.generate_text_file(txt_file.clone(), only_success);
+        if let Err(e) = self.generate_text_file(txt_file.clone(), only_success) {
+            error!("Failed to generate text file: {}", e);
+        }
         time::sleep(Duration::from_millis(500)).await;
     }
 
@@ -746,6 +750,50 @@ impl M3uObjectList {
         });
     }
 
+    pub fn replace_logos(&mut self, host: String, logo_map: &HashMap<String, String>) {
+        for item in &mut self.list {
+            let mut found = false;
+            let mut new_logo_url = String::new();
+
+            if let Some(extend) = &item.extend {
+                if !extend.tv_id.is_empty() {
+                    if let Some(url) = logo_map.get(&extend.tv_id) {
+                        new_logo_url = url.clone();
+                        found = true;
+                    }
+                }
+                if !found && !extend.tv_name.is_empty() {
+                    if let Some(url) = logo_map.get(&extend.tv_name) {
+                        new_logo_url = url.clone();
+                        found = true;
+                    }
+                }
+                if !found && !item.search_name.is_empty() {
+                    if let Some(url) = logo_map.get(&item.search_name) {
+                        new_logo_url = url.clone();
+                        found = true;
+                    }
+                    if let Some(url) = logo_map.get(&item.search_name.to_uppercase()) {
+                        new_logo_url = url.clone();
+                        found = true;
+                    }
+                }
+            }
+
+            if found {
+                if let Some(mut extend) = item.take_extend() {
+                    extend.set_tv_logo(format!(
+                        "{}{}",
+                        host,
+                        new_logo_url.replace("./static", "/static")
+                    ));
+                    item.set_extend(extend);
+                    item.generate_raw();
+                }
+            }
+        }
+    }
+
     pub fn get_m3u_content(&mut self) -> String {
         let mut result_m3u_content = vec![];
         match &self.header {
@@ -767,7 +815,7 @@ impl M3uObjectList {
         result_m3u_content.join("\n")
     }
 
-    pub fn generate_m3u_file(&mut self, output_file: String, only_succ: bool) {
+    pub fn generate_m3u_file(&mut self, output_file: String, only_succ: bool) -> io::Result<()> {
         if self.list.len() > 0 {
             let mut result_m3u_content: Vec<String> = vec![];
             match &self.header {
@@ -792,18 +840,19 @@ impl M3uObjectList {
                     result_m3u_content.push(x.raw.clone());
                 }
             }
-            let mut fd = File::create(output_file.to_owned()).unwrap();
+            let mut fd = File::create(output_file.to_owned())?;
             for x in result_m3u_content {
-                let _ = fd.write(format!("{}\n", x).as_bytes());
+                let _ = fd.write(format!("{}\n", x).as_bytes())?;
             }
-            let _ = fd.flush();
+            fd.flush()?;
         }
+        Ok(())
     }
 
-    pub fn generate_text_file(&mut self, output_file: String, only_succ: bool) {
+    pub fn generate_text_file(&mut self, output_file: String, only_succ: bool) -> io::Result<()> {
         if self.list.len() > 0 {
             // 打开文件 b 并准备写入
-            let mut file_b = File::create(output_file).unwrap();
+            let mut file_b = File::create(output_file)?;
 
             // 逐行读取文件 a 的内容
             for line in &self.list {
@@ -811,15 +860,16 @@ impl M3uObjectList {
                     if line.status == Success {
                         let txt = format!("{},{}", line.name, line.url);
                         // 将每一行写入文件 b
-                        writeln!(file_b, "{}", txt).unwrap();
+                        writeln!(file_b, "{}", txt)?;
                     }
                 } else {
                     let txt = format!("{},{}", line.name, line.url);
                     // 将每一行写入文件 b
-                    writeln!(file_b, "{}", txt).unwrap();
+                    writeln!(file_b, "{}", txt)?;
                 }
             }
         }
+        Ok(())
     }
 }
 

@@ -8,9 +8,7 @@ use log::{debug, error, info};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fmt::Error;
-use std::io::Write;
-use std::os::unix::raw::time_t;
+use std::io::{Error, ErrorKind, Write};
 use std::{fs, vec};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -193,9 +191,18 @@ async fn fetch_github_home_page(
     include_files: Vec<String>,
     valid_extensions: Vec<String>,
 ) -> Vec<GithubInfo> {
-    let body = get_url_body(url).await.expect("Failed to get body");
-    parse_github_home_page_body_to_m3u_link(&body, include_files.clone(), valid_extensions.clone())
-        .unwrap_or_else(|_| vec![])
+    match get_url_body(url.clone()).await {
+        Ok(body) => parse_github_home_page_body_to_m3u_link(
+            &body,
+            include_files.clone(),
+            valid_extensions.clone(),
+        )
+        .unwrap_or_else(|_| vec![]),
+        Err(e) => {
+            error!("Failed to fetch github home page {}: {}", url, e);
+            vec![]
+        }
+    }
 }
 
 async fn fetch_github_sub_page(
@@ -203,9 +210,18 @@ async fn fetch_github_sub_page(
     include_files: Vec<String>,
     valid_extensions: Vec<String>,
 ) -> Vec<GithubInfo> {
-    let body = get_url_body(url).await.expect("Failed to get body");
-    parse_github_sub_page_body_to_m3u_link(&body, include_files.clone(), valid_extensions.clone())
-        .unwrap_or_else(|_| vec![])
+    match get_url_body(url.clone()).await {
+        Ok(body) => parse_github_sub_page_body_to_m3u_link(
+            &body,
+            include_files.clone(),
+            valid_extensions.clone(),
+        )
+        .unwrap_or_else(|_| vec![]),
+        Err(e) => {
+            error!("Failed to fetch github sub page {}: {}", url, e);
+            vec![]
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -300,13 +316,18 @@ fn epg_list_to_m3u_file(list: Vec<EpgM3u8Info>, file_name: String) -> Result<(),
         }
     }
     result.set_list(m3u8_list);
-    result.generate_m3u_file(file_name.clone(), false);
+    result.generate_m3u_file(file_name.clone(), false)?;
     Ok(())
 }
 
 async fn fetch_epg_page(url: String) -> Vec<EpgM3u8Info> {
-    let body = get_url_body(url).await.expect("Failed to get body");
-    epg_live_stream_html_parse(body.as_str())
+    match get_url_body(url.clone()).await {
+        Ok(body) => epg_live_stream_html_parse(body.as_str()),
+        Err(e) => {
+            error!("Failed to fetch epg page {}: {}", url, e);
+            vec![]
+        }
+    }
 }
 
 async fn get_url_body(_url: String) -> Result<String, Error> {
@@ -314,12 +335,20 @@ async fn get_url_body(_url: String) -> Result<String, Error> {
         .danger_accept_invalid_certs(true)
         .build()
         .unwrap();
-    let resp = client.get(_url.to_owned()).send().await.unwrap();
-    if resp.status().is_success() {
-        Ok(resp.text().await.unwrap())
-    } else {
-        Ok("".to_string())
-    }
+    let resp = client.get(_url.to_owned()).send().await;
+    return match resp {
+        Ok(res) => {
+            if res.status().is_success() {
+                Ok(res.text().await.unwrap())
+            } else {
+                Ok("".to_string())
+            }
+        }
+        Err(e) => {
+            error!("get url body error: {}", e);
+            Err(Error::new(ErrorKind::Other, format!("error {}", e)))
+        }
+    };
 }
 
 fn check_search_data_exists() -> std::io::Result<bool> {
@@ -452,16 +481,20 @@ async fn save_data(url: String, save_name: String) {
 }
 
 async fn download_target_files(_url: String, save_path: String) -> Result<(), Error> {
-    let contents = crate::common::util::get_url_body(_url.clone(), 20000)
-        .await
-        .expect("Failed to get body");
-    // 创建一个新文件，如果文件已存在，则会覆盖它
-    let mut file = fs::File::create(save_path).expect("file create failed");
+    match crate::common::util::get_url_body(_url.clone(), 20000).await {
+        Ok(contents) => {
+            // 创建一个新文件，如果文件已存在，则会覆盖它
+            let mut file = fs::File::create(save_path)?;
 
-    // 将字符串内容写入文件
-    file.write_all(contents.as_bytes())
-        .expect("file save filed"); // 也可以使用 write 方法
-    Ok(())
+            // 将字符串内容写入文件
+            file.write_all(contents.as_bytes())?; // 也可以使用 write 方法
+            Ok(())
+        }
+        Err(e) => Err(Error::new(
+            ErrorKind::Other,
+            format!("Failed to download file {}: {}", _url, e),
+        )),
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -591,7 +624,7 @@ pub async fn read_search_configs() -> Result<SearchConfigs, Box<dyn std::error::
 pub async fn do_search(search_params: SearchParams) -> Result<(), Error> {
     match init_search_data().await {
         Ok(()) => {
-            let mut m3u_data = load_m3u_data().expect("load m3u data failed");
+            let mut m3u_data = load_m3u_data()?;
             m3u_data.t2s();
             m3u_data.search(search_params.search_options).await;
             if search_params.thumbnail {
@@ -627,7 +660,9 @@ fn load_m3u_data() -> std::io::Result<M3uObjectList> {
         for entry in fs::read_dir(path)? {
             let entry = entry?;
             if entry.file_type()?.is_file() {
-                file_names.push(entry.file_name().into_string().unwrap());
+                if let Ok(name) = entry.file_name().into_string() {
+                    file_names.push(name);
+                }
             }
         }
     }
@@ -649,7 +684,9 @@ pub fn generate_channel_thumbnail_folder_name() -> String {
     let day = now.day();
     let folder = format!("{}{}{}{}/", OUTPUT_THUMBNAIL_FOLDER, year, month, day);
     if !folder_exists(&folder) {
-        fs::create_dir_all(folder.clone()).unwrap()
+        if let Err(e) = fs::create_dir_all(folder.clone()) {
+            error!("Failed to create thumbnail folder: {}", e);
+        }
     }
     folder
 }
