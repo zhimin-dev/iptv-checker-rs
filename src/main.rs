@@ -6,10 +6,9 @@ mod search;
 mod utils;
 mod web;
 
-use crate::common::replace::create_replace_file;
+use config::replace::create_replace_file;
 use crate::common::{do_check, SearchOptions, SearchParams};
-use crate::config::config::init_config;
-use crate::config::global::{get_config, init_global_config};
+// 配置初始化在 init_all_config_files 中完成
 use crate::live::do_ob;
 use crate::r#const::constant::{
     INPUT_FOLDER, INPUT_LIVE_FOLDER, INPUT_SEARCH_FOLDER, LOGOS_FOLDER, LOGS_FOLDER, OUTPUT_FOLDER,
@@ -24,6 +23,7 @@ use simplelog::{CombinedLogger, Config, WriteLogger};
 use std::env;
 use std::fs::File;
 use tempfile::tempdir;
+use crate::config::init_all_config_files;
 
 const DEFAULT_HTTP_PORT: u16 = 8089;
 
@@ -260,7 +260,7 @@ fn init_translate() {
 }
 
 fn init_favourite() {
-    common::favourite::create_favourite_file();
+    config::favourite::create_favourite_file();
 }
 
 fn init_replace_json() {
@@ -278,12 +278,9 @@ pub async fn main() {
             init_console_log();
         }
     }
-    init_config();
-    init_global_config();
+    init_all_config_files();
     init_folder();
-    init_favourite();
     init_translate();
-    init_replace_json();
     let pid_name = get_pid_file();
     match args.command {
         Commands::Web(args) => {

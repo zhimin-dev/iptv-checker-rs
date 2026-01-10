@@ -1,4 +1,4 @@
-use crate::common::favourite::get_favourite_list;
+use crate::config::favourite::get_favourite_list;
 use crate::common::m3u::m3u::list_str2obj;
 use crate::common::util::from_video_resolution;
 use crate::common::{AudioInfo, CheckOptions, SearchOptions, VideoInfo};

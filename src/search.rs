@@ -566,13 +566,7 @@ pub struct SearchConfig {
 
 pub async fn read_search_configs() -> Result<SearchConfigs, Box<dyn std::error::Error>> {
     // 从config模块读取搜索配置
-    let search_config = match config::get_search() {
-        Ok(config) => config,
-        Err(e) => {
-            error!("Failed to read search config: {}", e);
-            return Err(Box::new(e));
-        }
-    };
+    let search_config = config::search::get_search_config();
 
     // 转换配置格式
     let mut configs = SearchConfigs {
@@ -595,28 +589,6 @@ pub async fn read_search_configs() -> Result<SearchConfigs, Box<dyn std::error::
 
     // 转换扩展名
     configs.extensions = search_config.extensions;
-
-    // 转换搜索列表
-    for item in search_config.search_list {
-        let mut search_item = SearchListItem {
-            id: item.id,
-            config: Vec::new(),
-            result: item.result,
-        };
-
-        // 转换搜索配置
-        for config in item.config {
-            search_item.config.push(SearchConfig {
-                search_name: config.search_name,
-                save_name: config.save_name,
-                full_match: config.full_match,
-                exclude_url: config.exclude_url,
-                exclude_host: config.exclude_host,
-            });
-        }
-
-        configs.search_list.push(search_item);
-    }
 
     Ok(configs)
 }

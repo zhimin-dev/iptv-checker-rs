@@ -1,4 +1,4 @@
-use crate::common::replace::replace;
+use crate::config::replace::replace;
 use lazy_static::lazy_static;
 use rand::distr::Alphanumeric;
 use rand::Rng;

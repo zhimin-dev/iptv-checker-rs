@@ -1,18 +1,17 @@
 use crate::common::check;
-use crate::common::favourite::{get_favourite_map, reload_favourite_map};
+use crate::config::favourite::{get_favourite_map, reload_favourite_map};
 use crate::common::task::{
     add_task, delete_task, get_download_body, get_file_contents, list_task, run_task,
     system_tasks_export, system_tasks_import, update_task, TaskManager,
 };
 use crate::common::translate::init_from_default_file;
-use crate::config::config::{init_config, Search};
-use crate::config::global::{get_config, init_data_from_file, update_config};
-use crate::config::{get_check, get_task};
+use crate::config::search::SearchConfig;
+use crate::config::{get_task, get_all_tasks};
 use crate::r#const::constant::{
-    INPUT_FOLDER, INPUT_SEARCH_FOLDER, LOGOS_FOLDER, LOGOS_JSON_FILE, REPLACE_JSON, STATIC_FOLDER,
+    INPUT_FOLDER, INPUT_SEARCH_FOLDER, LOGOS_FOLDER, LOGOS_JSON, STATIC_FOLDER,
 };
 use crate::search::init_search_data;
-use actix_files as fs;
+use actix_files as actix_fs;
 use actix_files::NamedFile;
 use actix_multipart::form::{tempfile::TempFile, MultipartForm};
 use actix_web::middleware::Logger;
@@ -21,30 +20,29 @@ use chrono::Local;
 use clokwerk::{Scheduler, TimeUnits};
 use log::{debug, error, info};
 use serde::{Deserialize, Serialize};
-use std::fmt::format;
-use std::path::Path;
+use std::collections::HashMap;
+use std::fs;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time;
 use std::time::Duration;
 use tokio::signal;
+use zip::{ZipArchive, ZipWriter};
+use zip::write::FileOptions;
 
 /// 更新全局配置请求结构体
 #[derive(Serialize, Deserialize)]
 struct UpdateGlobalConfigRequest {
-    remote_url2local_images: bool,
-    search: Search,
+    search: SearchConfig,
 }
 
 /// 更新全局配置
 #[post("/system/global-config")]
 async fn update_global_config(req: web::Json<UpdateGlobalConfigRequest>) -> impl Responder {
-    let result = update_config(|config| {
-        config.remote_url2local_images = req.remote_url2local_images;
-        config.search = req.search.clone();
-    });
+    let result = crate::config::search::update_search_config(req.search.clone());
     if result.is_ok() {
-        let _ = init_data_from_file();
         return HttpResponse::Ok()
             .append_header(("Content-Type", "application/json"))
             .body("{\"msg\":\"success\"}");
@@ -112,46 +110,33 @@ async fn check_url_is_available(req: web::Query<CheckUrlIsAvailableRequest>) -> 
 /// 获取replace.json配置
 #[get("/system/replace")]
 async fn get_replace_config() -> impl Responder {
-    let replace_path = format!("{}", REPLACE_JSON);
-    match std::fs::read_to_string(&replace_path) {
-        Ok(content) => HttpResponse::Ok()
+    match crate::config::replace::get_replace_config_json() {
+        Ok(json) => HttpResponse::Ok()
             .append_header(("Content-Type", "application/json"))
-            .body(content),
-        Err(_) => {
-            // 如果文件不存在，返回空数组
-            HttpResponse::Ok()
-                .append_header(("Content-Type", "application/json"))
-                .body("[]")
+            .body(json),
+        Err(e) => {
+            error!("Failed to get replace config: {}", e);
+            HttpResponse::InternalServerError()
+                .body("{\"msg\":\"Failed to get configuration\"}")
         }
     }
 }
 
-/// 更新replace.json配置请求结构体
-#[derive(Serialize, Deserialize)]
-struct UpdateReplaceRequest {
-    content: String,
+/// Replace配置请求结构体
+#[derive(Debug, Serialize, Deserialize)]
+struct UpdateReplaceConfigRequest {
+    replace_string: bool,
+    replace_map: HashMap<String, String>,
 }
 
 /// 更新replace.json配置
 #[post("/system/replace")]
-async fn update_replace_config(req: web::Json<UpdateReplaceRequest>) -> impl Responder {
-    let replace_path = format!("{}", REPLACE_JSON);
-
-    // 验证JSON格式
-    if let Err(_) = serde_json::from_str::<serde_json::Value>(&req.content) {
-        return HttpResponse::BadRequest().body("{\"msg\":\"Invalid JSON format\"}");
-    }
-
-    // 确保 core 目录存在
-    if let Some(parent) = std::path::Path::new(&replace_path).parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            error!("Failed to create directory: {:?}: {}", parent, e);
-            return HttpResponse::InternalServerError()
-                .body("{\"msg\":\"Failed to create directory\"}");
-        }
-    }
-
-    match std::fs::write(&replace_path, &req.content) {
+async fn update_replace_config(req: web::Json<UpdateReplaceConfigRequest>) -> impl Responder {
+    // 使用 config 模块保存
+    match crate::config::replace::partial_update_replace_config(
+        req.replace_string,
+        req.replace_map.clone(),
+    ) {
         Ok(_) => {
             let _ = init_from_default_file();
             HttpResponse::Ok()
@@ -159,7 +144,7 @@ async fn update_replace_config(req: web::Json<UpdateReplaceRequest>) -> impl Res
                 .body("{\"msg\":\"success\"}")
         }
         Err(e) => {
-            error!("Failed to write replace.json: {}", e);
+            error!("Failed to update replace config: {}", e);
             HttpResponse::InternalServerError().body("{\"msg\":\"Failed to save configuration\"}")
         }
     }
@@ -214,8 +199,7 @@ async fn fetch_m3u_body(req: web::Query<FetchM3uBodyRequest>) -> impl Responder 
 /// 系统状态响应结构体
 #[derive(Serialize, Deserialize)]
 struct SystemStatusResp {
-    remote_url2local_images: bool, //是否需要转换远程图片
-    search: Search,
+    search: SearchConfig,
     today_fetch: bool, // 是否处理爬取
 }
 
@@ -402,39 +386,26 @@ struct SaveFavouriteRequest {
 
 #[post("/system/save-favourite")]
 async fn system_save_favourite(req: web::Json<SaveFavouriteRequest>) -> impl Responder {
-    let mut map = std::collections::HashMap::new();
-    map.insert("like", req.like.clone());
-    map.insert("equal", req.equal.clone());
+    use crate::config::favourite::FavouriteConfig;
+    
+    let config = FavouriteConfig {
+        like: req.like.clone(),
+        equal: req.equal.clone(),
+    };
 
-    match serde_json::to_string_pretty(&map) {
-        Ok(json_str) => {
-            let file_path = crate::r#const::constant::FAVOURITE_FILE_NAME;
-            // 确保 core 目录存在
-            if let Some(parent) = std::path::Path::new(file_path).parent() {
-                if let Err(e) = std::fs::create_dir_all(parent) {
-                    log::error!("Failed to create directory: {:?}: {}", parent, e);
-                    return HttpResponse::InternalServerError()
-                        .json(serde_json::json!({"msg": "Failed to create directory"}));
-                }
+    // 使用 config 模块保存
+    match crate::config::favourite::update_favourite_config(config) {
+        Ok(_) => {
+            // 重新加载 favourite map
+            if let Err(e) = reload_favourite_map() {
+                log::error!("Failed to reload favourite map: {}", e);
             }
-            match std::fs::write(file_path, json_str) {
-                Ok(_) => {
-                    // 重新加载 favourite map
-                    if let Err(e) = reload_favourite_map() {
-                        log::error!("Failed to reload favourite map: {}", e);
-                    }
-                    HttpResponse::Ok().json(serde_json::json!({"msg": "success"}))
-                }
-                Err(e) => {
-                    log::error!("Failed to write favourite file: {}", e);
-                    HttpResponse::InternalServerError()
-                        .json(serde_json::json!({"msg": "save failed"}))
-                }
-            }
+            HttpResponse::Ok().json(serde_json::json!({"msg": "success"}))
         }
         Err(e) => {
-            log::error!("Failed to serialize favourite list: {}", e);
-            HttpResponse::InternalServerError().json(serde_json::json!({"msg": "serialize failed"}))
+            log::error!("Failed to update favourite config: {}", e);
+            HttpResponse::InternalServerError()
+                .json(serde_json::json!({"msg": "Failed to save configuration"}))
         }
     }
 }
@@ -442,8 +413,8 @@ async fn system_save_favourite(req: web::Json<SaveFavouriteRequest>) -> impl Res
 #[get("/system/get-favourite")]
 async fn system_get_favourite() -> impl Responder {
     let fav_map = get_favourite_map();
-    let like = fav_map.get("like").cloned().unwrap_or_default();
-    let equal = fav_map.get("equal").cloned().unwrap_or_default();
+    let like = fav_map.like.clone();
+    let equal = fav_map.equal.clone();
 
     let resp = FavouriteListResponse {
         like,
@@ -463,9 +434,9 @@ async fn system_status() -> impl Responder {
     let search_path = format!("{}/{}", INPUT_SEARCH_FOLDER, today);
     let today_fetch = Path::new(&search_path).exists();
 
+    let config = crate::config::search::get_search_config();
     let system_status = SystemStatusResp {
-        remote_url2local_images: get_config().remote_url2local_images,
-        search: get_config().search,
+        search: config,
         today_fetch,
     };
     let obj = serde_json::to_string(&system_status).unwrap();
@@ -542,6 +513,14 @@ struct LogoConfig {
     name: Vec<String>,
 }
 
+/// Logos.json 完整配置结构体
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct LogosJsonConfig {
+    host: String,
+    remote_url2local_images: bool,
+    logos: Vec<LogoConfig>,
+}
+
 /// 更新 logos.json 文件
 fn update_logos_json_file() -> std::io::Result<()> {
     use std::collections::{HashMap, HashSet};
@@ -549,21 +528,34 @@ fn update_logos_json_file() -> std::io::Result<()> {
 
     let folder = std::path::Path::new(LOGOS_FOLDER);
 
-    // 读取现有的配置以保留别名
+    // 读取现有的配置以保留别名和其他字段
     let mut existing_data: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut host = "http://localhost:5173".to_string();
+    let mut remote_url2local_images = false;
 
-    if let Ok(content) = fs::read_to_string(LOGOS_JSON_FILE) {
-        // 尝试解析为新的 List 格式
+    // 使用 config 模块读取现有配置
+    let config = crate::config::logos::get_logos_config();
+    host = config.host;
+    remote_url2local_images = config.remote_url2local_images;
+    for item in config.logos {
+        existing_data.insert(item.url, item.name.into_iter().collect());
+    }
+    
+    // 尝试解析旧格式进行迁移（如果配置为空）
+    if existing_data.is_empty() {
+        if let Ok(content) = fs::read_to_string(LOGOS_JSON) {
+        // 尝试解析旧格式进行迁移
         if let Ok(list) = serde_json::from_str::<Vec<LogoConfig>>(&content) {
             for item in list {
                 existing_data.insert(item.url, item.name.into_iter().collect());
             }
         }
-        // 尝试解析为旧的 Map 格式 (迁移)
+        // 尝试解析更旧的 Map 格式 (迁移)
         else if let Ok(map) = serde_json::from_str::<HashMap<String, String>>(&content) {
             for (name, url) in map {
                 existing_data.entry(url).or_default().insert(name);
             }
+        }
         }
     }
 
@@ -614,14 +606,9 @@ fn update_logos_json_file() -> std::io::Result<()> {
     // 按照 URL 排序
     final_list.sort_by(|a, b| a.url.cmp(&b.url));
 
-    // 确保目录存在
-    if let Some(parent) = std::path::Path::new(LOGOS_JSON_FILE).parent() {
-        fs::create_dir_all(parent)?;
-    }
-
-    let json = serde_json::to_string_pretty(&final_list)?;
-    fs::write(LOGOS_JSON_FILE, json)?;
-    Ok(())
+    // 使用 config 模块保存
+    crate::config::logos::migrate_and_save_logos(existing_data, host, remote_url2local_images)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
 }
 
 /// Logo多文件上传API端点
@@ -655,13 +642,13 @@ async fn upload_logos(MultipartForm(form): MultipartForm<UploadLogosReq>) -> imp
 /// 获取Logo列表API端点
 #[get("/media/logos")]
 async fn get_logos_list() -> impl Responder {
-    match std::fs::read_to_string(LOGOS_JSON_FILE) {
+    match crate::config::logos::read_logos_json_string() {
         Ok(content) => HttpResponse::Ok()
             .append_header(("Content-Type", "application/json"))
             .body(content),
         Err(_) => {
             let _ = update_logos_json_file();
-            match std::fs::read_to_string(LOGOS_JSON_FILE) {
+            match crate::config::logos::read_logos_json_string() {
                 Ok(c) => HttpResponse::Ok()
                     .append_header(("Content-Type", "application/json"))
                     .body(c),
@@ -671,60 +658,46 @@ async fn get_logos_list() -> impl Responder {
     }
 }
 
+/// 更新Logos.json完整配置的请求结构体
+#[derive(Debug, Serialize, Deserialize)]
+struct UpdateLogosConfigRequest {
+    host: Option<String>,
+    remote_url2local_images: Option<bool>,
+}
+
+/// 更新Logos.json完整配置API端点
+#[post("/media/logos/config")]
+async fn update_logos_config(req: web::Json<UpdateLogosConfigRequest>) -> impl Responder {
+    // 使用 config 模块更新
+    match crate::config::logos::partial_update_logos_config(
+        req.host.clone(),
+        req.remote_url2local_images,
+    ) {
+        Ok(_) => HttpResponse::Ok().json(serde_json::json!({"msg": "success"})),
+        Err(e) => {
+            log::error!("Failed to update logos config: {}", e);
+            HttpResponse::InternalServerError()
+                .json(serde_json::json!({"msg": format!("Failed to save configuration: {}", e)}))
+        }
+    }
+}
+
 /// 更新Logo配置API端点
 #[post("/media/logos/update")]
 async fn update_logo_config(req: web::Json<LogoConfig>) -> impl Responder {
-    use std::fs;
-    let target_url = &req.url;
-    let new_names = &req.name;
-
-    // 1. 读取
-    let content = match fs::read_to_string(LOGOS_JSON_FILE) {
-        Ok(c) => c,
-        Err(_) => {
-            return HttpResponse::InternalServerError()
-                .json(serde_json::json!({"msg": "Failed to read logos.json"}))
-        }
-    };
-
-    // 2. 解析
-    let mut list: Vec<LogoConfig> = match serde_json::from_str(&content) {
-        Ok(l) => l,
-        Err(_) => {
-            return HttpResponse::InternalServerError()
-                .json(serde_json::json!({"msg": "Failed to parse logos.json"}))
-        }
-    };
-
-    // 3. 查找并更新
-    let mut found = false;
-    for item in &mut list {
-        if &item.url == target_url {
-            item.name = new_names.clone();
-            found = true;
-            break;
-        }
-    }
-
-    if !found {
-        return HttpResponse::NotFound().json(serde_json::json!({"msg": "Logo URL not found"}));
-    }
-
-    // 4. 保存
-    match serde_json::to_string_pretty(&list) {
-        Ok(json) => {
-            if let Err(e) = fs::write(LOGOS_JSON_FILE, json) {
-                return HttpResponse::InternalServerError()
-                    .json(serde_json::json!({"msg": format!("Failed to write file: {}", e)}));
+    // 使用 config 模块更新
+    match crate::config::logos::update_logo_names(&req.url, req.name.clone()) {
+        Ok(_) => HttpResponse::Ok().json(serde_json::json!({"msg": "success"})),
+        Err(e) => {
+            if e.contains("not found") {
+                HttpResponse::NotFound().json(serde_json::json!({"msg": "Logo not found"}))
+            } else {
+                log::error!("Failed to update logo names: {}", e);
+                HttpResponse::InternalServerError()
+                    .json(serde_json::json!({"msg": format!("Failed to save configuration: {}", e)}))
             }
         }
-        Err(e) => {
-            return HttpResponse::InternalServerError()
-                .json(serde_json::json!({"msg": format!("Serialization error: {}", e)}))
-        }
     }
-
-    HttpResponse::Ok().json(serde_json::json!({"msg": "success"}))
 }
 
 /// M3U解析和Logo替换请求结构体
@@ -781,24 +754,8 @@ pub async fn get_task_content(
         .unwrap_or_else(|| String::default());
 
     // 4. 获取处理后的M3U内容（type = "logo"）
-    // 读取 logos.json
-    let mut logos_map = std::collections::HashMap::new();
-    if let Ok(content) = fs::read_to_string(LOGOS_JSON_FILE) {
-        // 尝试解析为新的 List 格式
-        if let Ok(list) = serde_json::from_str::<Vec<LogoConfig>>(&content) {
-            for item in list {
-                for name in item.name {
-                    logos_map.insert(name, item.url.clone());
-                }
-            }
-        }
-        // 尝试解析为旧的 Map 格式 (兼容旧数据)
-        else if let Ok(map) =
-            serde_json::from_str::<std::collections::HashMap<String, String>>(&content)
-        {
-            logos_map = map;
-        }
-    }
+    // 使用 config 模块获取 logos 映射
+    let logos_map = crate::config::logos::get_logos_map();
 
     // 读取 M3U 文件
     let m3u_content = match fs::read_to_string(&file_path) {
@@ -830,30 +787,251 @@ pub async fn get_task_content(
     HttpResponse::Ok().json(response)
 }
 
+/// 配置导出请求结构体
+#[derive(MultipartForm)]
+struct ConfigImportForm {
+    file: TempFile,
+}
+
+/// 导出系统配置（打包 core 文件夹）
+#[get("/system/export")]
+async fn system_export_config() -> impl Responder {
+    let timestamp = Local::now().format("%Y%m%d_%H%M%S").to_string();
+    let export_dir = format!("{}system", STATIC_FOLDER);
+    let export_filename = format!("config_export_{}.zip", timestamp);
+    let export_path = format!("{}/{}", export_dir, export_filename);
+    
+    // 确保导出目录存在
+    if let Err(e) = fs::create_dir_all(&export_dir) {
+        error!("Failed to create export directory: {}", e);
+        return HttpResponse::InternalServerError()
+            .json(serde_json::json!({"msg": format!("Failed to create export directory: {}", e)}));
+    }
+    
+    // 创建 ZIP 文件
+    let file = match fs::File::create(&export_path) {
+        Ok(f) => f,
+        Err(e) => {
+            error!("Failed to create zip file: {}", e);
+            return HttpResponse::InternalServerError()
+                .json(serde_json::json!({"msg": format!("Failed to create zip file: {}", e)}));
+        }
+    };
+    
+    let mut zip = ZipWriter::new(file);
+    let options = FileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated)
+        .unix_permissions(0o755);
+    
+    // 需要导出的配置文件列表
+    let config_files = vec![
+        "core/task.json",
+        "core/search.json",
+        "core/replace.json",
+        "core/favourite.json",
+        "core/logos.json",
+    ];
+    
+    for file_path in config_files {
+        if let Ok(mut file_content) = fs::File::open(file_path) {
+            if let Err(e) = zip.start_file(file_path, options) {
+                error!("Failed to add {} to zip: {}", file_path, e);
+                continue;
+            }
+            
+            let mut buffer = Vec::new();
+            if let Err(e) = file_content.read_to_end(&mut buffer) {
+                error!("Failed to read {}: {}", file_path, e);
+                continue;
+            }
+            
+            if let Err(e) = zip.write_all(&buffer) {
+                error!("Failed to write {} to zip: {}", file_path, e);
+                continue;
+            }
+            
+            info!("Added {} to export", file_path);
+        } else {
+            info!("Skipping {} (file not found)", file_path);
+        }
+    }
+    
+    if let Err(e) = zip.finish() {
+        error!("Failed to finalize zip: {}", e);
+        return HttpResponse::InternalServerError()
+            .json(serde_json::json!({"msg": format!("Failed to finalize zip: {}", e)}));
+    }
+    
+    info!("Config exported to: {}", export_path);
+    
+    HttpResponse::Ok().json(serde_json::json!({
+        "msg": "success",
+        "file": format!("/static/system/{}", export_filename),
+        "filename": export_filename
+    }))
+}
+
+/// 导入系统配置（从 ZIP 文件恢复 core 文件夹）
+#[post("/system/import")]
+async fn system_import_config(MultipartForm(form): MultipartForm<ConfigImportForm>) -> impl Responder {
+    let temp_file_path = form.file.file.path();
+    
+    // 打开 ZIP 文件
+    let file = match fs::File::open(temp_file_path) {
+        Ok(f) => f,
+        Err(e) => {
+            error!("Failed to open uploaded file: {}", e);
+            return HttpResponse::BadRequest()
+                .json(serde_json::json!({"msg": format!("Failed to open uploaded file: {}", e)}));
+        }
+    };
+    
+    let mut archive = match ZipArchive::new(file) {
+        Ok(a) => a,
+        Err(e) => {
+            error!("Failed to read zip archive: {}", e);
+            return HttpResponse::BadRequest()
+                .json(serde_json::json!({"msg": "Invalid zip file format"}));
+        }
+    };
+    
+    // 验证 ZIP 文件内容
+    let expected_files = vec![
+        "core/task.json",
+        "core/search.json",
+        "core/replace.json",
+        "core/favourite.json",
+        "core/logos.json",
+    ];
+    
+    let mut found_files: HashMap<String, bool> = HashMap::new();
+    for name in expected_files.iter() {
+        found_files.insert(name.to_string(), false);
+    }
+    
+    // 检查文件是否存在并验证 JSON 格式
+    for i in 0..archive.len() {
+        let mut file = match archive.by_index(i) {
+            Ok(f) => f,
+            Err(_) => continue,
+        };
+        
+        let file_name = file.name().to_string();
+        
+        if expected_files.contains(&file_name.as_str()) {
+            found_files.insert(file_name.clone(), true);
+            
+            // 读取文件内容并验证 JSON 格式
+            let mut contents = String::new();
+            if let Err(e) = file.read_to_string(&mut contents) {
+                error!("Failed to read {} from zip: {}", file_name, e);
+                return HttpResponse::BadRequest()
+                    .json(serde_json::json!({"msg": format!("Failed to read {} from zip", file_name)}));
+            }
+            
+            // 验证 JSON 格式
+            if let Err(e) = serde_json::from_str::<serde_json::Value>(&contents) {
+                error!("Invalid JSON format in {}: {}", file_name, e);
+                return HttpResponse::BadRequest()
+                    .json(serde_json::json!({"msg": format!("Invalid JSON format in {}", file_name)}));
+            }
+            
+            info!("Validated {}", file_name);
+        }
+    }
+    
+    // 检查是否至少有一个配置文件
+    let has_any_file = found_files.values().any(|&v| v);
+    if !has_any_file {
+        return HttpResponse::BadRequest()
+            .json(serde_json::json!({"msg": "No valid configuration files found in zip"}));
+    }
+    
+    // 创建备份
+    let backup_dir = format!("{}system/backup", STATIC_FOLDER);
+    let backup_timestamp = Local::now().format("%Y%m%d_%H%M%S").to_string();
+    let backup_path = format!("{}/config_backup_{}.zip", backup_dir, backup_timestamp);
+    
+    if let Err(e) = fs::create_dir_all(&backup_dir) {
+        error!("Failed to create backup directory: {}", e);
+    } else {
+        // 备份当前配置
+        if let Ok(backup_file) = fs::File::create(&backup_path) {
+            let mut backup_zip = ZipWriter::new(backup_file);
+            let options = FileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated);
+            
+            for file_path in expected_files.iter() {
+                if let Ok(mut file_content) = fs::File::open(*file_path) {
+                    let _ = backup_zip.start_file(*file_path, options);
+                    let mut buffer = Vec::new();
+                    let _ = file_content.read_to_end(&mut buffer);
+                    let _ = backup_zip.write_all(&buffer);
+                }
+            }
+            
+            let _ = backup_zip.finish();
+            info!("Backup created at: {}", backup_path);
+        }
+    }
+    
+    // 解压并覆盖配置文件
+    let mut imported_files = Vec::new();
+    for i in 0..archive.len() {
+        let mut file = match archive.by_index(i) {
+            Ok(f) => f,
+            Err(_) => continue,
+        };
+        
+        let file_name = file.name().to_string();
+        
+        if expected_files.contains(&file_name.as_str()) {
+            let mut contents = String::new();
+            if let Err(e) = file.read_to_string(&mut contents) {
+                error!("Failed to read {}: {}", file_name, e);
+                continue;
+            }
+            
+            // 确保目录存在
+            if let Some(parent) = PathBuf::from(&file_name).parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            
+            // 写入文件
+            if let Err(e) = fs::write(&file_name, contents) {
+                error!("Failed to write {}: {}", file_name, e);
+                continue;
+            }
+            
+            imported_files.push(file_name.clone());
+            info!("Imported {}", file_name);
+        }
+    }
+    
+    // 重新加载配置
+    let _ = crate::config::task::reload_task_config();
+    let _ = crate::config::search::reload_search_map();
+    let _ = crate::config::replace::reload_replace_config();
+    let _ = crate::config::favourite::reload_favourite_map();
+    let _ = crate::config::logos::reload_logos_map();
+    
+    info!("Configuration imported successfully");
+    
+    HttpResponse::Ok().json(serde_json::json!({
+        "msg": "success",
+        "imported_files": imported_files,
+        "backup": format!("/static/system/backup/config_backup_{}.zip", backup_timestamp)
+    }))
+}
+
 /// M3U解析和Logo替换API端点
 #[get("/q")]
 async fn q_m3u(req: web::Query<QRequest>) -> impl Responder {
     use crate::common::M3uObjectList;
     use std::fs;
 
-    // 1. 读取 logos.json
-    let mut logos_map = std::collections::HashMap::new();
-    if let Ok(content) = fs::read_to_string(LOGOS_JSON_FILE) {
-        // 尝试解析为新的 List 格式
-        if let Ok(list) = serde_json::from_str::<Vec<LogoConfig>>(&content) {
-            for item in list {
-                for name in item.name {
-                    logos_map.insert(name, item.url.clone());
-                }
-            }
-        }
-        // 尝试解析为旧的 Map 格式 (兼容旧数据)
-        else if let Ok(map) =
-            serde_json::from_str::<std::collections::HashMap<String, String>>(&content)
-        {
-            logos_map = map;
-        }
-    }
+    // 1. 使用 config 模块获取 logos 映射
+    let logos_map = crate::config::logos::get_logos_map();
 
     // 2. 读取 M3U 文件
     let file_path = format!(".{}", &req.url);
@@ -881,8 +1059,6 @@ async fn q_m3u(req: web::Query<QRequest>) -> impl Responder {
 
 /// 启动Web服务器
 pub async fn start_web(port: u16) {
-    // 初始化配置
-    init_config();
 
     // 初始化任务管理器
     let task_manager = Arc::new(TaskManager {});
@@ -937,8 +1113,8 @@ pub async fn start_web(port: u16) {
             info!("{}", now_time.clone() + "check task started");
             *locked_flag = true;
             // 获取所有任务
-            if let Ok(tasks) = get_check() {
-                for (id, _) in tasks.task {
+            if let Ok(tasks) = get_all_tasks() {
+                for (id, _) in tasks {
                     // 运行任务
                     if let Ok(task) = get_task(&id) {
                         if let Some(mut task) = task {
@@ -968,14 +1144,17 @@ pub async fn start_web(port: u16) {
             .service(update_replace_config)
             .service(get_replace_config)
             .service(update_global_config)
+            .service(system_export_config)
+            .service(system_import_config)
             .service(index)
             .service(upload)
             .service(upload_logos)
             .service(get_logos_list)
+            .service(update_logos_config)
             .service(update_logo_config)
             .service(q_m3u)
             .service(get_task_content)
-            .service(fs::Files::new("/static", STATIC_FOLDER.to_owned()).show_files_listing())
+            .service(actix_fs::Files::new("/static", STATIC_FOLDER.to_owned()).show_files_listing())
             .app_data(web::Data::new(scheduler.clone()))
             .app_data(web::Data::new(Arc::clone(&task_manager)))
             .route("/tasks/list", web::get().to(list_task))
@@ -986,7 +1165,7 @@ pub async fn start_web(port: u16) {
             .route("/system/tasks/export", web::get().to(system_tasks_export))
             .route("/system/tasks/import", web::post().to(system_tasks_import))
             .route("/tasks/delete/{id}", web::delete().to(delete_task))
-            .service(fs::Files::new("/", "./web/"))
+            .service(actix_fs::Files::new("/", "./web/"))
             .wrap(Logger::default())
     })
     .workers(16) // 增加工作线程数到 16，避免本地请求死锁

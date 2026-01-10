@@ -1,6 +1,6 @@
 use crate::common::do_check;
 use crate::common::task::TaskStatus::InProgress;
-use crate::config::config::file_config;
+use crate::config::task::file_config;
 use crate::config::{get_now_check_task_id, save_task, set_now_check_id};
 use actix_web::{web, HttpResponse, Responder};
 use log::{debug, error, info};
@@ -446,7 +446,7 @@ impl TaskManager {
         if let Err(e) = file_config::save_task(id.clone(), task) {
             return Err(Error::new(ErrorKind::Other, e.to_string()));
         }
-        if let Err(e) = file_config::save_config() {
+        if let Err(e) = file_config::save_task_config() {
             return Err(Error::new(ErrorKind::Other, e.to_string()));
         }
         Ok(id)
@@ -458,7 +458,7 @@ impl TaskManager {
                 return false;
             }
         }
-        if let Err(_) = file_config::save_config() {
+        if let Err(_) = file_config::save_task_config() {
             return false;
         }
         true
@@ -470,7 +470,7 @@ impl TaskManager {
             if let Err(_) = file_config::save_task(id, task) {
                 return Ok(false);
             }
-            if let Err(_) = file_config::save_config() {
+            if let Err(_) = file_config::save_task_config() {
                 return Ok(false);
             }
             Ok(true)
@@ -499,7 +499,7 @@ impl TaskManager {
             if let Err(_) = file_config::save_task(new_task.get_uuid(), new_task) {
                 return Ok(false);
             }
-            if let Err(_) = file_config::save_config() {
+            if let Err(_) = file_config::save_task_config() {
                 return Ok(false);
             }
             Ok(true)
@@ -512,7 +512,7 @@ impl TaskManager {
         if let Err(_) = file_config::delete_task(&id) {
             Ok(false)
         } else {
-            if let Err(_) = file_config::save_config() {
+            if let Err(_) = file_config::save_task_config() {
                 Ok(false)
             } else {
                 Ok(true)

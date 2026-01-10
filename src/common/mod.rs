@@ -1,9 +1,7 @@
 // 导出子模块
 pub mod check; // 检查相关功能
-pub mod cmd; // 命令行相关功能
-pub mod favourite;
-pub mod m3u; // M3U文件处理相关功能
-pub mod replace;
+pub mod cmd;
+pub mod m3u;
 pub mod task; // 任务管理相关功能
 pub mod translate;
 pub mod util;
