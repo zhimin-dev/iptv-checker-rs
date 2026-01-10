@@ -8,7 +8,7 @@ use crate::common::translate::init_from_default_file;
 use crate::config::search::SearchConfig;
 use crate::config::{get_task, get_all_tasks};
 use crate::r#const::constant::{
-    INPUT_FOLDER, INPUT_SEARCH_FOLDER, LOGOS_FOLDER, LOGOS_JSON, STATIC_FOLDER,
+    INPUT_FOLDER, INPUT_SEARCH_FOLDER, LOGOS_FOLDER, STATIC_FOLDER,
 };
 use crate::search::init_search_data;
 use actix_files as actix_fs;
@@ -526,24 +526,24 @@ fn update_logos_json_file() -> std::io::Result<()> {
     use std::collections::{HashMap, HashSet};
     use std::fs;
 
-    let folder = std::path::Path::new(LOGOS_FOLDER);
+    let logos_file_path = format!(".{}", LOGOS_FOLDER);
+
+    let folder = std::path::Path::new(logos_file_path.as_str());
 
     // 读取现有的配置以保留别名和其他字段
     let mut existing_data: HashMap<String, HashSet<String>> = HashMap::new();
-    let mut host = "http://localhost:5173".to_string();
-    let mut remote_url2local_images = false;
 
     // 使用 config 模块读取现有配置
-    let config = crate::config::logos::get_logos_config();
-    host = config.host;
-    remote_url2local_images = config.remote_url2local_images;
+    let config: crate::config::logos::LogosConfig = crate::config::logos::get_logos_config();
+    let host = config.host;
+    let remote_url2local_images = config.remote_url2local_images;
     for item in config.logos {
         existing_data.insert(item.url, item.name.into_iter().collect());
     }
     
     // 尝试解析旧格式进行迁移（如果配置为空）
     if existing_data.is_empty() {
-        if let Ok(content) = fs::read_to_string(LOGOS_JSON) {
+        if let Ok(content) = fs::read_to_string(crate::config::logos::get_logos_file_path()) {
         // 尝试解析旧格式进行迁移
         if let Ok(list) = serde_json::from_str::<Vec<LogoConfig>>(&content) {
             for item in list {
@@ -572,8 +572,8 @@ fn update_logos_json_file() -> std::io::Result<()> {
                         continue;
                     }
 
-                    let url = format!("{}/{}", LOGOS_FOLDER, name)
-                        .replace("./static/logos//", "/static/logos/");
+                    let url = format!("./{}/{}", LOGOS_FOLDER, name)
+                        .replace(format!("./{}/", LOGOS_FOLDER).as_str(), LOGOS_FOLDER);
                     let stem = path
                         .file_stem()
                         .and_then(|s| s.to_str())
@@ -622,7 +622,7 @@ async fn upload_logos(MultipartForm(form): MultipartForm<UploadLogosReq>) -> imp
             None => continue,
         };
 
-        let path = format!("{}{}", LOGOS_FOLDER, file_name);
+        let path = format!(".{}{}", LOGOS_FOLDER, file_name);
 
         if let Err(e) = file.file.persist(path.clone()) {
             log::error!("Failed to save logo {}: {}", file_name, e);
@@ -661,8 +661,8 @@ async fn get_logos_list() -> impl Responder {
 /// 更新Logos.json完整配置的请求结构体
 #[derive(Debug, Serialize, Deserialize)]
 struct UpdateLogosConfigRequest {
-    host: Option<String>,
-    remote_url2local_images: Option<bool>,
+    host: String,
+    remote_url2local_images: bool,
 }
 
 /// 更新Logos.json完整配置API端点
@@ -670,7 +670,7 @@ struct UpdateLogosConfigRequest {
 async fn update_logos_config(req: web::Json<UpdateLogosConfigRequest>) -> impl Responder {
     // 使用 config 模块更新
     match crate::config::logos::partial_update_logos_config(
-        req.host.clone(),
+        req.host.trim_end_matches('/').to_string(),
         req.remote_url2local_images,
     ) {
         Ok(_) => HttpResponse::Ok().json(serde_json::json!({"msg": "success"})),
@@ -711,7 +711,6 @@ struct QRequest {
 #[derive(Serialize, Deserialize)]
 struct GetTaskContentRequest {
     task_id: String,
-    host: String,
 }
 
 /// 任务内容响应项结构体
@@ -767,22 +766,27 @@ pub async fn get_task_content(
         }
     };
 
-    // 解析 M3U 并替换 Logo
-    let mut m3u_list = M3uObjectList::from(m3u_content);
-    m3u_list.replace_logos(req.host.to_string(), &logos_map);
-    let logo_content = m3u_list.get_m3u_content();
+    let mut logo_content = String::new();
 
-    // 4. 构建响应数组
-    let response = vec![
-        TaskContentItem {
-            content_type: "sub".to_string(),
-            content: sub_content,
-        },
-        TaskContentItem {
+    let host = crate::config::logos::get_logos_config().host;
+    if !host.is_empty() {
+        // 解析 M3U 并替换 Logo
+        let mut m3u_list = M3uObjectList::from(m3u_content);
+        m3u_list.replace_logos(host.clone(), &logos_map);
+        logo_content = m3u_list.get_m3u_content();
+    }
+
+    let mut response = Vec::new();
+    response.push(TaskContentItem {
+        content_type: "sub".to_string(),
+        content: sub_content,
+    });
+    if !logo_content.is_empty() {
+        response.push(TaskContentItem {
             content_type: "logo".to_string(),
             content: logo_content,
-        },
-    ];
+        });
+    }
 
     HttpResponse::Ok().json(response)
 }

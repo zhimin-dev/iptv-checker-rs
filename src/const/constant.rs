@@ -1,9 +1,8 @@
-pub static TASK_JSON: &str = "core/task.json";
-pub static LOGOS_JSON: &str = "core/logos.json";
-pub static REPLACE_JSON: &str = "core/replace.json";
-pub static SEARCH_JSON: &str = "core/search.json";
-pub static FAVOURITE_JSON: &str = "core/favourite.json";
-pub static FAVOURITE_FILE_NAME: &str = "core/favourite.json";
+pub static TASK_JSON: &str = "static/core/task.json";
+pub static LOGOS_JSON: &str = "static/core/logos.json";
+pub static REPLACE_JSON: &str = "static/core/replace.json";
+pub static SEARCH_JSON: &str = "static/core/search.json";
+pub static FAVOURITE_JSON: &str = "static/core/favourite.json";
 
 pub static TRANSLATE_FILE: &str = "./src/assets/translate.txt";
 
@@ -14,7 +13,7 @@ pub static INPUT_LIVE_FOLDER: &str = "./static/live/";
 pub static OUTPUT_FOLDER: &str = "./static/output/";
 pub static OUTPUT_THUMBNAIL_FOLDER: &str = "./static/thumbnail/";
 pub static LOGS_FOLDER: &str = "./static/logs/";
-pub static LOGOS_FOLDER: &str = "./static/logos/";
+pub static LOGOS_FOLDER: &str = "/static/core/logos/";
 
 pub static FAVOURITE_CONFIG_JSON_CONTENT: &str = r#"{
   "like": [],

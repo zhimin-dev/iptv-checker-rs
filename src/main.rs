@@ -5,8 +5,6 @@ mod live;
 mod search;
 mod utils;
 mod web;
-
-use config::replace::create_replace_file;
 use crate::common::{do_check, SearchOptions, SearchParams};
 // 配置初始化在 init_all_config_files 中完成
 use crate::live::do_ob;
@@ -190,6 +188,7 @@ async fn start_daemonize_web(pid_name: &String, port: u16) {
 }
 
 fn init_folder() {
+    let logos_folder = format!(".{}", LOGOS_FOLDER);
     let folder = vec![
         STATIC_FOLDER,
         INPUT_FOLDER,
@@ -198,7 +197,7 @@ fn init_folder() {
         OUTPUT_FOLDER,
         OUTPUT_THUMBNAIL_FOLDER,
         LOGS_FOLDER,
-        LOGOS_FOLDER,
+        logos_folder.as_str(),
     ];
     for f in folder {
         create_folder(&f.to_string()).unwrap()
@@ -257,14 +256,6 @@ fn init_file_log() {
 
 fn init_translate() {
     common::translate::init_from_default_file().unwrap();
-}
-
-fn init_favourite() {
-    config::favourite::create_favourite_file();
-}
-
-fn init_replace_json() {
-    create_replace_file();
 }
 
 #[actix_web::main]

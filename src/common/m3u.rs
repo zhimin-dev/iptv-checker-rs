@@ -404,26 +404,29 @@ impl M3uObjectList {
         }
         let mut save_list = vec![];
         for i in self.list.clone() {
-            let mut save = true;
+            let mut save = false;
             if keyword_like.len() > 0 {
                 save = false;
                 for lk in keyword_like.to_owned() {
                     if i.search_name.contains(&lk.to_lowercase()) {
-                        save = true
+                        save = true;
+                    }
+                }
+            }else{
+                if keyword_dislike.len() > 0 {
+                    save = true;
+                    for dk in keyword_dislike.to_owned() {
+                        if i.search_name.contains(&dk.to_lowercase()) {
+                            save = false
+                        }
                     }
                 }
             }
-            if keyword_dislike.len() > 0 {
-                for dk in keyword_dislike.to_owned() {
-                    if i.search_name.contains(&dk.to_lowercase()) {
-                        save = false
-                    }
-                }
-            }
-            if full_name_search.len() > 0 {
+            if full_name_search.len() > 0 && !save{
+                save = false;
                 for fk in full_name_search.to_owned() {
-                    if !i.search_name.eq(&fk.to_lowercase()) {
-                        save = false
+                    if i.search_name.eq(&fk.to_lowercase()) {
+                        save = true
                     }
                 }
             }
