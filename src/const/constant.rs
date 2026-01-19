@@ -3,10 +3,10 @@ pub static LOGOS_JSON: &str = "static/core/logos.json";
 pub static REPLACE_JSON: &str = "static/core/replace.json";
 pub static SEARCH_JSON: &str = "static/core/search.json";
 pub static FAVOURITE_JSON: &str = "static/core/favourite.json";
-
 pub static TRANSLATE_FILE: &str = "./src/assets/translate.txt";
 
 pub static STATIC_FOLDER: &str = "./static/";
+pub static UPLOAD_FOLDER: &str = "./static/core/upload/";
 pub static INPUT_FOLDER: &str = "./static/input/";
 pub static INPUT_SEARCH_FOLDER: &str = "./static/search/";
 pub static INPUT_LIVE_FOLDER: &str = "./static/live/";
@@ -52,6 +52,10 @@ pub static SEARCH_CONFIG_JSON_CONTENT: &str = r#"{
         "https://github.com/suxuang/myIPTV"
       ],
       "include_files": [],
+      "extensions": [
+        ".txt",
+        ".m3u"
+      ],
       "parse_type": "github-home-page"
     },
     {
@@ -60,6 +64,7 @@ pub static SEARCH_CONFIG_JSON_CONTENT: &str = r#"{
         "https://live.zbds.top/tv/iptv4.m3u"
       ],
       "include_files": [],
+      "extensions": [],
       "parse_type": "raw-source"
     },
     {
@@ -71,12 +76,9 @@ pub static SEARCH_CONFIG_JSON_CONTENT: &str = r#"{
         "tw.m3u",
         "hk.m3u"
       ],
+      "extensions": [],
       "parse_type": "github-sub-page"
     }
-  ],
-  "extensions": [
-    ".txt",
-    ".m3u"
   ]
 }"#;
 

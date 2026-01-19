@@ -409,11 +409,11 @@ pub async fn init_search_data() -> Result<(), Error> {
                 }
             }
             SearchConfigParseType::GithubHomeUrl => {
-                for url in fetch_values.urls {
+                for url in fetch_values.urls.clone() {
                     let m3u_and_txt_files = fetch_github_home_page(
                         url.clone(),
                         fetch_values.include_files.clone(),
-                        config.extensions.clone(),
+                        fetch_values.extensions.clone(),
                     )
                     .await;
                     debug!("{:?}", m3u_and_txt_files);
@@ -429,11 +429,11 @@ pub async fn init_search_data() -> Result<(), Error> {
                 }
             }
             SearchConfigParseType::GithubSubPageUrl => {
-                for url in fetch_values.urls {
+                for url in fetch_values.urls.clone() {
                     let m3u_and_txt_files = fetch_github_sub_page(
                         url.clone(),
                         fetch_values.include_files.clone(),
-                        config.extensions.clone(),
+                        fetch_values.extensions.clone(),
                     )
                     .await;
                     debug!("{:?}", m3u_and_txt_files);
@@ -508,6 +508,7 @@ pub struct SearchConfigs {
 pub struct SearchSource {
     pub urls: Vec<String>,
     pub include_files: Vec<String>,
+    pub extensions: Vec<String>,
     pub parse_type: SearchConfigParseType,
 }
 
@@ -575,20 +576,25 @@ pub async fn read_search_configs() -> Result<SearchConfigs, Box<dyn std::error::
         search_list: Vec::new(),
     };
 
-    // 转换搜索源
+    // 转换搜索源，同时收集所有扩展名
     for source in search_config.source {
+        // 收集扩展名（去重）
+        for ext in &source.extensions {
+            if !configs.extensions.contains(ext) {
+                configs.extensions.push(ext.clone());
+            }
+        }
+        
         configs.source.push(SearchSource {
             urls: source.urls,
             include_files: source.include_files,
+            extensions: source.extensions,
             parse_type: source.parse_type.parse().unwrap_or_else(|_| {
                 error!("Invalid parse type: {}", source.parse_type);
                 SearchConfigParseType::RawSources
             }),
         });
     }
-
-    // 转换扩展名
-    configs.extensions = search_config.extensions;
 
     Ok(configs)
 }

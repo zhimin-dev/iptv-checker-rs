@@ -10,7 +10,7 @@ use crate::common::{do_check, SearchOptions, SearchParams};
 use crate::live::do_ob;
 use crate::r#const::constant::{
     INPUT_FOLDER, INPUT_LIVE_FOLDER, INPUT_SEARCH_FOLDER, LOGOS_FOLDER, LOGS_FOLDER, OUTPUT_FOLDER,
-    OUTPUT_THUMBNAIL_FOLDER, STATIC_FOLDER,
+    OUTPUT_THUMBNAIL_FOLDER, STATIC_FOLDER, UPLOAD_FOLDER,
 };
 use crate::search::{clear_search_folder, do_search};
 use crate::utils::{create_folder, get_out_put_filename};
@@ -198,6 +198,7 @@ fn init_folder() {
         OUTPUT_THUMBNAIL_FOLDER,
         LOGS_FOLDER,
         logos_folder.as_str(),
+        UPLOAD_FOLDER,
     ];
     for f in folder {
         create_folder(&f.to_string()).unwrap()
@@ -231,6 +232,7 @@ fn init_console_log() {
 }
 
 fn init_file_log() {
+    create_folder(&LOGS_FOLDER.to_string()).unwrap();
     // 初始化日志系统
     let log_file = File::create(format!(
         "{}app-{}.log",

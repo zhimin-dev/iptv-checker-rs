@@ -11,7 +11,6 @@ use std::sync::RwLock;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchConfig {
     pub source: Vec<SearchSource>,
-    pub extensions: Vec<String>,
 }
 
 /// 搜索源配置结构体
@@ -19,6 +18,7 @@ pub struct SearchConfig {
 pub struct SearchSource {
     pub urls: Vec<String>,
     pub include_files: Vec<String>,
+    pub extensions: Vec<String>,
     pub parse_type: String,
 }
 
@@ -26,7 +26,6 @@ impl SearchConfig {
     pub fn new() -> Self {
         SearchConfig {
             source: Vec::new(),
-            extensions: Vec::new(),
         }
     }
 }
@@ -55,10 +54,18 @@ pub fn get_search_sources() -> Vec<SearchSource> {
     config.source
 }
 
-/// 获取支持的文件扩展名列表
+/// 获取支持的文件扩展名列表（从所有 source 收集）
 pub fn get_supported_extensions() -> Vec<String> {
     let config = get_search_config();
-    config.extensions
+    let mut extensions = Vec::new();
+    for source in config.source {
+        for ext in source.extensions {
+            if !extensions.contains(&ext) {
+                extensions.push(ext);
+            }
+        }
+    }
+    extensions
 }
 
 /// 根据解析类型获取搜索源
