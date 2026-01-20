@@ -7,7 +7,7 @@ use crate::common::FfmpegInfo;
 use crate::common::QualityType::QualityUnknown;
 use crate::common::SourceType::{Normal, Quota};
 use crate::search::generate_channel_thumbnail_folder_name;
-use crate::utils::remove_other_char;
+use crate::utils::{get_host_ip_address, get_url_host_and_port, is_valid_ip, remove_other_char};
 use actix_rt::time;
 use log::{debug, error, info};
 use serde::{Deserialize, Serialize};
@@ -79,7 +79,7 @@ impl M3uExtend {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct M3uObject {
     index: i32,
     //索引
@@ -114,6 +114,16 @@ impl M3uObject {
 
     pub fn get_obj(self) -> M3uObject {
         self
+    }
+
+    pub fn to_ip_address(&mut self) {
+        let (host_str, port) = get_url_host_and_port(&self.url);
+        if is_valid_ip(&host_str) {
+            self.other_status.set_ip_address(vec![host_str]);
+        } else {
+            self.other_status
+                .set_ip_address(get_host_ip_address(&host_str, port));
+        }
     }
 
     pub fn check_by_block(&mut self, request_time: i32, ffmpeg_check: bool, not_http_skip: bool) {
@@ -268,7 +278,7 @@ impl M3uObject {
     }
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Serialize, Deserialize)]
 pub struct M3uObjectListCounter {
     check_index: i32, // 当前检查的索引
     total: i32,       // 总数
@@ -277,7 +287,7 @@ pub struct M3uObjectListCounter {
                       // no_repeat_channel_count: i32, // 频道名称最终保存数
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct M3uObjectList {
     header: Option<M3uExt>,
     list: Vec<M3uObject>,
@@ -355,6 +365,27 @@ impl M3uObjectList {
         }
     }
 
+    pub fn save_raw_data(&self, file_name: String) {
+        let res = serde_json::to_string(self);
+        match res {
+            Ok(data) => {
+                print!("save raw data to:: {}", file_name);
+                let f_res = File::create(file_name);
+                match f_res {
+                    Ok(mut f) => {
+                        f.write_all(data.as_bytes()).unwrap();
+                    }
+                    Err(e) => {
+                        println!("write error: {}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                error!("{}", e);
+            }
+        }
+    }
+
     pub fn set_header(&mut self, header: M3uExt) {
         self.header = Some(header)
     }
@@ -387,6 +418,12 @@ impl M3uObjectList {
         }
     }
 
+    pub fn to_ip_address(&mut self) {
+        for item in &mut self.list {
+            item.to_ip_address();
+        }
+    }
+
     pub fn remove_useless_char(&mut self) {
         for item in &mut self.list {
             item.remove_useless_char();
@@ -412,7 +449,7 @@ impl M3uObjectList {
                         save = true;
                     }
                 }
-            }else{
+            } else {
                 if keyword_dislike.len() > 0 {
                     save = true;
                     for dk in keyword_dislike.to_owned() {
@@ -422,7 +459,7 @@ impl M3uObjectList {
                     }
                 }
             }
-            if full_name_search.len() > 0 && !save{
+            if full_name_search.len() > 0 && !save {
                 save = false;
                 for fk in full_name_search.to_owned() {
                     if i.search_name.eq(&fk.to_lowercase()) {
@@ -907,6 +944,7 @@ pub enum CheckDataStatus {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct OtherStatus {
     delay: i32,
+    ip_address: Vec<String>, //ip地址
     ffmpeg_info: Option<FfmpegInfo>,
 }
 
@@ -915,11 +953,16 @@ impl OtherStatus {
         OtherStatus {
             ffmpeg_info: None,
             delay: 0,
+            ip_address: vec![],
         }
     }
 
     pub fn set_delay(&mut self, delay: i32) {
         self.delay = delay
+    }
+
+    pub fn set_ip_address(&mut self, ip_address: Vec<String>) {
+        self.ip_address = ip_address;
     }
 
     pub fn set_ffmpeg_info(&mut self, ffmpeg_info: Option<FfmpegInfo>) {

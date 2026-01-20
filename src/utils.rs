@@ -1,4 +1,5 @@
 use crate::config::replace::replace;
+use clap::builder::Str;
 use lazy_static::lazy_static;
 use rand::distr::Alphanumeric;
 use rand::Rng;
@@ -6,7 +7,9 @@ use regex::Regex;
 use std::fs;
 use std::fs::File;
 use std::io::{Error, ErrorKind, Read};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs};
 use std::process::Command;
+use url::Url;
 
 /// 获取输出文件名，如果未指定则生成随机文件名
 pub fn get_out_put_filename(folder: &str, output_file: String) -> String {
@@ -90,6 +93,55 @@ pub fn remove_other_char(str: String) -> String {
 pub fn translator_t2s(str: &str) -> String {
     // Translator.convert(str)
     str.to_string()
+}
+
+pub fn is_valid_ip(host: &str) -> bool {
+    // 尝试解析为 IPv4
+    if host.parse::<Ipv4Addr>().is_ok() {
+        return true;
+    }
+
+    // 尝试解析为 IPv6
+    if host.parse::<Ipv6Addr>().is_ok() {
+        return true;
+    }
+
+    false
+}
+
+pub fn get_url_host_and_port(url_str: &str) -> (String, u16) {
+    match Url::parse(url_str) {
+        Ok(url) => {
+            // 获取host
+            if let Some(host) = url.host() {
+                // host可以是域名、IPv4或IPv6
+                // println!("Host: {}", host);
+
+                // 如果你想将host以字符串形式获取，可以使用host.to_string()
+                return (host.to_string(), url.port().unwrap_or(80));
+            }
+        }
+        Err(e) => println!("Failed to parse URL: {}", e),
+    }
+    ("".to_string(), 0)
+}
+
+pub fn get_host_ip_address(domain: &str, port: u16) -> Vec<String> {
+
+    let mut list = vec![];
+
+    // 使用`ToSocketAddrs`将域名解析为SocketAddr
+    match (domain, port).to_socket_addrs() {
+        Ok(addrs) => {
+            for addr in addrs {
+                list.push(addr.ip().to_string());
+            }
+        }
+        Err(e) => {
+            println!("Failed to resolve domain: {}", e);
+        }
+    }
+    list
 }
 
 /// 测试模块

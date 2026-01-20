@@ -553,6 +553,7 @@ pub async fn do_check(
     let list = common::m3u::m3u::from_arr(input_files.to_owned(), timeout as u64).await;
     // 将数组转换为对象
     let mut data = list_str2obj(list, false);
+    data.to_ip_address();
     // 将频道名繁体转简体
     data.t2s();
     if rename {
@@ -591,6 +592,7 @@ pub async fn do_check(
     if print_result {
         info!("输出文件: {}", output_file);
     }
+    data.save_raw_data("./static/output/111.json".to_string());
     // 导出数据
     data.output_file(output_file, true).await;
     if print_result {

@@ -263,6 +263,9 @@ fn init_translate() {
 #[actix_web::main]
 pub async fn main() {
     let args = Args::parse();
+    init_all_config_files();
+    init_folder();
+    init_translate();
     match args.command {
         Commands::Web(_) => {
             init_file_log();
@@ -271,9 +274,6 @@ pub async fn main() {
             init_console_log();
         }
     }
-    init_all_config_files();
-    init_folder();
-    init_translate();
     let pid_name = get_pid_file();
     match args.command {
         Commands::Web(args) => {
