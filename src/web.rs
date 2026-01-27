@@ -1,15 +1,16 @@
 use crate::common::check;
-use crate::config::favourite::{get_favourite_map, reload_favourite_map};
 use crate::common::task::{
     add_task, delete_task, get_download_body, get_file_contents, list_task, run_task,
     system_tasks_export, system_tasks_import, update_task, TaskManager,
 };
 use crate::common::translate::init_from_default_file;
+use crate::common::M3uObjectList;
+use crate::config::favourite::FavouriteConfig;
+use crate::config::favourite::{get_favourite_map, reload_favourite_map};
 use crate::config::search::SearchConfig;
-use crate::config::{get_task, get_all_tasks};
-use crate::r#const::constant::{
-    INPUT_SEARCH_FOLDER, LOGOS_FOLDER, STATIC_FOLDER, UPLOAD_FOLDER,
-};
+use crate::config::{get_all_tasks, get_task};
+use crate::r#const::constant::{INPUT_SEARCH_FOLDER, LOGOS_FOLDER, STATIC_FOLDER, UPLOAD_FOLDER};
+use crate::search;
 use crate::search::init_search_data;
 use actix_files as actix_fs;
 use actix_files::NamedFile;
@@ -20,7 +21,7 @@ use chrono::Local;
 use clokwerk::{Scheduler, TimeUnits};
 use log::{debug, error, info};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -30,8 +31,8 @@ use std::time;
 use std::time::Duration;
 use tokio::signal;
 use walkdir::WalkDir;
-use zip::{ZipArchive, ZipWriter};
 use zip::write::FileOptions;
+use zip::{ZipArchive, ZipWriter};
 
 /// 更新全局配置请求结构体
 #[derive(Serialize, Deserialize)]
@@ -117,8 +118,7 @@ async fn get_replace_config() -> impl Responder {
             .body(json),
         Err(e) => {
             error!("Failed to get replace config: {}", e);
-            HttpResponse::InternalServerError()
-                .body("{\"msg\":\"Failed to get configuration\"}")
+            HttpResponse::InternalServerError().body("{\"msg\":\"Failed to get configuration\"}")
         }
     }
 }
@@ -214,7 +214,6 @@ struct FileContent {
 /// 清空今日搜索文件夹的API端点
 #[get("/system/clear-search-folder")]
 async fn system_clear_search_folder() -> impl Responder {
-    use crate::search;
     match search::clear_search_folder() {
         Ok(_) => HttpResponse::Ok().json(serde_json::json!({"msg": "clear search folder success"})),
         Err(e) => {
@@ -228,8 +227,6 @@ async fn system_clear_search_folder() -> impl Responder {
 /// 初始化今日搜索数据的API端点
 #[get("/system/init-search-data")]
 async fn system_init_search_data() -> impl Responder {
-    use crate::search::init_search_data;
-
     match init_search_data().await {
         Ok(_) => HttpResponse::Ok().json(serde_json::json!({"msg": "init search data success"})),
         Err(e) => {
@@ -243,9 +240,9 @@ async fn system_init_search_data() -> impl Responder {
 /// 获取今日搜索文件夹下所有文件及其内容的API端点
 #[get("/system/list-today-files")]
 async fn system_list_today_files() -> impl Responder {
-    use chrono::Local;
-    use std::fs;
-    use std::io::Read;
+    // use chrono::Local;
+    // use std::fs;
+    // use std::io::Read;
 
     // 拼出今日的路径
     let today = Local::now().format("%Y%m%d").to_string();
@@ -387,8 +384,6 @@ struct SaveFavouriteRequest {
 
 #[post("/system/save-favourite")]
 async fn system_save_favourite(req: web::Json<SaveFavouriteRequest>) -> impl Responder {
-    use crate::config::favourite::FavouriteConfig;
-    
     let config = FavouriteConfig {
         like: req.like.clone(),
         equal: req.equal.clone(),
@@ -514,22 +509,11 @@ struct LogoConfig {
     name: Vec<String>,
 }
 
-/// Logos.json 完整配置结构体
-#[derive(Debug, Serialize, Deserialize, Clone)]
-struct LogosJsonConfig {
-    host: String,
-    remote_url2local_images: bool,
-    logos: Vec<LogoConfig>,
-}
-
 /// 更新 logos.json 文件
 fn update_logos_json_file() -> std::io::Result<()> {
-    use std::collections::{HashMap, HashSet};
-    use std::fs;
-
     let logos_file_path = format!(".{}", LOGOS_FOLDER);
 
-    let folder = std::path::Path::new(logos_file_path.as_str());
+    let folder = Path::new(logos_file_path.as_str());
 
     // 读取现有的配置以保留别名和其他字段
     let mut existing_data: HashMap<String, HashSet<String>> = HashMap::new();
@@ -541,22 +525,22 @@ fn update_logos_json_file() -> std::io::Result<()> {
     for item in config.logos {
         existing_data.insert(item.url, item.name.into_iter().collect());
     }
-    
+
     // 尝试解析旧格式进行迁移（如果配置为空）
     if existing_data.is_empty() {
         if let Ok(content) = fs::read_to_string(crate::config::logos::get_logos_file_path()) {
-        // 尝试解析旧格式进行迁移
-        if let Ok(list) = serde_json::from_str::<Vec<LogoConfig>>(&content) {
-            for item in list {
-                existing_data.insert(item.url, item.name.into_iter().collect());
+            // 尝试解析旧格式进行迁移
+            if let Ok(list) = serde_json::from_str::<Vec<LogoConfig>>(&content) {
+                for item in list {
+                    existing_data.insert(item.url, item.name.into_iter().collect());
+                }
             }
-        }
-        // 尝试解析更旧的 Map 格式 (迁移)
-        else if let Ok(map) = serde_json::from_str::<HashMap<String, String>>(&content) {
-            for (name, url) in map {
-                existing_data.entry(url).or_default().insert(name);
+            // 尝试解析更旧的 Map 格式 (迁移)
+            else if let Ok(map) = serde_json::from_str::<HashMap<String, String>>(&content) {
+                for (name, url) in map {
+                    existing_data.entry(url).or_default().insert(name);
+                }
             }
-        }
         }
     }
 
@@ -694,8 +678,9 @@ async fn update_logo_config(req: web::Json<LogoConfig>) -> impl Responder {
                 HttpResponse::NotFound().json(serde_json::json!({"msg": "Logo not found"}))
             } else {
                 log::error!("Failed to update logo names: {}", e);
-                HttpResponse::InternalServerError()
-                    .json(serde_json::json!({"msg": format!("Failed to save configuration: {}", e)}))
+                HttpResponse::InternalServerError().json(
+                    serde_json::json!({"msg": format!("Failed to save configuration: {}", e)}),
+                )
             }
         }
     }
@@ -705,7 +690,6 @@ async fn update_logo_config(req: web::Json<LogoConfig>) -> impl Responder {
 #[derive(Serialize, Deserialize)]
 struct QRequest {
     url: String,
-    host: String,
 }
 
 /// 获取任务内容的请求结构体
@@ -737,17 +721,13 @@ pub async fn get_task_detail(
     task_manager: web::Data<Arc<TaskManager>>,
     req: web::Query<GetTaskContentRequest>,
 ) -> impl Responder {
-    use crate::common::M3uObjectList;
-    use std::fs;
-
     // 从任务管理器获取任务信息
     let task = task_manager.get_task(req.task_id.clone());
-    
+
     let task_info = match task {
         Some(info) => info,
         None => {
-            return HttpResponse::NotFound()
-                .json(serde_json::json!({"msg": "Task not found"}));
+            return HttpResponse::NotFound().json(serde_json::json!({"msg": "Task not found"}));
         }
     };
 
@@ -763,7 +743,7 @@ pub async fn get_task_detail(
 
     // 获取任务内容（复用 get_task_content 的逻辑）
     let result_name = task_info.original.get_result_name().to_string();
-    
+
     // 处理路径：如果 result_name 以 / 开头，则添加 . 前缀；否则直接使用
     let file_path = if result_name.starts_with('/') {
         format!(".{}", result_name)
@@ -774,8 +754,7 @@ pub async fn get_task_detail(
     let mut check_result = Vec::new();
 
     // 获取原始M3U内容（type = "sub"）
-    let sub_content = get_file_contents(file_path.clone())
-        .unwrap_or_else(|| String::default());
+    let sub_content = get_file_contents(file_path.clone()).unwrap_or_else(|| String::default());
 
     // 获取处理后的M3U内容（type = "logo"）
     let logos_map = crate::config::logos::get_logos_map();
@@ -787,7 +766,7 @@ pub async fn get_task_detail(
             // 解析 M3U 并替换 Logo
             let mut m3u_list = M3uObjectList::from(m3u_content);
             m3u_list.replace_logos(host.clone(), &logos_map);
-            let logo_content = m3u_list.get_m3u_content();
+            let logo_content = m3u_list.get_m3u_content_str(false);
 
             check_result.push(TaskContentItem {
                 content_type: "sub".to_string(),
@@ -832,9 +811,6 @@ pub async fn get_task_content(
     task_manager: web::Data<Arc<TaskManager>>,
     req: web::Query<GetTaskContentRequest>,
 ) -> impl Responder {
-    use crate::common::M3uObjectList;
-    use std::fs;
-
     // 1. 获取任务信息
     let task = task_manager.get_task(req.task_id.clone());
     let result_name = match task {
@@ -854,8 +830,7 @@ pub async fn get_task_content(
     };
 
     // 3. 获取原始M3U内容（type = "sub"）
-    let sub_content = get_file_contents(file_path.clone())
-        .unwrap_or_else(|| String::default());
+    let sub_content = get_file_contents(file_path.clone()).unwrap_or_else(|| String::default());
 
     // 4. 获取处理后的M3U内容（type = "logo"）
     // 使用 config 模块获取 logos 映射
@@ -878,7 +853,7 @@ pub async fn get_task_content(
         // 解析 M3U 并替换 Logo
         let mut m3u_list = M3uObjectList::from(m3u_content);
         m3u_list.replace_logos(host.clone(), &logos_map);
-        logo_content = m3u_list.get_m3u_content();
+        logo_content = m3u_list.get_m3u_content_str(false);
     }
 
     let mut response = Vec::new();
@@ -911,14 +886,14 @@ async fn system_export_config() -> impl Responder {
     let export_dir = format!("{}system", STATIC_FOLDER);
     let export_filename = format!("config_export_{}.zip", timestamp);
     let export_path = format!("{}/{}", export_dir, export_filename);
-    
+
     // 确保导出目录存在
     if let Err(e) = fs::create_dir_all(&export_dir) {
         error!("Failed to create export directory: {}", e);
         return HttpResponse::InternalServerError()
             .json(serde_json::json!({"msg": format!("Failed to create export directory: {}", e)}));
     }
-    
+
     // 创建 ZIP 文件
     let file = match fs::File::create(&export_path) {
         Ok(f) => f,
@@ -928,31 +903,31 @@ async fn system_export_config() -> impl Responder {
                 .json(serde_json::json!({"msg": format!("Failed to create zip file: {}", e)}));
         }
     };
-    
+
     let mut zip = ZipWriter::new(file);
     let options = FileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated)
         .unix_permissions(0o755);
     // 递归遍历 static/core 文件夹，并将所有文件（不包括目录本身）添加到 zip 包中
     let core_dir = "./static/core";
-    
+
     // 使用 WalkDir 递归遍历整个目录
     let walker = WalkDir::new(core_dir).into_iter();
     for entry in walker.flatten() {
         let path = entry.path();
-        
+
         // 只处理文件，跳过目录
         if !path.is_file() {
             continue;
         }
-        
+
         // 读取文件内容
         let mut buffer = Vec::new();
         if let Err(e) = fs::File::open(&path).and_then(|mut f| f.read_to_end(&mut buffer)) {
             error!("Failed to read {:?}: {}", path, e);
             continue;
         }
-        
+
         // 获取相对于 static 目录的路径（只保留 core/ 开头）
         let zip_path = path
             .strip_prefix("./static/")
@@ -960,29 +935,29 @@ async fn system_export_config() -> impl Responder {
             .unwrap_or(path)
             .to_string_lossy()
             .replace("\\", "/");
-        
+
         // 添加到 ZIP
         if let Err(e) = zip.start_file(&zip_path, options) {
             error!("Failed to add {} to zip: {}", zip_path, e);
             continue;
         }
-        
+
         if let Err(e) = zip.write_all(&buffer) {
             error!("Failed to write {} to zip: {}", zip_path, e);
             continue;
         }
-        
+
         info!("Added {} to export", zip_path);
     }
-    
+
     if let Err(e) = zip.finish() {
         error!("Failed to finalize zip: {}", e);
         return HttpResponse::InternalServerError()
             .json(serde_json::json!({"msg": format!("Failed to finalize zip: {}", e)}));
     }
-    
+
     info!("Config exported to: {}", export_path);
-    
+
     HttpResponse::Ok().json(serde_json::json!({
         "msg": "success",
         "file": format!("/static/system/{}", export_filename),
@@ -992,9 +967,11 @@ async fn system_export_config() -> impl Responder {
 
 /// 导入系统配置（从 ZIP 文件恢复 core 文件夹）
 #[post("/system/import")]
-async fn system_import_config(MultipartForm(form): MultipartForm<ConfigImportForm>) -> impl Responder {
+async fn system_import_config(
+    MultipartForm(form): MultipartForm<ConfigImportForm>,
+) -> impl Responder {
     let temp_file_path = form.file.file.path();
-    
+
     // 打开 ZIP 文件
     let file = match fs::File::open(temp_file_path) {
         Ok(f) => f,
@@ -1004,7 +981,7 @@ async fn system_import_config(MultipartForm(form): MultipartForm<ConfigImportFor
                 .json(serde_json::json!({"msg": format!("Failed to open uploaded file: {}", e)}));
         }
     };
-    
+
     let mut archive = match ZipArchive::new(file) {
         Ok(a) => a,
         Err(e) => {
@@ -1013,42 +990,48 @@ async fn system_import_config(MultipartForm(form): MultipartForm<ConfigImportFor
                 .json(serde_json::json!({"msg": "Invalid zip file format"}));
         }
     };
-    
+
     // 验证 ZIP 文件内容 - 支持两种路径格式
     let expected_prefixes = vec!["static/core/", "core/"];
-    let required_json_files = vec!["task.json", "search.json", "replace.json", "favourite.json", "logos.json"];
-    
+    let required_json_files = vec![
+        "task.json",
+        "search.json",
+        "replace.json",
+        "favourite.json",
+        "logos.json",
+    ];
+
     let mut found_json_files: HashMap<String, bool> = HashMap::new();
     for name in required_json_files.iter() {
         found_json_files.insert(name.to_string(), false);
     }
-    
+
     let mut has_core_files = false;
-    
+
     // 检查文件是否存在并验证 JSON 格式
     for i in 0..archive.len() {
         let mut file = match archive.by_index(i) {
             Ok(f) => f,
             Err(_) => continue,
         };
-        
+
         let file_name = file.name().to_string();
-        
+
         // 跳过目录项
         if file.is_dir() {
             continue;
         }
-        
+
         // 检查文件是否在 core/ 目录下（支持 static/core/ 或 core/ 前缀）
         let mut is_core_file = false;
         let mut relative_path = String::new();
-        
+
         for prefix in expected_prefixes.iter() {
             if file_name.starts_with(prefix) {
                 is_core_file = true;
                 relative_path = file_name.trim_start_matches(prefix).to_string();
                 has_core_files = true;
-                
+
                 // 检查是否是必需的 JSON 文件
                 if required_json_files.contains(&relative_path.as_str()) {
                     found_json_files.insert(relative_path.clone(), true);
@@ -1056,7 +1039,7 @@ async fn system_import_config(MultipartForm(form): MultipartForm<ConfigImportFor
                 break;
             }
         }
-        
+
         if is_core_file {
             // 如果是 JSON 文件，验证格式
             if relative_path.ends_with(".json") {
@@ -1066,48 +1049,49 @@ async fn system_import_config(MultipartForm(form): MultipartForm<ConfigImportFor
                     return HttpResponse::BadRequest()
                         .json(serde_json::json!({"msg": format!("Failed to read {} from zip", file_name)}));
                 }
-                
+
                 // 验证 JSON 格式
                 if let Err(e) = serde_json::from_str::<serde_json::Value>(&contents) {
                     error!("Invalid JSON format in {}: {}", file_name, e);
-                    return HttpResponse::BadRequest()
-                        .json(serde_json::json!({"msg": format!("Invalid JSON format in {}", file_name)}));
+                    return HttpResponse::BadRequest().json(
+                        serde_json::json!({"msg": format!("Invalid JSON format in {}", file_name)}),
+                    );
                 }
-                
+
                 info!("Validated JSON: {}", file_name);
             } else {
                 info!("Found non-JSON file: {}", file_name);
             }
         }
     }
-    
+
     // 检查是否有 core/ 目录下的文件
     if !has_core_files {
         return HttpResponse::BadRequest()
             .json(serde_json::json!({"msg": "No core/ directory files found in zip"}));
     }
-    
+
     // 检查是否至少有一个必需的 JSON 配置文件
     let has_any_json = found_json_files.values().any(|&v| v);
     if !has_any_json {
         return HttpResponse::BadRequest()
             .json(serde_json::json!({"msg": "No valid JSON configuration files found in zip"}));
     }
-    
+
     // 创建备份
     let backup_dir = format!("{}system/backup", STATIC_FOLDER);
     let backup_timestamp = Local::now().format("%Y%m%d_%H%M%S").to_string();
     let backup_path = format!("{}/config_backup_{}.zip", backup_dir, backup_timestamp);
-    
+
     if let Err(e) = fs::create_dir_all(&backup_dir) {
         error!("Failed to create backup directory: {}", e);
     } else {
         // 备份当前配置
         if let Ok(backup_file) = fs::File::create(&backup_path) {
             let mut backup_zip = ZipWriter::new(backup_file);
-            let options = FileOptions::default()
-                .compression_method(zip::CompressionMethod::Deflated);
-            
+            let options =
+                FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+
             // 备份 static/core 目录下的所有配置文件
             let core_dir = "./static/core";
             let walker = WalkDir::new(core_dir).into_iter();
@@ -1121,7 +1105,7 @@ async fn system_import_config(MultipartForm(form): MultipartForm<ConfigImportFor
                         .unwrap_or(path)
                         .to_string_lossy()
                         .replace("\\", "/");
-                    
+
                     if let Ok(mut file_content) = fs::File::open(&path) {
                         let _ = backup_zip.start_file(&zip_path, options);
                         let mut buffer = Vec::new();
@@ -1130,12 +1114,12 @@ async fn system_import_config(MultipartForm(form): MultipartForm<ConfigImportFor
                     }
                 }
             }
-            
+
             let _ = backup_zip.finish();
             info!("Backup created at: {}", backup_path);
         }
     }
-    
+
     // 解压并覆盖配置文件
     let mut imported_files = Vec::new();
     for i in 0..archive.len() {
@@ -1143,14 +1127,14 @@ async fn system_import_config(MultipartForm(form): MultipartForm<ConfigImportFor
             Ok(f) => f,
             Err(_) => continue,
         };
-        
+
         let file_name = file.name().to_string();
-        
+
         // 跳过目录项
         if file.is_dir() {
             continue;
         }
-        
+
         // 检查是否是 core/ 目录下的文件
         let mut target_path = String::new();
         for prefix in expected_prefixes.iter() {
@@ -1161,7 +1145,7 @@ async fn system_import_config(MultipartForm(form): MultipartForm<ConfigImportFor
                 break;
             }
         }
-        
+
         if !target_path.is_empty() {
             // 读取文件内容（二进制方式，以支持图片等非文本文件）
             let mut contents = Vec::new();
@@ -1169,7 +1153,7 @@ async fn system_import_config(MultipartForm(form): MultipartForm<ConfigImportFor
                 error!("Failed to read {}: {}", file_name, e);
                 continue;
             }
-            
+
             // 确保目录存在
             if let Some(parent) = PathBuf::from(&target_path).parent() {
                 if let Err(e) = fs::create_dir_all(parent) {
@@ -1177,27 +1161,27 @@ async fn system_import_config(MultipartForm(form): MultipartForm<ConfigImportFor
                     continue;
                 }
             }
-            
+
             // 写入文件
             if let Err(e) = fs::write(&target_path, contents) {
                 error!("Failed to write {}: {}", target_path, e);
                 continue;
             }
-            
+
             imported_files.push(target_path.clone());
             info!("Imported {} to {}", file_name, target_path);
         }
     }
-    
+
     // 重新加载配置
     let _ = crate::config::task::reload_task_config();
     let _ = crate::config::search::reload_search_map();
     let _ = crate::config::replace::reload_replace_config();
     let _ = crate::config::favourite::reload_favourite_map();
     let _ = crate::config::logos::reload_logos_map();
-    
+
     info!("Configuration imported successfully");
-    
+
     HttpResponse::Ok().json(serde_json::json!({
         "msg": "success",
         "imported_files": imported_files,
@@ -1208,9 +1192,6 @@ async fn system_import_config(MultipartForm(form): MultipartForm<ConfigImportFor
 /// M3U解析和Logo替换API端点
 #[get("/q")]
 async fn q_m3u(req: web::Query<QRequest>) -> impl Responder {
-    use crate::common::M3uObjectList;
-    use std::fs;
-
     // 1. 使用 config 模块获取 logos 映射
     let logos_map = crate::config::logos::get_logos_map();
 
@@ -1224,11 +1205,12 @@ async fn q_m3u(req: web::Query<QRequest>) -> impl Responder {
     // 3. 解析 M3U
     let mut m3u_list = M3uObjectList::from(content);
 
+    let host = crate::config::logos::get_logos_config().host;
     // 4. 替换 Logo
-    m3u_list.replace_logos(req.host.to_string(), &logos_map);
+    m3u_list.replace_logos(host.to_string(), &logos_map);
 
     // 5. 生成结果
-    let result = m3u_list.get_m3u_content();
+    let result = m3u_list.get_m3u_content_str(false);
 
     HttpResponse::Ok()
         .append_header((
@@ -1240,7 +1222,6 @@ async fn q_m3u(req: web::Query<QRequest>) -> impl Responder {
 
 /// 启动Web服务器
 pub async fn start_web(port: u16) {
-
     // 初始化任务管理器
     let task_manager = Arc::new(TaskManager {});
 

@@ -109,6 +109,14 @@ pub fn is_valid_ip(host: &str) -> bool {
     false
 }
 
+pub fn is_ipv4(host: &str) -> bool {
+    host.parse::<Ipv4Addr>().is_ok()
+}
+
+pub fn is_ipv6(host: &str) -> bool {
+    host.parse::<Ipv6Addr>().is_ok()
+}
+
 pub fn get_url_host_and_port(url_str: &str) -> (String, u16) {
     match Url::parse(url_str) {
         Ok(url) => {
@@ -127,7 +135,6 @@ pub fn get_url_host_and_port(url_str: &str) -> (String, u16) {
 }
 
 pub fn get_host_ip_address(domain: &str, port: u16) -> Vec<String> {
-
     let mut list = vec![];
 
     // 使用`ToSocketAddrs`将域名解析为SocketAddr

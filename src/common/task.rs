@@ -410,6 +410,7 @@ impl Task {
                 same_save_num,
                 not_http_skip,
                 video_quality,
+                false,
             )
             .await;
             debug!("end taskId: {}", task_id);

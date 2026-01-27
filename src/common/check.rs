@@ -1,12 +1,12 @@
-use crate::config::favourite::get_favourite_list;
 use crate::common::m3u::m3u::list_str2obj;
 use crate::common::util::from_video_resolution;
 use crate::common::{AudioInfo, CheckOptions, SearchOptions, VideoInfo};
+use crate::config::favourite::get_favourite_list;
 use crate::r#const::constant::{INPUT_SEARCH_FOLDER, OUTPUT_FOLDER};
-use crate::{common, utils};
+use crate::{common};
 use log::info;
 use serde::{Deserialize, Serialize};
-use std::fmt::Error;
+use std::fmt::{Error};
 
 /// URL检查响应结构体
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -529,12 +529,12 @@ pub async fn get_favourite_channel(channel_type: String) -> Result<String, Error
         quality: vec![],
     })
     .await;
-    return Ok(data.get_m3u_content());
+    return Ok(data.get_m3u_content_str(false));
 }
 
 pub async fn do_check(
     input_files: Vec<String>,
-    output_file: String,
+    output_id: String,
     timeout: i32,
     print_result: bool,
     request_timeout: i32,
@@ -548,6 +548,7 @@ pub async fn do_check(
     same_save_num: i32,
     not_http_skip: bool,
     video_quality: Vec<String>,
+    export_file: bool,
 ) -> Result<bool, Error> {
     // 将文件转换为数组
     let list = common::m3u::m3u::from_arr(input_files.to_owned(), timeout as u64).await;
@@ -572,8 +573,6 @@ pub async fn do_check(
         quality: vec![],
     })
     .await;
-    // 输出文件
-    let output_file = utils::get_out_put_filename(OUTPUT_FOLDER, output_file.clone());
     // 检查数据
     data.check_data_new(CheckOptions {
         request_time: request_timeout,
@@ -589,12 +588,16 @@ pub async fn do_check(
     if ffmpeg_check {
         data.search_video_quality(from_video_resolution(video_quality));
     }
+    let output_file = format!("{}{}.json", OUTPUT_FOLDER, output_id);
     if print_result {
         info!("输出文件: {}", output_file);
     }
-    data.save_raw_data("./static/output/111.json".to_string());
+    data.save_raw_data(output_file);
     // 导出数据
-    data.output_file(output_file, true).await;
+    if export_file {
+        data.output_file(format!("{}{}.m3u", OUTPUT_FOLDER, output_id), true)
+            .await;
+    }
     if print_result {
         if !no_check {
             let status_string = data.print_result();
