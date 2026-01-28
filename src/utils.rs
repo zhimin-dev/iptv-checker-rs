@@ -122,9 +122,6 @@ pub fn get_url_host_and_port(url_str: &str) -> (String, u16) {
         Ok(url) => {
             // 获取host
             if let Some(host) = url.host() {
-                // host可以是域名、IPv4或IPv6
-                // println!("Host: {}", host);
-
                 // 如果你想将host以字符串形式获取，可以使用host.to_string()
                 return (host.to_string(), url.port().unwrap_or(80));
             }

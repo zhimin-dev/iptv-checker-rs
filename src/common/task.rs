@@ -226,6 +226,10 @@ impl TaskContent {
         self.no_check = no_check
     }
 
+    pub fn get_no_check(&self) -> bool {
+        self.no_check
+    }
+
     pub fn set_concurrent(&mut self, concurrent: i32) {
         self.concurrent = concurrent
     }
@@ -593,50 +597,50 @@ pub struct GetDownloadBodyReq {
     task_id: String,
 }
 
-pub async fn system_tasks_export(_: web::Data<Arc<TaskManager>>) -> impl Responder {
-    if let Ok(tasks) = file_config::get_all_tasks() {
-        HttpResponse::Ok().json(tasks)
-    } else {
-        let mut resp = HashMap::new();
-        resp.insert("code", String::from("500"));
-        resp.insert("msg", String::from("导出失败"));
-        HttpResponse::InternalServerError().json(resp)
-    }
-}
+// pub async fn system_tasks_export(_: web::Data<Arc<TaskManager>>) -> impl Responder {
+//     if let Ok(tasks) = file_config::get_all_tasks() {
+//         HttpResponse::Ok().json(tasks)
+//     } else {
+//         let mut resp = HashMap::new();
+//         resp.insert("code", String::from("500"));
+//         resp.insert("msg", String::from("导出失败"));
+//         HttpResponse::InternalServerError().json(resp)
+//     }
+// }
 
-pub async fn system_tasks_import(
-    task_manager: web::Data<Arc<TaskManager>>,
-    req: web::Json<HashMap<String, Task>>,
-) -> impl Responder {
-    let mut resp = HashMap::new();
-    if task_manager.import_task_from_data(req.into_inner()) {
-        resp.insert("code", String::from("200"));
-        resp.insert("msg", String::from("成功"));
-        HttpResponse::Ok().json(resp)
-    } else {
-        resp.insert("code", String::from("500"));
-        resp.insert("msg", String::from("导入失败"));
-        HttpResponse::InternalServerError().json(resp)
-    }
-}
+// pub async fn system_tasks_import(
+//     task_manager: web::Data<Arc<TaskManager>>,
+//     req: web::Json<HashMap<String, Task>>,
+// ) -> impl Responder {
+//     let mut resp = HashMap::new();
+//     if task_manager.import_task_from_data(req.into_inner()) {
+//         resp.insert("code", String::from("200"));
+//         resp.insert("msg", String::from("成功"));
+//         HttpResponse::Ok().json(resp)
+//     } else {
+//         resp.insert("code", String::from("500"));
+//         resp.insert("msg", String::from("导入失败"));
+//         HttpResponse::InternalServerError().json(resp)
+//     }
+// }
 
-pub async fn get_download_body(
-    task_manager: web::Data<Arc<TaskManager>>,
-    req: web::Query<GetDownloadBodyReq>,
-) -> impl Responder {
-    let mut resp = HashMap::new();
-    resp.insert("content", String::default());
-    resp.insert("url", String::default());
-    let task = task_manager.get_task(req.task_id.clone());
-    if let Some(info) = task {
-        let data = info.clone();
-        resp.insert("url", data.original.result_name.clone());
-        if let Some(contents) = get_file_contents(data.original.result_name) {
-            resp.insert("content", contents.clone());
-        }
-    }
-    return HttpResponse::Ok().json(resp);
-}
+// pub async fn get_download_body(
+//     task_manager: web::Data<Arc<TaskManager>>,
+//     req: web::Query<GetDownloadBodyReq>,
+// ) -> impl Responder {
+//     let mut resp = HashMap::new();
+//     resp.insert("content", String::default());
+//     resp.insert("url", String::default());
+//     let task = task_manager.get_task(req.task_id.clone());
+//     if let Some(info) = task {
+//         let data = info.clone();
+//         resp.insert("url", data.original.result_name.clone());
+//         if let Some(contents) = get_file_contents(data.original.result_name) {
+//             resp.insert("content", contents.clone());
+//         }
+//     }
+//     return HttpResponse::Ok().json(resp);
+// }
 
 pub fn get_file_contents(file_name: String) -> Option<String> {
     if let Ok(mut f) = File::open(file_name.clone()) {

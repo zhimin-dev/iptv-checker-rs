@@ -12,6 +12,7 @@ use crate::utils::{
     get_host_ip_address, get_url_host_and_port, is_ipv4, is_ipv6, is_valid_ip, remove_other_char,
 };
 use actix_rt::time;
+use clap::builder::Str;
 use log::{debug, error, info};
 use serde::{Deserialize, Serialize};
 use std::cmp::PartialEq;
@@ -146,6 +147,7 @@ impl M3uObject {
                 let mut o_status = OtherStatus::new();
                 o_status.set_delay(data.delay);
                 o_status.set_ffmpeg_info(data.ffmpeg_info);
+                o_status.set_ip_address(self.other_status.ip_address.clone());
                 self.set_other_status(o_status);
                 self.set_status(Success);
             }
@@ -294,7 +296,7 @@ pub struct M3uObjectListCounter {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct M3uObjectList {
-    header: Option<M3uExt>,
+    header: M3uExt,
     list: Vec<M3uObject>,
     counter: M3uObjectListCounter,
 }
@@ -364,7 +366,7 @@ pub struct CheckOptions {
 impl M3uObjectList {
     pub fn new() -> M3uObjectList {
         M3uObjectList {
-            header: None,
+            header: M3uExt::new(),
             list: vec![],
             counter: M3uObjectListCounter::new(),
         }
@@ -392,7 +394,7 @@ impl M3uObjectList {
     }
 
     pub fn set_header(&mut self, header: M3uExt) {
-        self.header = Some(header)
+        self.header = header
     }
 
     pub fn set_list(&mut self, list: Vec<M3uObject>) {
@@ -403,7 +405,7 @@ impl M3uObjectList {
         self.list
     }
 
-    pub fn get_header(self) -> Option<M3uExt> {
+    pub fn get_header(self) -> M3uExt {
         self.header
     }
 
@@ -437,18 +439,14 @@ impl M3uObjectList {
 
     pub fn export(
         self,
-        params: SearchOptions,
+        ip_type: i32, //0:all 1:v4 2:v6
+        replace_logo_host: String,
+        replace_logo_map: HashMap<String, String>,
         like_list: Vec<String>,
         full_list: Vec<String>,
         only_success: bool,
         export_type: i8,
     ) -> String {
-        let mut ip_type = 0;
-        if params.ipv4 {
-            ip_type = 1;
-        } else if params.ipv6 {
-            ip_type = 2;
-        }
         let mut save_list = vec![];
         for i in &self.list {
             let mut is_save = true;
@@ -469,21 +467,23 @@ impl M3uObjectList {
             }
             // 关键字检查
             if is_save {
-                let mut is_hit_keyword = false;
-                for k in &like_list {
-                    if i.search_name.contains(k.as_str()) {
-                        is_hit_keyword = true
-                    }
-                }
-                if !is_hit_keyword {
-                    for k in &full_list {
-                        if i.search_name.eq(k.as_str()) {
+                if like_list.len() > 0 || full_list.len() > 0 {
+                    let mut is_hit_keyword = false;
+                    for k in &like_list {
+                        if i.search_name.contains(k.as_str()) {
                             is_hit_keyword = true
                         }
                     }
-                }
-                if !is_hit_keyword {
-                    is_save = false
+                    if !is_hit_keyword {
+                        for k in &full_list {
+                            if i.search_name.eq(k.as_str()) {
+                                is_hit_keyword = true
+                            }
+                        }
+                    }
+                    if !is_hit_keyword {
+                        is_save = false
+                    }
                 }
             }
             if is_save {
@@ -491,8 +491,11 @@ impl M3uObjectList {
             }
         }
         let mut new_obj = M3uObjectList::new();
-        new_obj.set_header(self.header.unwrap());
+        new_obj.set_header(self.header);
         new_obj.set_list(save_list);
+        if !replace_logo_host.is_empty() && !replace_logo_host.is_empty() {
+            new_obj.replace_logos(replace_logo_host, &replace_logo_map);
+        }
         if export_type == 0 {
             // let _ = new_obj.generate_m3u_file(format!("{}{}.m3u", OUTPUT_FOLDER, custom_id), true);
             new_obj.get_m3u_content_str(only_success)
@@ -919,17 +922,12 @@ impl M3uObjectList {
 
     pub fn get_m3u_content(&mut self, only_succ: bool) -> Vec<String> {
         let mut result_m3u_content = vec![];
-        match &self.header {
-            None => result_m3u_content.push(String::from("#EXTM3U")),
-            Some(data) => {
-                if data.x_tv_url.len() > 0 {
-                    let exp = data.x_tv_url.join(",");
-                    let header_line = format!("#EXTM3U x-tvg-url=\"{}\"", exp);
-                    result_m3u_content.push(header_line.to_owned());
-                } else {
-                    result_m3u_content.push(String::from("#EXTM3U"))
-                }
-            }
+        if self.header.x_tv_url.len() > 0 {
+            let exp = self.header.x_tv_url.join(",");
+            let header_line = format!("#EXTM3U x-tvg-url=\"{}\"", exp);
+            result_m3u_content.push(header_line.to_owned());
+        } else {
+            result_m3u_content.push(String::from("#EXTM3U"))
         }
         for mut x in self.list.clone() {
             x.generate_raw();
@@ -1002,10 +1000,16 @@ pub struct M3uExt {
     pub x_tv_url: Vec<String>,
 }
 
+impl M3uExt {
+    fn new() -> Self {
+        M3uExt { x_tv_url: vec![] }
+    }
+}
+
 impl From<String> for M3uObjectList {
     fn from(_str: String) -> Self {
         let empty_data = M3uObjectList {
-            header: None,
+            header: M3uExt::new(),
             list: vec![],
             counter: M3uObjectListCounter::new(),
         };
@@ -1157,6 +1161,7 @@ pub mod m3u {
     use log::{error, info};
     use std::fs::File;
     use std::io::Read;
+    use actix_web::web::head;
 
     pub fn check_source_type(_body: String) -> Option<SourceType> {
         if _body.starts_with("#EXTM3U") {
@@ -1211,22 +1216,12 @@ pub mod m3u {
                 Some(Normal) => {
                     let nor_data = body_normal(_str.clone(), now_show_input_top);
                     list.extend(nor_data.clone().get_list());
-                    match nor_data.get_header() {
-                        Some(d) => {
-                            header.push(d);
-                        }
-                        None => {}
-                    }
+                    header.push(nor_data.header);
                 }
                 Some(Quota) => {
                     let quo_data = body_quota(_str.clone(), now_show_input_top);
                     list.extend(quo_data.clone().get_list());
-                    match quo_data.get_header() {
-                        Some(d) => {
-                            header.push(d);
-                        }
-                        None => {}
-                    }
+                    header.push(quo_data.header);
                 }
                 None => {}
             };

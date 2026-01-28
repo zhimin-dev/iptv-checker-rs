@@ -1,15 +1,17 @@
-use crate::common::check;
 use crate::common::task::{
-    add_task, delete_task, get_download_body, get_file_contents, list_task, run_task,
-    system_tasks_export, system_tasks_import, update_task, TaskManager,
+    add_task, delete_task, get_file_contents, list_task, run_task, update_task, TaskManager,
 };
 use crate::common::translate::init_from_default_file;
 use crate::common::M3uObjectList;
+use crate::common::{check, SearchOptions};
 use crate::config::favourite::FavouriteConfig;
 use crate::config::favourite::{get_favourite_map, reload_favourite_map};
+use crate::config::logos::LogosConfig;
 use crate::config::search::SearchConfig;
 use crate::config::{get_all_tasks, get_task};
-use crate::r#const::constant::{INPUT_SEARCH_FOLDER, LOGOS_FOLDER, STATIC_FOLDER, UPLOAD_FOLDER};
+use crate::r#const::constant::{
+    INPUT_SEARCH_FOLDER, LOGOS_FOLDER, OUTPUT_FOLDER, STATIC_FOLDER, UPLOAD_FOLDER,
+};
 use crate::search;
 use crate::search::init_search_data;
 use actix_files as actix_fs;
@@ -23,6 +25,7 @@ use log::{debug, error, info};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -30,6 +33,7 @@ use std::thread;
 use std::time;
 use std::time::Duration;
 use tokio::signal;
+use url::quirks::host;
 use walkdir::WalkDir;
 use zip::write::FileOptions;
 use zip::{ZipArchive, ZipWriter};
@@ -740,60 +744,78 @@ pub async fn get_task_detail(
                 .json(serde_json::json!({"msg": "Failed to serialize task"}));
         }
     };
-
-    // 获取任务内容（复用 get_task_content 的逻辑）
-    let result_name = task_info.original.get_result_name().to_string();
-
-    // 处理路径：如果 result_name 以 / 开头，则添加 . 前缀；否则直接使用
-    let file_path = if result_name.starts_with('/') {
-        format!(".{}", result_name)
-    } else {
-        result_name.clone()
-    };
-
-    let mut check_result = Vec::new();
-
-    // 获取原始M3U内容（type = "sub"）
-    let sub_content = get_file_contents(file_path.clone()).unwrap_or_else(|| String::default());
-
     // 获取处理后的M3U内容（type = "logo"）
     let logos_map = crate::config::logos::get_logos_map();
-
-    // 读取 M3U 文件
-    if let Ok(m3u_content) = fs::read_to_string(&file_path) {
-        let host = crate::config::logos::get_logos_config().host;
-        if !host.is_empty() {
-            // 解析 M3U 并替换 Logo
-            let mut m3u_list = M3uObjectList::from(m3u_content);
-            m3u_list.replace_logos(host.clone(), &logos_map);
-            let logo_content = m3u_list.get_m3u_content_str(false);
-
-            check_result.push(TaskContentItem {
-                content_type: "sub".to_string(),
-                content: sub_content.clone(),
-                url: result_name.clone(),
-            });
-
-            if !logo_content.is_empty() {
-                check_result.push(TaskContentItem {
-                    content_type: "logo".to_string(),
-                    content: logo_content,
-                    url: format!("/q?url={}", result_name),
-                });
+    let host = crate::config::logos::get_logos_config().host;
+    let mut check_result = Vec::new();
+    // 获取任务内容（复用 get_task_content 的逻辑）
+    let file_name = format!(
+        "{}{}.json",
+        OUTPUT_FOLDER,
+        task_info.original.get_result_name()
+    )
+    .replace("./", "");
+    println!("----{}", file_name);
+    let json_file = File::open(file_name.clone());
+    let only_succ = !task_info.original.get_no_check();
+    match json_file {
+        Ok(mut file) => {
+            let mut json_content = String::default();
+            let _ = file.read_to_string(&mut json_content);
+            let ser_res = serde_json::from_str::<M3uObjectList>(&json_content);
+            match ser_res {
+                Ok(m3u_obj) => {
+                    let all_content_m3u = &m3u_obj.clone().export(
+                        0,
+                        host.clone(),
+                        logos_map.clone(),
+                        vec![],
+                        vec![],
+                        only_succ,
+                        0,
+                    );
+                    check_result.push(TaskContentItem {
+                        content_type: "sub".to_string(),
+                        content: all_content_m3u.clone(),
+                        url: String::default(),
+                    });
+                    let v4_content_m3u = &m3u_obj.clone().export(
+                        1,
+                        host.clone(),
+                        logos_map.clone(),
+                        vec![],
+                        vec![],
+                        only_succ,
+                        0,
+                    );
+                    check_result.push(TaskContentItem {
+                        content_type: "ipv4".to_string(),
+                        content: v4_content_m3u.clone(),
+                        url: String::default(),
+                    });
+                    let v6_content_m3u = m3u_obj.clone().export(
+                        2,
+                        host.clone(),
+                        logos_map.clone(),
+                        vec![],
+                        vec![],
+                        only_succ,
+                        0,
+                    );
+                    check_result.push(TaskContentItem {
+                        content_type: "ipv6".to_string(),
+                        content: v6_content_m3u.clone(),
+                        url: String::default(),
+                    });
+                }
+                Err(e) => {
+                    print!("Failed to deserialize json: {}", e);
+                }
             }
-        } else {
-            check_result.push(TaskContentItem {
-                content_type: "sub".to_string(),
-                content: sub_content.clone(),
-                url: result_name.clone(),
-            });
         }
-    } else {
-        check_result.push(TaskContentItem {
-            content_type: "sub".to_string(),
-            content: sub_content.clone(),
-            url: result_name.clone(),
-        });
+        Err(e) => {
+            println!("Failed to read json file: {}", e);
+        }
     }
 
     // 构建响应
@@ -1324,9 +1346,9 @@ pub async fn start_web(port: u16) {
             .route("/tasks/run", web::get().to(run_task))
             .route("/tasks/update", web::post().to(update_task))
             .route("/tasks/add", web::post().to(add_task))
-            .route("/tasks/get-download-body", web::get().to(get_download_body))
-            .route("/system/tasks/export", web::get().to(system_tasks_export))
-            .route("/system/tasks/import", web::post().to(system_tasks_import))
+            // .route("/tasks/get-download-body", web::get().to(get_download_body))
+            // .route("/system/tasks/export", web::get().to(system_tasks_export))
+            // .route("/system/tasks/import", web::post().to(system_tasks_import))
             .route("/tasks/delete/{id}", web::delete().to(delete_task))
             .service(actix_fs::Files::new("/", "./web/"))
             .wrap(Logger::default())
