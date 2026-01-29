@@ -452,6 +452,7 @@ impl M3uObjectList {
             let mut is_save = true;
             // 检测ip是否符合
             if ip_type == 1 || ip_type == 2 {
+                is_save = false;
                 if !i.other_status.ip_address.is_empty() {
                     for ip in &i.other_status.ip_address {
                         if ip_type == 1 && is_ipv4(ip.as_str()) {

@@ -693,7 +693,9 @@ async fn update_logo_config(req: web::Json<LogoConfig>) -> impl Responder {
 /// M3U解析和Logo替换请求结构体
 #[derive(Serialize, Deserialize)]
 struct QRequest {
-    url: String,
+    cid: String, //config_id
+    ip: i8,      // ip类型 默认 0 ， ipv4: 1, ipv6:2
+    r: i8,       // 输出结果 默认 0 m3u, 1 text
 }
 
 /// 获取任务内容的请求结构体
@@ -777,7 +779,11 @@ pub async fn get_task_detail(
                     check_result.push(TaskContentItem {
                         content_type: "sub".to_string(),
                         content: all_content_m3u.clone(),
-                        url: String::default(),
+                        url: format!(
+                            "q?cid={}&ip={}",
+                            task_info.original.get_result_name(),
+                            0
+                        ),
                     });
                     let v4_content_m3u = &m3u_obj.clone().export(
                         1,
@@ -791,7 +797,11 @@ pub async fn get_task_detail(
                     check_result.push(TaskContentItem {
                         content_type: "ipv4".to_string(),
                         content: v4_content_m3u.clone(),
-                        url: String::default(),
+                        url: format!(
+                            "q?cid={}&ip={}",
+                            task_info.original.get_result_name(),
+                            1,
+                        ),
                     });
                     let v6_content_m3u = m3u_obj.clone().export(
                         2,
@@ -805,7 +815,11 @@ pub async fn get_task_detail(
                     check_result.push(TaskContentItem {
                         content_type: "ipv6".to_string(),
                         content: v6_content_m3u.clone(),
-                        url: String::default(),
+                        url: format!(
+                            "q?cid={}&ip={}",
+                            task_info.original.get_result_name(),
+                            2,
+                        ),
                     });
                 }
                 Err(e) => {
@@ -1214,32 +1228,46 @@ async fn system_import_config(
 /// M3U解析和Logo替换API端点
 #[get("/q")]
 async fn q_m3u(req: web::Query<QRequest>) -> impl Responder {
-    // 1. 使用 config 模块获取 logos 映射
-    let logos_map = crate::config::logos::get_logos_map();
-
     // 2. 读取 M3U 文件
-    let file_path = format!(".{}", &req.url);
-    let content = match fs::read_to_string(file_path) {
-        Ok(c) => c,
-        Err(e) => return HttpResponse::BadRequest().body(format!("Failed to read file: {}", e)),
-    };
+    let file_name = format!("{}{}.json", OUTPUT_FOLDER, &req.cid);
+    let json_file = File::open(file_name.clone());
 
-    // 3. 解析 M3U
-    let mut m3u_list = M3uObjectList::from(content);
-
+    let logos_map = crate::config::logos::get_logos_map();
     let host = crate::config::logos::get_logos_config().host;
-    // 4. 替换 Logo
-    m3u_list.replace_logos(host.to_string(), &logos_map);
-
-    // 5. 生成结果
-    let result = m3u_list.get_m3u_content_str(false);
-
-    HttpResponse::Ok()
-        .append_header((
-            "Content-Type",
-            "application/vnd.apple.mpegurl; charset=utf-8",
-        ))
-        .body(result)
+    return match json_file {
+        Ok(mut file) => {
+            let mut json_content = String::default();
+            let _ = file.read_to_string(&mut json_content);
+            let ser_res = serde_json::from_str::<M3uObjectList>(&json_content);
+            match ser_res {
+                Ok(m3u_obj) => {
+                    let all_content_m3u = &m3u_obj.clone().export(
+                        req.ip as i32,
+                        host.clone(),
+                        logos_map.clone(),
+                        vec![],
+                        vec![],
+                        true,
+                        req.r,
+                    );
+                    HttpResponse::Ok()
+                        .append_header((
+                            "Content-Type",
+                            "application/vnd.apple.mpegurl; charset=utf-8",
+                        ))
+                        .body(all_content_m3u.clone())
+                }
+                Err(e) => {
+                    return HttpResponse::BadRequest()
+                        .json(serde_json::json!({"msg": format!("Failed to parse json: {}", e)}));
+                }
+            }
+        }
+        Err(e) => {
+            return HttpResponse::BadRequest()
+                .json(serde_json::json!({"msg": format!("Failed to read json file: {}", e)}));
+        }
+    };
 }
 
 /// 启动Web服务器
@@ -1346,9 +1374,6 @@ pub async fn start_web(port: u16) {
             .route("/tasks/run", web::get().to(run_task))
             .route("/tasks/update", web::post().to(update_task))
             .route("/tasks/add", web::post().to(add_task))
-            // .route("/tasks/get-download-body", web::get().to(get_download_body))
-            // .route("/system/tasks/export", web::get().to(system_tasks_export))
-            // .route("/system/tasks/import", web::post().to(system_tasks_import))
             .route("/tasks/delete/{id}", web::delete().to(delete_task))
             .service(actix_fs::Files::new("/", "./web/"))
             .wrap(Logger::default())
