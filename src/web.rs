@@ -3,10 +3,9 @@ use crate::common::task::{
 };
 use crate::common::translate::init_from_default_file;
 use crate::common::M3uObjectList;
-use crate::common::{check, SearchOptions};
+use crate::common::{check};
 use crate::config::favourite::FavouriteConfig;
 use crate::config::favourite::{get_favourite_map, reload_favourite_map};
-use crate::config::logos::LogosConfig;
 use crate::config::search::SearchConfig;
 use crate::config::{get_all_tasks, get_task};
 use crate::r#const::constant::{
@@ -33,7 +32,6 @@ use std::thread;
 use std::time;
 use std::time::Duration;
 use tokio::signal;
-use url::quirks::host;
 use walkdir::WalkDir;
 use zip::write::FileOptions;
 use zip::{ZipArchive, ZipWriter};
@@ -55,28 +53,6 @@ async fn update_global_config(req: web::Json<UpdateGlobalConfigRequest>) -> impl
     }
     return HttpResponse::InternalServerError().body("{\"msg\":\"Failed to save configuration\"}");
 }
-
-/// 删除任务请求结构体
-#[derive(Debug, Deserialize, Serialize)]
-struct TaskDel {
-    task_id: String, // 任务ID
-}
-
-/// 删除任务响应结构体
-#[derive(Debug, Deserialize, Serialize)]
-struct TaskDelResp {
-    result: bool, // 操作是否成功
-}
-
-// /// 检查系统是否支持IPv6
-// pub async fn check_ipv6() -> bool {
-//     let result = reqwest::get("http://[2606:2800:220:1:248:1893:25c8:1946]").await;
-//
-//     match result {
-//         Ok(_) => true,
-//         Err(_) => false,
-//     }
-// }
 
 /// URL可用性检查请求结构体
 #[derive(Serialize, Deserialize)]
@@ -693,9 +669,9 @@ async fn update_logo_config(req: web::Json<LogoConfig>) -> impl Responder {
 /// M3U解析和Logo替换请求结构体
 #[derive(Serialize, Deserialize)]
 struct QRequest {
-    cid: String, //config_id
-    ip: i8,      // ip类型 默认 0 ， ipv4: 1, ipv6:2
-    r: i8,       // 输出结果 默认 0 m3u, 1 text
+    c: String, //config_id
+    i: i8,     // ip类型 默认 0 ， ipv4: 1, ipv6:2
+    r: i8,     // 输出结果 默认 0 m3u, 1 text
 }
 
 /// 获取任务内容的请求结构体
@@ -779,11 +755,7 @@ pub async fn get_task_detail(
                     check_result.push(TaskContentItem {
                         content_type: "sub".to_string(),
                         content: all_content_m3u.clone(),
-                        url: format!(
-                            "q?cid={}&ip={}",
-                            task_info.original.get_result_name(),
-                            0
-                        ),
+                        url: format!("q?c={}&i={}", task_info.original.get_result_name(), 0),
                     });
                     let v4_content_m3u = &m3u_obj.clone().export(
                         1,
@@ -797,11 +769,7 @@ pub async fn get_task_detail(
                     check_result.push(TaskContentItem {
                         content_type: "ipv4".to_string(),
                         content: v4_content_m3u.clone(),
-                        url: format!(
-                            "q?cid={}&ip={}",
-                            task_info.original.get_result_name(),
-                            1,
-                        ),
+                        url: format!("q?c={}&i={}", task_info.original.get_result_name(), 1,),
                     });
                     let v6_content_m3u = m3u_obj.clone().export(
                         2,
@@ -815,11 +783,7 @@ pub async fn get_task_detail(
                     check_result.push(TaskContentItem {
                         content_type: "ipv6".to_string(),
                         content: v6_content_m3u.clone(),
-                        url: format!(
-                            "q?cid={}&ip={}",
-                            task_info.original.get_result_name(),
-                            2,
-                        ),
+                        url: format!("q?c={}&i={}", task_info.original.get_result_name(), 2,),
                     });
                 }
                 Err(e) => {
@@ -1229,7 +1193,7 @@ async fn system_import_config(
 #[get("/q")]
 async fn q_m3u(req: web::Query<QRequest>) -> impl Responder {
     // 2. 读取 M3U 文件
-    let file_name = format!("{}{}.json", OUTPUT_FOLDER, &req.cid);
+    let file_name = format!("{}{}.json", OUTPUT_FOLDER, &req.c);
     let json_file = File::open(file_name.clone());
 
     let logos_map = crate::config::logos::get_logos_map();
@@ -1242,7 +1206,7 @@ async fn q_m3u(req: web::Query<QRequest>) -> impl Responder {
             match ser_res {
                 Ok(m3u_obj) => {
                     let all_content_m3u = &m3u_obj.clone().export(
-                        req.ip as i32,
+                        req.i as i32,
                         host.clone(),
                         logos_map.clone(),
                         vec![],
@@ -1257,16 +1221,12 @@ async fn q_m3u(req: web::Query<QRequest>) -> impl Responder {
                         ))
                         .body(all_content_m3u.clone())
                 }
-                Err(e) => {
-                    return HttpResponse::BadRequest()
-                        .json(serde_json::json!({"msg": format!("Failed to parse json: {}", e)}));
-                }
+                Err(e) => HttpResponse::BadRequest()
+                    .json(serde_json::json!({"msg": format!("Failed to parse json: {}", e)})),
             }
         }
-        Err(e) => {
-            return HttpResponse::BadRequest()
-                .json(serde_json::json!({"msg": format!("Failed to read json file: {}", e)}));
-        }
+        Err(e) => HttpResponse::BadRequest()
+            .json(serde_json::json!({"msg": format!("Failed to read json file: {}", e)})),
     };
 }
 

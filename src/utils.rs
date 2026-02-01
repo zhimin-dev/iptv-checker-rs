@@ -1,5 +1,4 @@
 use crate::config::replace::replace;
-use clap::builder::Str;
 use lazy_static::lazy_static;
 use rand::distr::Alphanumeric;
 use rand::Rng;
@@ -7,7 +6,7 @@ use regex::Regex;
 use std::fs;
 use std::fs::File;
 use std::io::{Error, ErrorKind, Read};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs};
+use std::net::{Ipv4Addr, Ipv6Addr, ToSocketAddrs};
 use std::process::Command;
 use url::Url;
 

@@ -1,5 +1,4 @@
 use crate::common::do_check;
-use crate::common::task::TaskStatus::InProgress;
 use crate::config::task::file_config;
 use crate::config::{get_now_check_task_id, save_task, set_now_check_id};
 use actix_web::{web, HttpResponse, Responder};
@@ -51,10 +50,6 @@ impl TaskInfo {
     pub fn set_run_type(&mut self, run_type: RunTime) {
         self.run_type = run_type
     }
-
-    // pub fn set_status(&mut self, stats: TaskStatus) {
-    //     self.task_status = stats
-    // }
 
     pub fn set_next_run_time(&mut self, time: i32) {
         self.next_run_time = time
@@ -591,56 +586,6 @@ pub async fn update_task(
         }
     }
 }
-
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct GetDownloadBodyReq {
-    task_id: String,
-}
-
-// pub async fn system_tasks_export(_: web::Data<Arc<TaskManager>>) -> impl Responder {
-//     if let Ok(tasks) = file_config::get_all_tasks() {
-//         HttpResponse::Ok().json(tasks)
-//     } else {
-//         let mut resp = HashMap::new();
-//         resp.insert("code", String::from("500"));
-//         resp.insert("msg", String::from("导出失败"));
-//         HttpResponse::InternalServerError().json(resp)
-//     }
-// }
-
-// pub async fn system_tasks_import(
-//     task_manager: web::Data<Arc<TaskManager>>,
-//     req: web::Json<HashMap<String, Task>>,
-// ) -> impl Responder {
-//     let mut resp = HashMap::new();
-//     if task_manager.import_task_from_data(req.into_inner()) {
-//         resp.insert("code", String::from("200"));
-//         resp.insert("msg", String::from("成功"));
-//         HttpResponse::Ok().json(resp)
-//     } else {
-//         resp.insert("code", String::from("500"));
-//         resp.insert("msg", String::from("导入失败"));
-//         HttpResponse::InternalServerError().json(resp)
-//     }
-// }
-
-// pub async fn get_download_body(
-//     task_manager: web::Data<Arc<TaskManager>>,
-//     req: web::Query<GetDownloadBodyReq>,
-// ) -> impl Responder {
-//     let mut resp = HashMap::new();
-//     resp.insert("content", String::default());
-//     resp.insert("url", String::default());
-//     let task = task_manager.get_task(req.task_id.clone());
-//     if let Some(info) = task {
-//         let data = info.clone();
-//         resp.insert("url", data.original.result_name.clone());
-//         if let Some(contents) = get_file_contents(data.original.result_name) {
-//             resp.insert("content", contents.clone());
-//         }
-//     }
-//     return HttpResponse::Ok().json(resp);
-// }
 
 pub fn get_file_contents(file_name: String) -> Option<String> {
     if let Ok(mut f) = File::open(file_name.clone()) {

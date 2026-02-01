@@ -6,23 +6,19 @@ use crate::common::CheckDataStatus::{Failed, Success, Unchecked};
 use crate::common::FfmpegInfo;
 use crate::common::QualityType::QualityUnknown;
 use crate::common::SourceType::{Normal, Quota};
-use crate::r#const::constant::OUTPUT_FOLDER;
-use crate::search::{generate_channel_thumbnail_folder_name, SearchConfig};
+use crate::search::{generate_channel_thumbnail_folder_name};
 use crate::utils::{
     get_host_ip_address, get_url_host_and_port, is_ipv4, is_ipv6, is_valid_ip, remove_other_char,
 };
 use actix_rt::time;
-use clap::builder::Str;
 use log::{debug, error, info};
 use serde::{Deserialize, Serialize};
 use std::cmp::PartialEq;
 use std::collections::{HashMap, HashSet};
-use std::fmt::format;
 use std::fs::File;
 use std::io::{self, Write};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
-use std::thread::panicking;
 use std::time::Duration;
 use std::{thread, vec};
 
@@ -327,7 +323,7 @@ impl M3uObjectListCounter {
     }
 
     pub fn print_now_status(self) {
-        debug!("\r检查进度: {}/{}", self.check_index, self.total);
+        debug!("\r检查进度: {}/{}\n", self.check_index, self.total);
         io::stdout().flush().unwrap();
     }
 }
@@ -1059,11 +1055,6 @@ impl OtherStatus {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct NetworkInfo {
-    delay: i32,
-}
-
 #[derive(Debug, Serialize, Deserialize, Clone, Eq, Hash, PartialEq)]
 pub enum QualityType {
     QualityUnknown,
@@ -1162,7 +1153,6 @@ pub mod m3u {
     use log::{error, info};
     use std::fs::File;
     use std::io::Read;
-    use actix_web::web::head;
 
     pub fn check_source_type(_body: String) -> Option<SourceType> {
         if _body.starts_with("#EXTM3U") {
