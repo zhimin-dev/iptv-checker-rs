@@ -5,15 +5,13 @@ mod live;
 mod search;
 mod utils;
 mod web;
-
-use crate::common::replace::create_replace_file;
 use crate::common::{do_check, SearchOptions, SearchParams};
-use crate::config::config::init_config;
-use crate::config::global::{get_config, init_global_config};
+// 配置初始化在 init_all_config_files 中完成
+use crate::config::init_all_config_files;
 use crate::live::do_ob;
 use crate::r#const::constant::{
     INPUT_FOLDER, INPUT_LIVE_FOLDER, INPUT_SEARCH_FOLDER, LOGOS_FOLDER, LOGS_FOLDER, OUTPUT_FOLDER,
-    OUTPUT_THUMBNAIL_FOLDER, STATIC_FOLDER,
+    OUTPUT_THUMBNAIL_FOLDER, STATIC_FOLDER, UPLOAD_FOLDER,
 };
 use crate::search::{clear_search_folder, do_search};
 use crate::utils::{create_folder, get_out_put_filename};
@@ -161,6 +159,10 @@ pub struct CheckArgs {
     /// 是否跳过非HTTP协议的源
     #[arg(long = "not-http-skip", default_value_t = false)]
     not_http_skip: bool,
+
+    /// 导出m3u文件
+    #[arg(long = "export-file", default_value_t = true)]
+    export_file: bool,
 }
 
 #[derive(Parser)]
@@ -190,6 +192,7 @@ async fn start_daemonize_web(pid_name: &String, port: u16) {
 }
 
 fn init_folder() {
+    let logos_folder = format!(".{}", LOGOS_FOLDER);
     let folder = vec![
         STATIC_FOLDER,
         INPUT_FOLDER,
@@ -198,7 +201,8 @@ fn init_folder() {
         OUTPUT_FOLDER,
         OUTPUT_THUMBNAIL_FOLDER,
         LOGS_FOLDER,
-        LOGOS_FOLDER,
+        logos_folder.as_str(),
+        UPLOAD_FOLDER,
     ];
     for f in folder {
         create_folder(&f.to_string()).unwrap()
@@ -232,6 +236,7 @@ fn init_console_log() {
 }
 
 fn init_file_log() {
+    create_folder(&LOGS_FOLDER.to_string()).unwrap();
     // 初始化日志系统
     let log_file = File::create(format!(
         "{}app-{}.log",
@@ -259,17 +264,12 @@ fn init_translate() {
     common::translate::init_from_default_file().unwrap();
 }
 
-fn init_favourite() {
-    common::favourite::create_favourite_file();
-}
-
-fn init_replace_json() {
-    create_replace_file();
-}
-
 #[actix_web::main]
 pub async fn main() {
     let args = Args::parse();
+    init_all_config_files();
+    init_folder();
+    init_translate();
     match args.command {
         Commands::Web(_) => {
             init_file_log();
@@ -278,12 +278,6 @@ pub async fn main() {
             init_console_log();
         }
     }
-    init_config();
-    init_global_config();
-    init_folder();
-    init_favourite();
-    init_translate();
-    init_replace_json();
     let pid_name = get_pid_file();
     match args.command {
         Commands::Web(args) => {
@@ -318,6 +312,7 @@ pub async fn main() {
                     args.same_save_num,
                     args.not_http_skip,
                     args.video_quality,
+                    args.export_file,
                 )
                 .await
                 .unwrap();

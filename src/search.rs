@@ -409,11 +409,11 @@ pub async fn init_search_data() -> Result<(), Error> {
                 }
             }
             SearchConfigParseType::GithubHomeUrl => {
-                for url in fetch_values.urls {
+                for url in fetch_values.urls.clone() {
                     let m3u_and_txt_files = fetch_github_home_page(
                         url.clone(),
                         fetch_values.include_files.clone(),
-                        config.extensions.clone(),
+                        fetch_values.extensions.clone(),
                     )
                     .await;
                     debug!("{:?}", m3u_and_txt_files);
@@ -429,11 +429,11 @@ pub async fn init_search_data() -> Result<(), Error> {
                 }
             }
             SearchConfigParseType::GithubSubPageUrl => {
-                for url in fetch_values.urls {
+                for url in fetch_values.urls.clone() {
                     let m3u_and_txt_files = fetch_github_sub_page(
                         url.clone(),
                         fetch_values.include_files.clone(),
-                        config.extensions.clone(),
+                        fetch_values.extensions.clone(),
                     )
                     .await;
                     debug!("{:?}", m3u_and_txt_files);
@@ -508,6 +508,7 @@ pub struct SearchConfigs {
 pub struct SearchSource {
     pub urls: Vec<String>,
     pub include_files: Vec<String>,
+    pub extensions: Vec<String>,
     pub parse_type: SearchConfigParseType,
 }
 
@@ -566,13 +567,7 @@ pub struct SearchConfig {
 
 pub async fn read_search_configs() -> Result<SearchConfigs, Box<dyn std::error::Error>> {
     // 从config模块读取搜索配置
-    let search_config = match config::get_search() {
-        Ok(config) => config,
-        Err(e) => {
-            error!("Failed to read search config: {}", e);
-            return Err(Box::new(e));
-        }
-    };
+    let search_config = config::search::get_search_config();
 
     // 转换配置格式
     let mut configs = SearchConfigs {
@@ -581,41 +576,24 @@ pub async fn read_search_configs() -> Result<SearchConfigs, Box<dyn std::error::
         search_list: Vec::new(),
     };
 
-    // 转换搜索源
+    // 转换搜索源，同时收集所有扩展名
     for source in search_config.source {
+        // 收集扩展名（去重）
+        for ext in &source.extensions {
+            if !configs.extensions.contains(ext) {
+                configs.extensions.push(ext.clone());
+            }
+        }
+        
         configs.source.push(SearchSource {
             urls: source.urls,
             include_files: source.include_files,
+            extensions: source.extensions,
             parse_type: source.parse_type.parse().unwrap_or_else(|_| {
                 error!("Invalid parse type: {}", source.parse_type);
                 SearchConfigParseType::RawSources
             }),
         });
-    }
-
-    // 转换扩展名
-    configs.extensions = search_config.extensions;
-
-    // 转换搜索列表
-    for item in search_config.search_list {
-        let mut search_item = SearchListItem {
-            id: item.id,
-            config: Vec::new(),
-            result: item.result,
-        };
-
-        // 转换搜索配置
-        for config in item.config {
-            search_item.config.push(SearchConfig {
-                search_name: config.search_name,
-                save_name: config.save_name,
-                full_match: config.full_match,
-                exclude_url: config.exclude_url,
-                exclude_host: config.exclude_host,
-            });
-        }
-
-        configs.search_list.push(search_item);
     }
 
     Ok(configs)

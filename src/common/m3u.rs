@@ -6,8 +6,10 @@ use crate::common::CheckDataStatus::{Failed, Success, Unchecked};
 use crate::common::FfmpegInfo;
 use crate::common::QualityType::QualityUnknown;
 use crate::common::SourceType::{Normal, Quota};
-use crate::search::generate_channel_thumbnail_folder_name;
-use crate::utils::remove_other_char;
+use crate::search::{generate_channel_thumbnail_folder_name};
+use crate::utils::{
+    get_host_ip_address, get_url_host_and_port, is_ipv4, is_ipv6, is_valid_ip, remove_other_char,
+};
 use actix_rt::time;
 use log::{debug, error, info};
 use serde::{Deserialize, Serialize};
@@ -79,7 +81,7 @@ impl M3uExtend {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct M3uObject {
     index: i32,
     //索引
@@ -116,6 +118,16 @@ impl M3uObject {
         self
     }
 
+    pub fn to_ip_address(&mut self) {
+        let (host_str, port) = get_url_host_and_port(&self.url);
+        if is_valid_ip(&host_str) {
+            self.other_status.set_ip_address(vec![host_str]);
+        } else {
+            self.other_status
+                .set_ip_address(get_host_ip_address(&host_str, port));
+        }
+    }
+
     pub fn check_by_block(&mut self, request_time: i32, ffmpeg_check: bool, not_http_skip: bool) {
         let url = self.url.clone();
         let _log_url = url.clone();
@@ -131,6 +143,7 @@ impl M3uObject {
                 let mut o_status = OtherStatus::new();
                 o_status.set_delay(data.delay);
                 o_status.set_ffmpeg_info(data.ffmpeg_info);
+                o_status.set_ip_address(self.other_status.ip_address.clone());
                 self.set_other_status(o_status);
                 self.set_status(Success);
             }
@@ -268,7 +281,7 @@ impl M3uObject {
     }
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Serialize, Deserialize)]
 pub struct M3uObjectListCounter {
     check_index: i32, // 当前检查的索引
     total: i32,       // 总数
@@ -277,9 +290,9 @@ pub struct M3uObjectListCounter {
                       // no_repeat_channel_count: i32, // 频道名称最终保存数
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct M3uObjectList {
-    header: Option<M3uExt>,
+    header: M3uExt,
     list: Vec<M3uObject>,
     counter: M3uObjectListCounter,
 }
@@ -310,7 +323,7 @@ impl M3uObjectListCounter {
     }
 
     pub fn print_now_status(self) {
-        debug!("\r检查进度: {}/{}", self.check_index, self.total);
+        debug!("\r检查进度: {}/{}\n", self.check_index, self.total);
         io::stdout().flush().unwrap();
     }
 }
@@ -349,14 +362,35 @@ pub struct CheckOptions {
 impl M3uObjectList {
     pub fn new() -> M3uObjectList {
         M3uObjectList {
-            header: None,
+            header: M3uExt::new(),
             list: vec![],
             counter: M3uObjectListCounter::new(),
         }
     }
 
+    pub fn save_raw_data(&self, file_name: String) {
+        let res = serde_json::to_string(self);
+        match res {
+            Ok(data) => {
+                print!("save raw data to:: {}", file_name);
+                let f_res = File::create(file_name);
+                match f_res {
+                    Ok(mut f) => {
+                        f.write_all(data.as_bytes()).unwrap();
+                    }
+                    Err(e) => {
+                        println!("write error: {}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                error!("{}", e);
+            }
+        }
+    }
+
     pub fn set_header(&mut self, header: M3uExt) {
-        self.header = Some(header)
+        self.header = header
     }
 
     pub fn set_list(&mut self, list: Vec<M3uObject>) {
@@ -367,7 +401,7 @@ impl M3uObjectList {
         self.list
     }
 
-    pub fn get_header(self) -> Option<M3uExt> {
+    pub fn get_header(self) -> M3uExt {
         self.header
     }
 
@@ -387,9 +421,86 @@ impl M3uObjectList {
         }
     }
 
+    pub fn to_ip_address(&mut self) {
+        for item in &mut self.list {
+            item.to_ip_address();
+        }
+    }
+
     pub fn remove_useless_char(&mut self) {
         for item in &mut self.list {
             item.remove_useless_char();
+        }
+    }
+
+    pub fn export(
+        self,
+        ip_type: i32, //0:all 1:v4 2:v6
+        replace_logo_host: String,
+        replace_logo_map: HashMap<String, String>,
+        like_list: Vec<String>,
+        full_list: Vec<String>,
+        only_success: bool,
+        export_type: i8,
+    ) -> String {
+        let mut save_list = vec![];
+        for i in &self.list {
+            let mut is_save = true;
+            // 检测ip是否符合
+            if ip_type == 1 || ip_type == 2 {
+                is_save = false;
+                if !i.other_status.ip_address.is_empty() {
+                    for ip in &i.other_status.ip_address {
+                        if ip_type == 1 && is_ipv4(ip.as_str()) {
+                            is_save = true;
+                        }
+                        if ip_type == 2 && is_ipv6(ip.as_str()) {
+                            is_save = true;
+                        }
+                    }
+                } else {
+                    is_save = false
+                }
+            }
+            // 关键字检查
+            if is_save {
+                if like_list.len() > 0 || full_list.len() > 0 {
+                    let mut is_hit_keyword = false;
+                    for k in &like_list {
+                        if i.search_name.contains(k.as_str()) {
+                            is_hit_keyword = true
+                        }
+                    }
+                    if !is_hit_keyword {
+                        for k in &full_list {
+                            if i.search_name.eq(k.as_str()) {
+                                is_hit_keyword = true
+                            }
+                        }
+                    }
+                    if !is_hit_keyword {
+                        is_save = false
+                    }
+                }
+            }
+            if is_save {
+                save_list.push(i.clone());
+            }
+        }
+        let mut new_obj = M3uObjectList::new();
+        new_obj.set_header(self.header);
+        new_obj.set_list(save_list);
+        if !replace_logo_host.is_empty() && !replace_logo_host.is_empty() {
+            new_obj.replace_logos(replace_logo_host, &replace_logo_map);
+        }
+        if export_type == 0 {
+            // let _ = new_obj.generate_m3u_file(format!("{}{}.m3u", OUTPUT_FOLDER, custom_id), true);
+            new_obj.get_m3u_content_str(only_success)
+        } else if export_type == 1 {
+            new_obj.get_text_content_str(only_success)
+            // let _ = new_obj.generate_text_file(format!("{}{}.m3u", OUTPUT_FOLDER, custom_id), true);
+        } else {
+            String::default()
         }
     }
 
@@ -404,26 +515,29 @@ impl M3uObjectList {
         }
         let mut save_list = vec![];
         for i in self.list.clone() {
-            let mut save = true;
+            let mut save = false;
             if keyword_like.len() > 0 {
                 save = false;
                 for lk in keyword_like.to_owned() {
                     if i.search_name.contains(&lk.to_lowercase()) {
-                        save = true
+                        save = true;
+                    }
+                }
+            } else {
+                if keyword_dislike.len() > 0 {
+                    save = true;
+                    for dk in keyword_dislike.to_owned() {
+                        if i.search_name.contains(&dk.to_lowercase()) {
+                            save = false
+                        }
                     }
                 }
             }
-            if keyword_dislike.len() > 0 {
-                for dk in keyword_dislike.to_owned() {
-                    if i.search_name.contains(&dk.to_lowercase()) {
-                        save = false
-                    }
-                }
-            }
-            if full_name_search.len() > 0 {
+            if full_name_search.len() > 0 && !save {
+                save = false;
                 for fk in full_name_search.to_owned() {
-                    if !i.search_name.eq(&fk.to_lowercase()) {
-                        save = false
+                    if i.search_name.eq(&fk.to_lowercase()) {
+                        save = true
                     }
                 }
             }
@@ -794,52 +908,40 @@ impl M3uObjectList {
         }
     }
 
-    pub fn get_m3u_content(&mut self) -> String {
+    pub fn get_m3u_content_str(&mut self, only_succ: bool) -> String {
+        let res_arr = self.get_m3u_content(only_succ);
+        if res_arr.len() == 0 {
+            String::default()
+        } else {
+            res_arr.join("\n")
+        }
+    }
+
+    pub fn get_m3u_content(&mut self, only_succ: bool) -> Vec<String> {
         let mut result_m3u_content = vec![];
-        match &self.header {
-            None => result_m3u_content.push(String::from("#EXTM3U")),
-            Some(data) => {
-                if data.x_tv_url.len() > 0 {
-                    let exp = data.x_tv_url.join(",");
-                    let header_line = format!("#EXTM3U x-tvg-url=\"{}\"", exp);
-                    result_m3u_content.push(header_line.to_owned());
-                } else {
-                    result_m3u_content.push(String::from("#EXTM3U"))
-                }
-            }
+        if self.header.x_tv_url.len() > 0 {
+            let exp = self.header.x_tv_url.join(",");
+            let header_line = format!("#EXTM3U x-tvg-url=\"{}\"", exp);
+            result_m3u_content.push(header_line.to_owned());
+        } else {
+            result_m3u_content.push(String::from("#EXTM3U"))
         }
         for mut x in self.list.clone() {
             x.generate_raw();
-            result_m3u_content.push(x.raw.clone());
+            if only_succ {
+                if x.status == Success {
+                    result_m3u_content.push(x.raw.clone());
+                }
+            } else {
+                result_m3u_content.push(x.raw.clone());
+            }
         }
-        result_m3u_content.join("\n")
+        result_m3u_content
     }
 
     pub fn generate_m3u_file(&mut self, output_file: String, only_succ: bool) -> io::Result<()> {
-        if self.list.len() > 0 {
-            let mut result_m3u_content: Vec<String> = vec![];
-            match &self.header {
-                None => result_m3u_content.push(String::from("#EXTM3U")),
-                Some(data) => {
-                    if data.x_tv_url.len() > 0 {
-                        let exp = data.x_tv_url.join(",");
-                        let header_line = format!("#EXTM3U x-tvg-url=\"{}\"", exp);
-                        result_m3u_content.push(header_line.to_owned());
-                    } else {
-                        result_m3u_content.push(String::from("#EXTM3U"))
-                    }
-                }
-            }
-            for mut x in self.list.clone() {
-                x.generate_raw();
-                if only_succ {
-                    if x.status == Success {
-                        result_m3u_content.push(x.raw.clone());
-                    }
-                } else {
-                    result_m3u_content.push(x.raw.clone());
-                }
-            }
+        let result_m3u_content = self.get_m3u_content(only_succ);
+        if result_m3u_content.len() > 0 {
             let mut fd = File::create(output_file.to_owned())?;
             for x in result_m3u_content {
                 let _ = fd.write(format!("{}\n", x).as_bytes())?;
@@ -849,10 +951,15 @@ impl M3uObjectList {
         Ok(())
     }
 
-    pub fn generate_text_file(&mut self, output_file: String, only_succ: bool) -> io::Result<()> {
+    pub fn get_text_content_str(&mut self, only_succ: bool) -> String {
+        let res_arr = self.get_text_content(only_succ);
+        res_arr.join("\n")
+    }
+
+    pub fn get_text_content(&mut self, only_succ: bool) -> Vec<String> {
+        let mut text_arr = vec![];
         if self.list.len() > 0 {
             // 打开文件 b 并准备写入
-            let mut file_b = File::create(output_file)?;
 
             // 逐行读取文件 a 的内容
             for line in &self.list {
@@ -860,13 +967,25 @@ impl M3uObjectList {
                     if line.status == Success {
                         let txt = format!("{},{}", line.name, line.url);
                         // 将每一行写入文件 b
-                        writeln!(file_b, "{}", txt)?;
+                        text_arr.push(txt);
                     }
                 } else {
                     let txt = format!("{},{}", line.name, line.url);
                     // 将每一行写入文件 b
-                    writeln!(file_b, "{}", txt)?;
+                    text_arr.push(txt);
                 }
+            }
+        }
+        text_arr
+    }
+
+    pub fn generate_text_file(&mut self, output_file: String, only_succ: bool) -> io::Result<()> {
+        let txt_arr = self.get_text_content(only_succ);
+        if txt_arr.len() > 0 {
+            // 打开文件 b 并准备写入
+            let mut file_b = File::create(output_file)?;
+            for txt in txt_arr {
+                let _ = file_b.write(format!("{}\n", txt).as_bytes())?;
             }
         }
         Ok(())
@@ -878,10 +997,16 @@ pub struct M3uExt {
     pub x_tv_url: Vec<String>,
 }
 
+impl M3uExt {
+    fn new() -> Self {
+        M3uExt { x_tv_url: vec![] }
+    }
+}
+
 impl From<String> for M3uObjectList {
     fn from(_str: String) -> Self {
         let empty_data = M3uObjectList {
-            header: None,
+            header: M3uExt::new(),
             list: vec![],
             counter: M3uObjectListCounter::new(),
         };
@@ -904,6 +1029,7 @@ pub enum CheckDataStatus {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct OtherStatus {
     delay: i32,
+    ip_address: Vec<String>, //ip地址
     ffmpeg_info: Option<FfmpegInfo>,
 }
 
@@ -912,6 +1038,7 @@ impl OtherStatus {
         OtherStatus {
             ffmpeg_info: None,
             delay: 0,
+            ip_address: vec![],
         }
     }
 
@@ -919,14 +1046,13 @@ impl OtherStatus {
         self.delay = delay
     }
 
+    pub fn set_ip_address(&mut self, ip_address: Vec<String>) {
+        self.ip_address = ip_address;
+    }
+
     pub fn set_ffmpeg_info(&mut self, ffmpeg_info: Option<FfmpegInfo>) {
         self.ffmpeg_info = ffmpeg_info
     }
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct NetworkInfo {
-    delay: i32,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Eq, Hash, PartialEq)]
@@ -1081,22 +1207,12 @@ pub mod m3u {
                 Some(Normal) => {
                     let nor_data = body_normal(_str.clone(), now_show_input_top);
                     list.extend(nor_data.clone().get_list());
-                    match nor_data.get_header() {
-                        Some(d) => {
-                            header.push(d);
-                        }
-                        None => {}
-                    }
+                    header.push(nor_data.header);
                 }
                 Some(Quota) => {
                     let quo_data = body_quota(_str.clone(), now_show_input_top);
                     list.extend(quo_data.clone().get_list());
-                    match quo_data.get_header() {
-                        Some(d) => {
-                            header.push(d);
-                        }
-                        None => {}
-                    }
+                    header.push(quo_data.header);
                 }
                 None => {}
             };

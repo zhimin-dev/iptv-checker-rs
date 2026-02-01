@@ -85,6 +85,20 @@ pub fn trad_to_simp(input: &str) -> String {
 mod tests {
     use super::*;
 
+    use crate::utils::{get_host_ip_address, get_url_host_and_port, is_valid_ip};
+
+    #[test]
+    fn address() {
+        let url = "http://drive.mxmy.net:8888/udp/239.3.1.188:8001";
+        let (host_str, port) = get_url_host_and_port(&url);
+        if is_valid_ip(&host_str) {
+            println!("Valid ip: {}", host_str);
+        } else {
+            let list = get_host_ip_address(&host_str, port);
+            println!("list: {:?}", list);
+        }
+    }
+
     #[test]
     fn test_trad_to_simp_basic() {
         // 构造临时文件，第一行简体，第二行繁体
