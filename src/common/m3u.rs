@@ -1254,7 +1254,25 @@ pub mod m3u {
         let mut body_arr = vec![];
         for x in _url {
             if is_url(x.clone()) {
-                match get_url_body(x.clone(), _timeout).await {
+                let mut fetch_url = x.clone();
+                if let Ok(web_port) = std::env::var("WEB_PORT") {
+                    if x.contains("/system/get-favourite-channel") {
+                        // 尝试替换url中的端口为WEB_PORT值
+                        if let Ok(mut url_obj) = url::Url::parse(&fetch_url) {
+                            // 仅当host存在时才进行端口替换
+                            if url_obj.has_host() {
+                                // 将端口设置为WEB_PORT的值，并重写self.url
+                                // WEB_PORT可为端口号字符串，如"8089"
+                                if let Ok(port_u16) = web_port.parse::<u16>() {
+                                    url_obj.set_port(Some(port_u16)).ok();
+                                    fetch_url = url_obj.to_string();
+                                }
+                            }
+                        }
+                    }
+                }
+                println!("----fetch_url is: {}", fetch_url.clone());
+                match get_url_body(fetch_url.clone(), _timeout).await {
                     Ok(data) => body_arr.push(data),
                     Err(e) => {
                         error!("url can not be open : {}, error: {}", x.clone(), e)

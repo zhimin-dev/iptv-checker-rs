@@ -6,7 +6,7 @@ use regex::Regex;
 use std::fs;
 use std::fs::File;
 use std::io::{Error, ErrorKind, Read};
-use std::net::{Ipv4Addr, Ipv6Addr, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr, ToSocketAddrs};
 use std::process::Command;
 use url::Url;
 
@@ -101,7 +101,7 @@ pub fn is_valid_ip(host: &str) -> bool {
     }
 
     // 尝试解析为 IPv6
-    if host.parse::<Ipv6Addr>().is_ok() {
+    if is_ipv6(host) {
         return true;
     }
 
@@ -112,8 +112,14 @@ pub fn is_ipv4(host: &str) -> bool {
     host.parse::<Ipv4Addr>().is_ok()
 }
 
-pub fn is_ipv6(host: &str) -> bool {
-    host.parse::<Ipv6Addr>().is_ok()
+pub fn is_ipv6(s: &str) -> bool {
+    let s = s.trim();
+    let inner = if s.starts_with('[') && s.ends_with(']') {
+        &s[1..s.len() - 1]
+    } else {
+        s
+    };
+    matches!(inner.parse::<IpAddr>(), Ok(IpAddr::V6(_)))
 }
 
 pub fn get_url_host_and_port(url_str: &str) -> (String, u16) {
@@ -151,7 +157,12 @@ pub fn get_host_ip_address(domain: &str, port: u16) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use crate::common::util::parse_normal_str;
-    use crate::utils::{remove_other_char, translator_t2s};
+    use crate::utils::{
+        get_host_ip_address, get_url_host_and_port, is_valid_ip, remove_other_char,
+        translator_t2s,
+    };
+    use std::net::IpAddr;
+    use url::Url;
 
     #[tokio::test]
     async fn parse_data_normal() {
@@ -168,6 +179,21 @@ https://stream1.freetv.fun/8c0a0439191a3ba401897378bc2226a7edda1e571cb356ac7c7f4
             println!("{}", i.get_extend().unwrap().tv_id);
             println!("{}", i.get_extend().unwrap().user_agent);
             println!("{}", i.get_extend().unwrap().tv_name);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_ipv6() {
+        // let str = "[2409:8087:1e01:23::10]";
+        // let data = is_ipv6(str);
+        // println!("{}", data);
+        let str = "http://[2409:8087:1e01:23::10]:8112/000000001000/1000000001000018602/1.m3u8?channel-id=ystenlive&Contentid=1000000001000018602&livemode=1&stbId=m";
+
+        let (host_str, port) = get_url_host_and_port(&str);
+        if is_valid_ip(&host_str) {
+            println!("222---{}", host_str);
+        } else {
+            println!("11----{:?}", get_host_ip_address(&host_str, port))
         }
     }
 

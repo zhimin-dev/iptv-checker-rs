@@ -80,6 +80,15 @@ pub fn reload_task_config() -> Result<(), String> {
     Ok(())
 }
 
+pub fn save_task_to_file() -> Result<(), String> {
+    let map = TASK_MAP.read().unwrap();
+    let json = serde_json::to_string_pretty(&*map)
+        .map_err(|e| format!("Failed to serialize search config: {}", e))?;
+    fs::write(TASK_JSON, json)
+        .map_err(|e| format!("Failed to write search config: {}", e))?;
+    Ok(())
+}
+
 pub fn create_task_file() {
     if !file_exists(&TASK_JSON.to_string()) {
         // 确保 core 目录存在
