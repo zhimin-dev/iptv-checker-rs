@@ -1,6 +1,6 @@
 use crate::common::do_check;
-use crate::config::task::file_config;
-use crate::config::{get_now_check_task_id, save_task, set_now_check_id};
+use crate::config::task::{file_config, save_task_to_file};
+use crate::config::{get_now_check_task_id, save_task, save_task_config, set_now_check_id};
 use actix_web::{web, HttpResponse, Responder};
 use log::{debug, error, info};
 use md5;
@@ -361,6 +361,7 @@ impl Task {
         }
         self.task_info.is_running = true;
         let _ = save_task(self.id.clone(), self.clone().get_task());
+        let _ = save_task_config();
         let urls = self.clone().original.get_urls();
         let out_out_file = self.clone().original.result_name;
         let mut keyword_like = vec![];
@@ -432,6 +433,7 @@ impl Task {
         if let Err(e) = save_task(self.id.clone(), self.clone().get_task()) {
             error!("Failed to update task {}: {}", self.id.clone(), e);
         }
+        let _ = save_task_config();
     }
 }
 
