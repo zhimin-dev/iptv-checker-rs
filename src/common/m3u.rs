@@ -1265,6 +1265,7 @@ pub mod m3u {
                                 // WEB_PORT可为端口号字符串，如"8089"
                                 if let Ok(port_u16) = web_port.parse::<u16>() {
                                     url_obj.set_port(Some(port_u16)).ok();
+                                    let _ = url_obj.set_host(Some("127.0.0.1"));
                                     fetch_url = url_obj.to_string();
                                 }
                             }
