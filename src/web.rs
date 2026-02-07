@@ -1,9 +1,9 @@
+use crate::common::{check, QualityType};
 use crate::common::task::{
     add_task, delete_task, get_file_contents, list_task, run_task, update_task, TaskManager,
 };
 use crate::common::translate::init_from_default_file;
 use crate::common::M3uObjectList;
-use crate::common::{check};
 use crate::config::favourite::FavouriteConfig;
 use crate::config::favourite::{get_favourite_map, reload_favourite_map};
 use crate::config::search::SearchConfig;
@@ -35,6 +35,7 @@ use tokio::signal;
 use walkdir::WalkDir;
 use zip::write::FileOptions;
 use zip::{ZipArchive, ZipWriter};
+use crate::common::QualityType::{Quality240P, Quality360P, Quality480P, Quality720P, Quality1080P, Quality2K, Quality4K, Quality8K};
 
 /// 更新全局配置请求结构体
 #[derive(Serialize, Deserialize)]
@@ -672,6 +673,7 @@ struct QRequest {
     c: String, //config_id
     i: i8,     // ip类型 默认 0 ， ipv4: 1, ipv6:2
     r: i8,     // 输出结果 默认 0 m3u, 1 text
+    q: Option<i32>,
 }
 
 /// 获取任务内容的请求结构体
@@ -751,6 +753,7 @@ pub async fn get_task_detail(
                         vec![],
                         only_succ,
                         0,
+                        vec![],
                     );
                     check_result.push(TaskContentItem {
                         content_type: "sub".to_string(),
@@ -765,6 +768,7 @@ pub async fn get_task_detail(
                         vec![],
                         only_succ,
                         0,
+                        vec![],
                     );
                     check_result.push(TaskContentItem {
                         content_type: "ipv4".to_string(),
@@ -779,6 +783,7 @@ pub async fn get_task_detail(
                         vec![],
                         only_succ,
                         0,
+                        vec![],
                     );
                     check_result.push(TaskContentItem {
                         content_type: "ipv6".to_string(),
@@ -1189,6 +1194,53 @@ async fn system_import_config(
     }))
 }
 
+fn to_bin_prefixed(n: i32) -> String {
+    format!("{:0width$b}", n, width = 8)
+}
+
+// 1 0 1 0 1 0
+pub fn get_str_to_quality(n:i32) -> Vec<QualityType> {
+    let mut qualities = Vec::new();
+    let bin_str = to_bin_prefixed(n);
+    for (i, ch) in bin_str.chars().enumerate() {
+        let bit = if ch == '1' { 1 } else { 0 };
+        if bit == 1 {
+            if i == 7 {
+                qualities.push(Quality240P)
+            }else if i == 6 {
+                qualities.push(Quality360P)
+            }else if i == 5 {
+                qualities.push(Quality480P)
+            }else if i == 4 {
+                qualities.push(Quality720P)
+            }else if i == 3 {
+                qualities.push(Quality1080P)
+            }else if i == 2 {
+                qualities.push(Quality2K)
+            }else if i == 1 {
+                qualities.push(Quality4K)
+            }else if i == 0 {
+                qualities.push(Quality8K)
+            }
+        }
+    }
+    qualities
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::web::get_str_to_quality;
+
+    #[test]
+    fn test_get_str_to_quality() {
+        println!("{:?}", get_str_to_quality(63));
+        println!("{:?}", get_str_to_quality(47));
+        println!("{:?}", get_str_to_quality(45));
+        println!("{:?}", get_str_to_quality(13));
+        println!("{:?}", get_str_to_quality(12));
+    }
+}
+
 /// M3U解析和Logo替换API端点
 #[get("/q")]
 async fn q_m3u(req: web::Query<QRequest>) -> impl Responder {
@@ -1198,6 +1250,10 @@ async fn q_m3u(req: web::Query<QRequest>) -> impl Responder {
 
     let logos_map = crate::config::logos::get_logos_map();
     let host = crate::config::logos::get_logos_config().host;
+    let mut qualities: Vec<QualityType> = Vec::new();
+    if req.q.is_some() {
+        qualities = get_str_to_quality(req.q.unwrap());
+    }
     return match json_file {
         Ok(mut file) => {
             let mut json_content = String::default();
@@ -1213,6 +1269,7 @@ async fn q_m3u(req: web::Query<QRequest>) -> impl Responder {
                         vec![],
                         true,
                         req.r,
+                        qualities,
                     );
                     HttpResponse::Ok()
                         .append_header((

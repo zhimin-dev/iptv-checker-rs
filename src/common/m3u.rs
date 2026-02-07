@@ -6,7 +6,7 @@ use crate::common::CheckDataStatus::{Failed, Success, Unchecked};
 use crate::common::FfmpegInfo;
 use crate::common::QualityType::QualityUnknown;
 use crate::common::SourceType::{Normal, Quota};
-use crate::search::{generate_channel_thumbnail_folder_name};
+use crate::search::generate_channel_thumbnail_folder_name;
 use crate::utils::{
     get_host_ip_address, get_url_host_and_port, is_ipv4, is_ipv6, is_valid_ip, remove_other_char,
 };
@@ -442,6 +442,7 @@ impl M3uObjectList {
         full_list: Vec<String>,
         only_success: bool,
         export_type: i8,
+        quality_type_list: Vec<QualityType>,
     ) -> String {
         let mut save_list = vec![];
         for i in &self.list {
@@ -480,6 +481,21 @@ impl M3uObjectList {
                     }
                     if !is_hit_keyword {
                         is_save = false
+                    }
+                }
+            }
+            if !is_save {
+                continue;
+            }
+            if !quality_type_list.is_empty() {
+                is_save = false;
+                if i.other_status.ffmpeg_info.is_some() {
+                    for v in i.other_status.ffmpeg_info.clone().unwrap().video {
+                        for k in quality_type_list.clone() {
+                            if v.quality_type.eq(&k) {
+                                is_save = true;
+                            }
+                        }
                     }
                 }
             }
