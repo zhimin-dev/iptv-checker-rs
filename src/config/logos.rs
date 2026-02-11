@@ -10,7 +10,9 @@ use std::sync::RwLock;
 /// Logos配置结构体
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogosConfig {
+    #[serde(default)]
     pub host: String,
+    #[serde(default)]
     pub remote_url2local_images: bool,
     pub logos: Vec<LogoItem>,
 }

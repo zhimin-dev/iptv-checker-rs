@@ -3,6 +3,8 @@ pub static LOGOS_JSON: &str = "static/core/logos.json";
 pub static REPLACE_JSON: &str = "static/core/replace.json";
 pub static SEARCH_JSON: &str = "static/core/search.json";
 pub static FAVOURITE_JSON: &str = "static/core/favourite.json";
+pub static BASE_JSON: &str = "static/core/base.json";
+pub static EPG_JSON: &str = "static/core/epg.json";
 pub static TRANSLATE_FILE: &str = "./src/assets/translate.txt";
 
 pub static STATIC_FOLDER: &str = "./static/";
@@ -86,4 +88,16 @@ pub static LOGOS_CONFIG_JSON_CONTENT: &str = r#"{
   "host": "",
   "remote_url2local_images": false,
   "logos": []
+}"#;
+
+pub static BASE_CONFIG_JSON_CONTENT: &str = r#"{
+  "host": "",
+  "replace_string": false,
+  "remote_url2local_images": false
+}"#;
+
+pub static EPG_CONFIG_JSON_CONTENT: &str = r#"{
+  "source": {
+    "list": []
+  }
 }"#;

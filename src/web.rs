@@ -648,6 +648,74 @@ async fn update_logos_config(req: web::Json<UpdateLogosConfigRequest>) -> impl R
     }
 }
 
+/// 获取 base.json 配置
+#[get("/system/base-config")]
+async fn get_base_config() -> impl Responder {
+    match crate::config::base::get_base_json() {
+        Ok(json) => HttpResponse::Ok()
+            .append_header(("Content-Type", "application/json"))
+            .body(json),
+        Err(e) => {
+            log::error!("Failed to get base config: {}", e);
+            HttpResponse::InternalServerError().body("{\"msg\":\"Failed to get configuration\"}")
+        }
+    }
+}
+
+/// 更新 base.json 配置的请求结构体
+#[derive(Debug, Serialize, Deserialize)]
+struct UpdateBaseConfigRequest {
+    host: String,
+    #[serde(default)]
+    replace_string: bool,
+    #[serde(default)]
+    remote_url2local_images: bool,
+}
+
+/// 更新 base.json 配置的 API 端点
+#[post("/system/base-config")]
+async fn update_base_config(req: web::Json<UpdateBaseConfigRequest>) -> impl Responder {
+    match crate::config::base::partial_update_base_config(
+        req.host.trim_end_matches('/').to_string(),
+        req.replace_string,
+        req.remote_url2local_images,
+    ) {
+        Ok(_) => HttpResponse::Ok().json(serde_json::json!({"msg": "success"})),
+        Err(e) => {
+            log::error!("Failed to update base config: {}", e);
+            HttpResponse::InternalServerError()
+                .json(serde_json::json!({"msg": format!("Failed to save configuration: {}", e)}))
+        }
+    }
+}
+
+/// 获取 epg.json 配置
+#[get("/system/epg-config")]
+async fn get_epg_config() -> impl Responder {
+    match crate::config::epg::get_epg_json() {
+        Ok(json) => HttpResponse::Ok()
+            .append_header(("Content-Type", "application/json"))
+            .body(json),
+        Err(e) => {
+            log::error!("Failed to get epg config: {}", e);
+            HttpResponse::InternalServerError().body("{\"msg\":\"Failed to get configuration\"}")
+        }
+    }
+}
+
+/// 更新 epg.json 配置的 API 端点
+#[post("/system/epg-config")]
+async fn update_epg_config(req: web::Json<crate::config::epg::EpgConfig>) -> impl Responder {
+    match crate::config::epg::update_epg_config(req.into_inner()) {
+        Ok(_) => HttpResponse::Ok().json(serde_json::json!({"msg": "success"})),
+        Err(e) => {
+            log::error!("Failed to update epg config: {}", e);
+            HttpResponse::InternalServerError()
+                .json(serde_json::json!({"msg": format!("Failed to save configuration: {}", e)}))
+        }
+    }
+}
+
 /// 更新Logo配置API端点
 #[post("/media/logos/update")]
 async fn update_logo_config(req: web::Json<LogoConfig>) -> impl Responder {
@@ -1381,6 +1449,10 @@ pub async fn start_web(port: u16) {
             .service(get_logos_list)
             .service(update_logos_config)
             .service(update_logo_config)
+            .service(get_base_config)
+            .service(update_base_config)
+            .service(get_epg_config)
+            .service(update_epg_config)
             .service(q_m3u)
             .service(get_task_detail)
             .service(get_task_content)
