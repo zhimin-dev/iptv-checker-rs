@@ -11,6 +11,7 @@ pub static STATIC_FOLDER: &str = "./static/";
 pub static UPLOAD_FOLDER: &str = "./static/core/upload/";
 pub static INPUT_FOLDER: &str = "./static/input/";
 pub static INPUT_SEARCH_FOLDER: &str = "./static/search/";
+pub static INPUT_EPG_FOLDER: &str = "./static/epg/";
 pub static INPUT_LIVE_FOLDER: &str = "./static/live/";
 pub static OUTPUT_FOLDER: &str = "./static/output/";
 pub static OUTPUT_THUMBNAIL_FOLDER: &str = "./static/thumbnail/";

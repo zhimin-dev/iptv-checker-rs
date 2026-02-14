@@ -1,15 +1,20 @@
 use crate::common::m3u::m3u::list_str2obj;
 use crate::common::{M3uObject, M3uObjectList, SearchParams};
 use crate::config;
-use crate::r#const::constant::{INPUT_SEARCH_FOLDER, OUTPUT_THUMBNAIL_FOLDER};
+use crate::config::epg::get_epg_config;
+use crate::r#const::constant::{INPUT_EPG_FOLDER, INPUT_SEARCH_FOLDER, OUTPUT_THUMBNAIL_FOLDER};
 use crate::utils::{create_folder, folder_exists};
-use chrono::{Datelike, Local};
+use chrono::{DateTime, Datelike, FixedOffset, Local, NaiveDateTime, TimeZone};
+use clap::ValueHint::Url;
+use flate2::read::GzDecoder;
 use log::{debug, error, info};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::io::{Error, ErrorKind, Write};
+use std::io::{Cursor, Error, ErrorKind, Read, Write};
+use std::string::String;
 use std::{fs, vec};
+use zip::read::ZipArchive;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GithubPageProps {
@@ -351,6 +356,22 @@ async fn get_url_body(_url: String) -> Result<String, Error> {
     };
 }
 
+fn check_epg_data_exists() -> std::io::Result<bool> {
+    let folder_name = get_epg_folder();
+    let path = std::path::Path::new(&folder_name);
+    if path.is_dir() {
+        for entry in fs::read_dir(path)? {
+            let entry = entry?;
+            if entry.file_type()?.is_file() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    } else {
+        Ok(false)
+    }
+}
+
 fn check_search_data_exists() -> std::io::Result<bool> {
     let folder_name = get_search_folder();
     let path = std::path::Path::new(&folder_name);
@@ -366,6 +387,80 @@ fn check_search_data_exists() -> std::io::Result<bool> {
         Ok(false)
     }
 }
+
+pub fn get_epg_folder() -> String {
+    let now = chrono::Local::now();
+    format!(
+        "{}{:04}{:02}{:02}/",
+        INPUT_EPG_FOLDER,
+        now.year(),
+        now.month(),
+        now.day()
+    )
+}
+
+/// 从 URL 取路径最后一段作为文件名
+fn filename_from_epg_url(url_str: &str) -> String {
+    url::Url::parse(url_str)
+        .ok()
+        .and_then(|u| u.path_segments().and_then(|s| s.last().map(String::from)))
+        .unwrap_or_default()
+}
+
+/// 下载 URL 返回字节
+async fn get_url_bytes(url: &str) -> Result<Vec<u8>, Error> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .danger_accept_invalid_certs(true)
+        .build()
+        .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
+    let bytes = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?
+        .bytes()
+        .await
+        .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
+    Ok(bytes.to_vec())
+}
+
+/// 解压 gzip 字节流
+fn decompress_gz(bytes: &[u8]) -> Result<Vec<u8>, Error> {
+    let mut decoder = GzDecoder::new(Cursor::new(bytes));
+    let mut out = Vec::new();
+    decoder
+        .read_to_end(&mut out)
+        .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
+    Ok(out)
+}
+
+/// 将 zip 字节解压到指定目录（仅使用文件名，避免路径穿越）
+fn extract_zip_to_folder(bytes: &[u8], folder: &str) -> Result<(), Error> {
+    let cursor = Cursor::new(bytes);
+    let mut archive =
+        ZipArchive::new(cursor).map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
+    for i in 0..archive.len() {
+        let mut file = archive
+            .by_index(i)
+            .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
+        let name = file.name().to_string();
+        if name.ends_with('/') {
+            continue;
+        }
+        let file_name = std::path::Path::new(&name)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(&name);
+        let out_path = format!("{}{}", folder, file_name);
+        if let Ok(mut out_file) = fs::File::create(&out_path) {
+            std::io::copy(&mut file, &mut out_file)
+                .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
+        }
+    }
+    Ok(())
+}
+
 pub fn get_search_folder() -> String {
     let now = chrono::Local::now();
     format!(
@@ -375,6 +470,149 @@ pub fn get_search_folder() -> String {
         now.month(),
         now.day()
     )
+}
+
+const EPG_SUPPORT_ZIP_EXTENSION: [&str; 2] = ["zip", "gz"];
+
+pub fn get_url_extension(url_str: &str) -> String {
+    match url::Url::parse(url_str) {
+        Ok(url) => {
+            let ex: Vec<&str> = url.path().split('.').collect();
+            if ex.len() > 1 {
+                ex[ex.len() - 1].to_string()
+            } else {
+                String::new()
+            }
+        }
+        Err(e) => {
+            info!("get url extension error {}", e);
+            String::new()
+        }
+    }
+}
+
+struct EpgParseData {
+    pub xml_list: Vec<String>,
+    pub zip_list: Vec<String>,
+}
+
+impl EpgParseData {
+    fn new() -> EpgParseData {
+        EpgParseData {
+            xml_list: vec![],
+            zip_list: vec![],
+        }
+    }
+
+    pub fn set_xml_list(&mut self, xml_list: Vec<String>) {
+        self.xml_list = xml_list;
+    }
+
+    pub fn set_zip_list(&mut self, zip_list: Vec<String>) {
+        self.zip_list = zip_list;
+    }
+
+    /// 将 xml_list 与 zip_list 下载到 static/epg/当前年月日/，zip/gz 会解压
+    pub async fn download(&self) -> Result<(), Error> {
+        let folder = get_epg_folder();
+        if let Err(e) = create_folder(&folder) {
+            return Err(Error::new(
+                ErrorKind::Other,
+                format!("创建 epg 文件夹失败: {}", e),
+            ));
+        }
+
+        // 1. 下载 xml 列表
+        for (i, url) in self.xml_list.iter().enumerate() {
+            match get_url_bytes(url).await {
+                Ok(bytes) => {
+                    let name = filename_from_epg_url(url);
+                    let filename = if name.is_empty() || !name.ends_with(".xml") {
+                        format!("epg_xml_{}.xml", i)
+                    } else {
+                        name
+                    };
+                    let path = format!("{}{}", folder, filename);
+                    if let Err(e) = fs::write(&path, &bytes) {
+                        error!("保存 xml 失败 {} -> {}: {}", url, path, e);
+                    } else {
+                        info!("epg xml 已保存: {}", path);
+                    }
+                }
+                Err(e) => {
+                    error!("下载 epg xml 失败 {}: {}", url, e);
+                }
+            }
+        }
+
+        // 2. 下载 zip/gz 列表并解压
+        for (i, url) in self.zip_list.iter().enumerate() {
+            match get_url_bytes(url).await {
+                Ok(bytes) => {
+                    let ext = get_url_extension(url);
+                    if ext == "gz" {
+                        match decompress_gz(&bytes) {
+                            Ok(decoded) => {
+                                let name = filename_from_epg_url(url);
+                                let out_name = name
+                                    .strip_suffix(".gz")
+                                    .map(String::from)
+                                    .unwrap_or_else(|| format!("epg_gz_{}.xml", i));
+                                let path = format!("{}{}", folder, out_name);
+                                if let Err(e) = fs::write(&path, &decoded) {
+                                    error!("保存 gz 解压文件失败 {} -> {}: {}", url, path, e);
+                                } else {
+                                    info!("epg gz 已解压保存: {}", path);
+                                }
+                            }
+                            Err(e) => error!("解压 gz 失败 {}: {}", url, e),
+                        }
+                    } else if ext == "zip" {
+                        if let Err(e) = extract_zip_to_folder(&bytes, &folder) {
+                            error!("解压 zip 失败 {}: {}", url, e);
+                        } else {
+                            info!("epg zip 已解压到: {}", folder);
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("下载 epg 压缩文件失败 {}: {}", url, e);
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+pub fn init_epg_data() -> EpgParseData {
+    let exists = check_epg_data_exists().expect("Failed to check search data");
+    let mut epg_data = EpgParseData::new();
+    if exists {
+        return epg_data;
+    }
+    // 初始化search文件夹
+    let _ = create_folder(&get_epg_folder()).expect("文件夹创建失败");
+    // 下线相关文件
+    let config = get_epg_config();
+    let mut xml_url: Vec<String> = vec![];
+    let mut zip_url: Vec<String> = vec![];
+    for c in config.source.clone().list.iter() {
+        let ext = get_url_extension(c);
+        if ext.eq("xml") {
+            xml_url.push(c.clone());
+        } else {
+            for e in EPG_SUPPORT_ZIP_EXTENSION {
+                if c.contains(e) {
+                    zip_url.push(c.clone());
+                    break;
+                }
+            }
+        }
+    }
+    epg_data.set_xml_list(xml_url);
+    epg_data.set_zip_list(zip_url);
+    epg_data
 }
 
 pub async fn init_search_data() -> Result<(), Error> {
@@ -584,7 +822,7 @@ pub async fn read_search_configs() -> Result<SearchConfigs, Box<dyn std::error::
                 configs.extensions.push(ext.clone());
             }
         }
-        
+
         configs.source.push(SearchSource {
             urls: source.urls,
             include_files: source.include_files,
@@ -667,4 +905,82 @@ pub fn generate_channel_thumbnail_folder_name() -> String {
         }
     }
     folder
+}
+
+pub fn parse_epg_time_str(s: &str) -> i64 {
+    // 分离本地时间部分与偏移部分
+    let (dt_part, offset_part) = s.split_at(14); // "20260205092300" 和 " +0800"
+    let offset_str = offset_part.trim(); // "+0800"
+
+    // 解析本地时间: "YYYYMMDDHHMMSS"
+    let naive = NaiveDateTime::parse_from_str(dt_part, "%Y%m%d%H%M%S")
+        .expect("parse naive datetime failed");
+
+    // 解析时区偏移: "+HHMM" 或 "-HHMM"
+    let offset = FixedOffset::from(offset_str.parse().unwrap());
+
+    // 组合成带偏移的时间
+    let dt_with_offset = offset
+        .from_local_datetime(&naive)
+        .single()
+        .expect("ambiguous or nonexistent local time");
+
+    let ts_millis = dt_with_offset.timestamp_millis();
+
+    ts_millis
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{get_url_extension, init_epg_data, parse_epg_time_str};
+    use crate::epg_xml::{parse_epg_xml_str, Programme, Tv};
+    use std::collections::HashMap;
+
+    #[test]
+    fn convert_to_timestamp() {
+        println!("{}", parse_epg_time_str("20260205092300 +0800"));
+        println!("{}", parse_epg_time_str("20260205000000 +0800"));
+    }
+
+    #[test]
+    fn generate_channel_thumbnail_folder_name() {
+        // 方式一：分两步（先得到 Rust 对象，再转 JSON）
+        let xml = std::fs::read_to_string("static/epg/20260211/epg").unwrap();
+        let tv: Tv = parse_epg_xml_str(&xml).unwrap();
+        let mut channel_hash_map = HashMap::new();
+        let mut channel_list_map: HashMap<String, Vec<Programme>> = HashMap::new();
+        for i in tv.channels {
+            for c in i.display_names {
+                channel_hash_map.insert(c.value.to_lowercase(), i.id.clone());
+            }
+        }
+        for mut i in tv.programmes {
+            let mut list = vec![];
+            let data = channel_list_map.get(&i.channel);
+            if let Some(hash_list) = data {
+                list = hash_list.to_vec();
+            }
+            i.to_unixtime();
+            list.push(i.clone());
+            channel_list_map.insert(i.channel.clone(), list);
+        }
+        for (index, mut p_list) in channel_list_map.clone() {
+            p_list.sort_by(|a, b| a.start_unix.cmp(&b.start_unix));
+            channel_list_map.insert(index.clone(), p_list);
+        }
+        let channel_id = channel_hash_map.get("CCTV-13高清".to_lowercase().as_str());
+        if let Some(channel_id) = channel_id {
+            for (k, v) in channel_list_map {
+                if k.eq(channel_id) {
+                    println!("{:?}", v)
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_init_epg_data() {
+        let data = init_epg_data();
+        data.download().await.unwrap();
+    }
 }
