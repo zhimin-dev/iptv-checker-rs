@@ -39,12 +39,39 @@ pub struct Channel {
     pub display_names: Vec<DisplayName>,
 }
 
+impl Channel {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn set_id(&mut self, id: String) {
+        self.id = id;
+    }
+
+    pub fn set_display_names(&mut self, display_names: Vec<DisplayName>) {
+        self.display_names = display_names;
+    }
+}
+
 /// 显示名称（多语言）
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DisplayName {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lang: Option<String>,
     pub value: String,
+}
+
+impl DisplayName {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn set_lang(&mut self, lang: String) {
+        self.lang = Some(lang);
+    }
+    pub fn set_value(&mut self, value: String) {
+        self.value = value;
+    }
 }
 
 /// 节目单条
@@ -254,13 +281,25 @@ impl Tv {
         Tv::default()
     }
 
+    pub fn set_generator_info_url(&mut self, url: String) {
+        self.generator_info_url = Some(url);
+    }
+    pub fn set_generator_info_name(&mut self, generator_info_name: String) {
+        self.generator_info_name = Some(generator_info_name);
+    }
+    pub fn set_channels(&mut self, channels: Vec<Channel>) {
+        self.channels = channels;
+    }
+    pub fn set_programmes(&mut self, programmes: Vec<Programme>) {
+        self.programmes = programmes;
+    }
+
     pub fn to_epg_xml_file(self, file_name: String) -> Result<(), Error> {
         let res = self.to_epg_xml_str();
+        println!("------{:?}", res);
         match res {
             Ok(data) => {
-                let folder = "";
-                let full_name = format!("{}/{}", folder, file_name);
-                let res_file = File::create(full_name);
+                let res_file = File::create(file_name);
                 match res_file {
                     Ok(mut file) => {
                         let _ = file.write_all(data.as_bytes());

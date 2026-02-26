@@ -604,8 +604,7 @@ impl M3uObjectList {
     pub async fn search(&mut self, search: SearchOptions) {
         let mut list = vec![];
         debug!(
-            "query params --- full -- {:?} like --{:?} dislike{:?} search data count {:?}",
-            search.keyword_full_match,
+            "query params --- like --{:?} dislike{:?} search data count {:?}",
             search.keyword_like,
             search.keyword_dislike,
             self.list.len()

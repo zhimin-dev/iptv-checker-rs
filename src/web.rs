@@ -344,7 +344,10 @@ async fn system_get_favourite_channel(
         }
     };
     return HttpResponse::Ok()
-        .append_header(("Content-Type", "text/plain; charset=utf-8"))
+        .append_header((
+            "Content-Type",
+            "application/vnd.apple.mpegurl; charset=utf-8",
+        ))
         .body(data);
 }
 

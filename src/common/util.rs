@@ -310,6 +310,8 @@ pub fn from_video_resolution(list: Vec<String>) -> Vec<QualityType> {
             result.push(Quality2K);
         } else if x.to_lowercase().eq("4k") {
             result.push(Quality4K);
+        } else if x.to_lowercase().eq("8k") {
+            result.push(Quality8K);
         }
     }
     result

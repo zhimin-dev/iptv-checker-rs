@@ -933,7 +933,7 @@ pub fn parse_epg_time_str(s: &str) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::{get_url_extension, init_epg_data, parse_epg_time_str};
-    use crate::epg_xml::{parse_epg_xml_str, Programme, Tv};
+    use crate::epg_xml::{parse_epg_xml_str, Channel, DisplayName, Programme, Tv};
     use std::collections::HashMap;
 
     #[test]
@@ -968,13 +968,32 @@ mod tests {
             p_list.sort_by(|a, b| a.start_unix.cmp(&b.start_unix));
             channel_list_map.insert(index.clone(), p_list);
         }
-        let channel_id = channel_hash_map.get("CCTV-13高清".to_lowercase().as_str());
+        let channel_name = "CCTV-13高清".to_string();
+        let channel_id = channel_hash_map.get(channel_name.to_lowercase().as_str());
         if let Some(channel_id) = channel_id {
-            for (k, v) in channel_list_map {
-                if k.eq(channel_id) {
-                    println!("{:?}", v)
-                }
+            let mut channels = vec![];
+            let mut one_channel = Channel::new();
+            one_channel.set_id(channel_id.to_string());
+            let mut displays = vec![];
+            let mut one_display_channel_name = DisplayName::new();
+            one_display_channel_name.set_lang("zh".to_string());
+            one_display_channel_name.set_value(channel_name);
+            displays.push(one_display_channel_name);
+            one_channel.set_display_names(displays);
+            channels.push(one_channel);
+            let mut programs = vec![];
+            for (k, v) in channel_list_map.clone() {
+                programs = v;
             }
+            let mut new_epg = Tv::new();
+            new_epg.set_generator_info_name("iptv-checker generate".to_string());
+            new_epg.set_generator_info_url("http://127.0.0.1:8081".to_string());
+            new_epg.set_channels(channels);
+            new_epg.set_programmes(programs);
+
+            let _ = new_epg.to_epg_xml_file("./static/epg/1111.xml".to_string());
+        } else {
+            println!("channel not found");
         }
     }
 

@@ -1,7 +1,7 @@
 mod common;
 mod config;
-mod epg_xml;
 mod r#const;
+mod epg_xml;
 mod live;
 mod search;
 mod utils;
@@ -10,7 +10,10 @@ use crate::common::{do_check, SearchOptions, SearchParams};
 // 配置初始化在 init_all_config_files 中完成
 use crate::config::init_all_config_files;
 use crate::live::do_ob;
-use crate::r#const::constant::{INPUT_EPG_FOLDER, INPUT_FOLDER, INPUT_LIVE_FOLDER, INPUT_SEARCH_FOLDER, LOGOS_FOLDER, LOGS_FOLDER, OUTPUT_FOLDER, OUTPUT_THUMBNAIL_FOLDER, STATIC_FOLDER, UPLOAD_FOLDER};
+use crate::r#const::constant::{
+    INPUT_EPG_FOLDER, INPUT_FOLDER, INPUT_LIVE_FOLDER, INPUT_SEARCH_FOLDER, LOGOS_FOLDER,
+    LOGS_FOLDER, OUTPUT_FOLDER, OUTPUT_THUMBNAIL_FOLDER, STATIC_FOLDER, UPLOAD_FOLDER,
+};
 use crate::search::{clear_search_folder, do_search};
 use crate::utils::{create_folder, get_out_put_filename};
 use chrono::Local;
@@ -130,10 +133,6 @@ pub struct CheckArgs {
     #[arg(long = "dislike")]
     keyword_dislike: Vec<String>,
 
-    /// 频道名称不包含的关键词
-    #[arg(long = "fmword")]
-    keyword_full: Vec<String>,
-
     /// 是否对频道进行排序
     #[arg(long = "sort", default_value_t = false)]
     sort: bool,
@@ -161,6 +160,10 @@ pub struct CheckArgs {
     /// 导出m3u文件
     #[arg(long = "export-file", default_value_t = true)]
     export_file: bool,
+
+    /// 重命名频道名称类型，0原始名称 1：【channelName 360p 720p 1080p】 2: 【channelName SD HD FHD】 11：【chanelName 720p 20ms】21: 【channelName HD 20ms】
+    #[arg(long = "rename-channel-type", default_value_t = 0)]
+    rename_channel_type: i8,
 }
 
 #[derive(Parser)]
@@ -312,6 +315,7 @@ pub async fn main() {
                     args.not_http_skip,
                     args.video_quality,
                     args.export_file,
+                    args.rename_channel_type,
                 )
                 .await
                 .unwrap();

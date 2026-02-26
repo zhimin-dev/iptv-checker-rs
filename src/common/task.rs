@@ -388,6 +388,8 @@ impl Task {
         let same_save_num = self.clone().original.same_save_num;
         let not_http_skip = self.clone().original.not_http_skip;
         let video_quality = self.clone().original.video_quality;
+        let rename_channel_name = 0;
+        let export_file = false;
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -410,7 +412,8 @@ impl Task {
                 same_save_num,
                 not_http_skip,
                 video_quality,
-                false,
+                export_file,
+                rename_channel_name,
             )
             .await;
             debug!("end taskId: {}", task_id);
