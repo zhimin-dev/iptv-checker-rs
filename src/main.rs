@@ -14,7 +14,7 @@ use crate::r#const::constant::{
     INPUT_EPG_FOLDER, INPUT_FOLDER, INPUT_LIVE_FOLDER, INPUT_SEARCH_FOLDER, LOGOS_FOLDER,
     LOGS_FOLDER, OUTPUT_FOLDER, OUTPUT_THUMBNAIL_FOLDER, STATIC_FOLDER, UPLOAD_FOLDER,
 };
-use crate::search::{clear_search_folder, do_search};
+use crate::search::{clear_search_folder, do_search, init_epg_data};
 use crate::utils::{create_folder, get_out_put_filename};
 use chrono::Local;
 use clap::{arg, Args as clapArgs, Parser, Subcommand};
@@ -272,6 +272,17 @@ pub async fn main() {
     init_all_config_files();
     init_folder();
     init_translate();
+    // 初始化 EPG 数据并启动后台同步任务
+    tokio::spawn(async {
+        init_epg_data().await;
+        // 每天同步一次
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(24 * 3600));
+        loop {
+            interval.tick().await;
+            init_epg_data().await;
+        }
+    });
+
     match args.command {
         Commands::Web(_) => {
             init_file_log();

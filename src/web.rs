@@ -12,7 +12,9 @@ use crate::r#const::constant::{
     INPUT_SEARCH_FOLDER, LOGOS_FOLDER, OUTPUT_FOLDER, STATIC_FOLDER, UPLOAD_FOLDER,
 };
 use crate::search;
-use crate::search::init_search_data;
+use crate::search::{init_epg_data, init_search_data};
+use crate::epg_xml::query_epg_by_channel;
+use crate::config::epg::{get_epg_list, update_epg_list};
 use actix_files as actix_fs;
 use actix_files::NamedFile;
 use actix_multipart::form::{tempfile::TempFile, MultipartForm};
@@ -923,13 +925,14 @@ pub async fn get_task_content(
     };
 
     let mut logo_content = String::new();
+    let rename_channel_type = 0;
 
     let host = crate::config::logos::get_logos_config().host;
     if !host.is_empty() {
         // 解析 M3U 并替换 Logo
         let mut m3u_list = M3uObjectList::from(m3u_content);
         m3u_list.replace_logos(host.clone(), &logos_map);
-        logo_content = m3u_list.get_m3u_content_str(false);
+        logo_content = m3u_list.get_m3u_content_str(rename_channel_type,false);
     }
 
     let mut response = Vec::new();
@@ -1358,6 +1361,47 @@ async fn q_m3u(req: web::Query<QRequest>) -> impl Responder {
     };
 }
 
+// ============== EPG API ==============
+
+#[derive(Deserialize)]
+struct EpgQuery {
+    channel: String,
+}
+
+#[get("/epg")]
+async fn get_epg(query: web::Query<EpgQuery>) -> impl Responder {
+    let programmes = query_epg_by_channel(&query.channel);
+    HttpResponse::Ok().json(programmes)
+}
+
+#[get("/epg/sources")]
+async fn get_epg_sources() -> impl Responder {
+    let list = get_epg_list();
+    HttpResponse::Ok().json(list)
+}
+
+#[derive(Deserialize)]
+struct EpgSourceUpdatePayload {
+    list: Vec<String>,
+}
+
+#[post("/epg/sources")]
+async fn update_epg_sources_api(payload: web::Json<EpgSourceUpdatePayload>) -> impl Responder {
+    match update_epg_list(payload.list.clone()) {
+        Ok(_) => HttpResponse::Ok().json(serde_json::json!({"status": "success"})),
+        Err(e) => HttpResponse::BadRequest().json(serde_json::json!({"status": "error", "message": e})),
+    }
+}
+
+#[post("/epg/sync")]
+async fn sync_epg_api() -> impl Responder {
+    // 触发后台同步
+    tokio::spawn(async {
+        let _ = init_epg_data().await;
+    });
+    HttpResponse::Ok().json(serde_json::json!({"status": "success", "message": "EPG sync started"}))
+}
+
 /// 启动Web服务器
 pub async fn start_web(port: u16) {
     // 初始化任务管理器
@@ -1401,6 +1445,17 @@ pub async fn start_web(port: u16) {
                 info!("search task finished");
             });
         });
+        scheduler.every(1.hour()).run(move || {
+            info!("start search task");
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+
+            rt.block_on(async {
+                let _ = init_epg_data();
+            });
+        });
         // 检查任务
         scheduler.every(30.seconds()).run(move || {
             // 判断当前是否有任务在并行运行，如果有，再判断任务是否已经运行了超过10分钟，如果超过了，可以再次运行
@@ -1431,6 +1486,10 @@ pub async fn start_web(port: u16) {
 
     let server = HttpServer::new(move || {
         App::new()
+            .service(get_epg)
+            .service(get_epg_sources)
+            .service(update_epg_sources_api)
+            .service(sync_epg_api)
             .service(check_url_is_available)
             .service(fetch_m3u_body)
             .service(system_status)

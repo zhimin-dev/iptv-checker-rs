@@ -15,6 +15,51 @@ use std::collections::HashMap;
 use std::fmt::format;
 use std::fs::File;
 use std::io::{Cursor, Error, ErrorKind, Write};
+use std::sync::{Arc, RwLock};
+use lazy_static::lazy_static;
+
+// ============== 全局 EPG 缓存 ==============
+lazy_static! {
+    pub static ref GLOBAL_EPG_CACHE: Arc<RwLock<HashMap<String, Vec<Programme>>>> = Arc::new(RwLock::new(HashMap::new()));
+}
+
+/// 安全地更新全局 EPG 缓存
+pub fn update_global_epg_cache(tv: &Tv) {
+    let mut new_cache: HashMap<String, Vec<Programme>> = HashMap::new();
+    
+    // 建立 channel id 到 channel name 的映射
+    let mut channel_id_to_name: HashMap<String, String> = HashMap::new();
+    for ch in &tv.channels {
+        if let Some(dn) = ch.display_names.first() {
+            channel_id_to_name.insert(ch.id.clone(), dn.value.clone());
+        }
+    }
+
+    // 根据 channel id 将 programme 分组，并使用 channel name 作为 key
+    for pr in &tv.programmes {
+        if let Some(channel_name) = channel_id_to_name.get(&pr.channel) {
+            new_cache
+                .entry(channel_name.clone())
+                .or_insert_with(Vec::new)
+                .push(pr.clone());
+        }
+    }
+
+    if let Ok(mut cache) = GLOBAL_EPG_CACHE.write() {
+        *cache = new_cache;
+    }
+}
+
+/// 根据频道名称查询 EPG 缓存
+pub fn query_epg_by_channel(channel_name: &str) -> Vec<Programme> {
+    if let Ok(cache) = GLOBAL_EPG_CACHE.read() {
+        if let Some(programmes) = cache.get(channel_name) {
+            return programmes.clone();
+        }
+    }
+    Vec::new()
+}
+
 // ============== JSON 可序列化结构（与 XML 语义一致） ==============
 
 /// 根节点 tv
@@ -29,6 +74,30 @@ pub struct Tv {
     pub channels: Vec<Channel>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub programmes: Vec<Programme>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EpgAllListItem {
+    channel_map: HashMap<String, String>,
+    list_map: HashMap<String, Vec<Programme>>,
+}
+
+impl EpgAllListItem {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    
+    pub fn set_channel_map(&mut self, channel_map: HashMap<String, String>) {
+        self.channel_map = channel_map;
+    }
+    
+    pub fn set_list_map(&mut self, list_map: HashMap<String, Vec<Programme>>) {
+        self.list_map = list_map;
+    }
+    
+    pub fn save_json_file(self, file_name:String) {
+        serde_json::to_writer(File::create(file_name).unwrap(), &self).unwrap();
+    }
 }
 
 /// 频道

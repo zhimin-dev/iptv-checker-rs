@@ -4,6 +4,7 @@ use crate::config;
 use crate::config::epg::get_epg_config;
 use crate::r#const::constant::{INPUT_EPG_FOLDER, INPUT_SEARCH_FOLDER, OUTPUT_THUMBNAIL_FOLDER};
 use crate::utils::{create_folder, folder_exists};
+use crate::epg_xml::{parse_epg_xml_str, update_global_epg_cache};
 use chrono::{DateTime, Datelike, FixedOffset, Local, NaiveDateTime, TimeZone};
 use clap::ValueHint::Url;
 use flate2::read::GzDecoder;
@@ -320,8 +321,9 @@ fn epg_list_to_m3u_file(list: Vec<EpgM3u8Info>, file_name: String) -> Result<(),
             m3u8_list.push(one);
         }
     }
+    let rename_channel_type = 0;
     result.set_list(m3u8_list);
-    result.generate_m3u_file(file_name.clone(), false)?;
+    result.generate_m3u_file(file_name.clone(), rename_channel_type,false)?;
     Ok(())
 }
 
@@ -491,7 +493,7 @@ pub fn get_url_extension(url_str: &str) -> String {
     }
 }
 
-struct EpgParseData {
+pub struct EpgParseData {
     pub xml_list: Vec<String>,
     pub zip_list: Vec<String>,
 }
@@ -585,12 +587,10 @@ impl EpgParseData {
     }
 }
 
-pub fn init_epg_data() -> EpgParseData {
+pub async fn init_epg_data() -> EpgParseData {
     let exists = check_epg_data_exists().expect("Failed to check search data");
     let mut epg_data = EpgParseData::new();
-    if exists {
-        return epg_data;
-    }
+    
     // 初始化search文件夹
     let _ = create_folder(&get_epg_folder()).expect("文件夹创建失败");
     // 下线相关文件
@@ -612,6 +612,33 @@ pub fn init_epg_data() -> EpgParseData {
     }
     epg_data.set_xml_list(xml_url);
     epg_data.set_zip_list(zip_url);
+    
+    // 执行下载和解压
+    if !exists {
+        if let Err(e) = epg_data.download().await {
+            error!("下载 EPG 数据失败: {}", e);
+        }
+    }
+    
+    // 解析本地 XML 文件并更新缓存
+    let folder = get_epg_folder();
+    if let Ok(entries) = fs::read_dir(&folder) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("xml") {
+                if let Ok(content) = fs::read_to_string(&path) {
+                    match parse_epg_xml_str(&content) {
+                        Ok(tv) => {
+                            update_global_epg_cache(&tv);
+                            info!("成功解析并缓存 EPG 文件: {:?}", path);
+                        }
+                        Err(e) => error!("解析 EPG 文件 {:?} 失败: {}", path, e),
+                    }
+                }
+            }
+        }
+    }
+
     epg_data
 }
 
@@ -849,8 +876,9 @@ pub async fn do_search(search_params: SearchParams) -> Result<(), Error> {
                     .await;
             }
             info!("list2 --- total {}", m3u_data.get_list_len());
+            let rename_channel_type = 0;
             m3u_data
-                .output_file(search_params.output_file.clone(), false)
+                .output_file(search_params.output_file.clone(), false,rename_channel_type)
                 .await;
             Ok(())
         }
@@ -933,7 +961,7 @@ pub fn parse_epg_time_str(s: &str) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::{get_url_extension, init_epg_data, parse_epg_time_str};
-    use crate::epg_xml::{parse_epg_xml_str, Channel, DisplayName, Programme, Tv};
+    use crate::epg_xml::{parse_epg_xml_str, Channel, DisplayName, EpgAllListItem, Programme, Tv};
     use std::collections::HashMap;
 
     #[test]
@@ -944,8 +972,9 @@ mod tests {
 
     #[test]
     fn generate_channel_thumbnail_folder_name() {
+        let date_str = "20260211";
         // 方式一：分两步（先得到 Rust 对象，再转 JSON）
-        let xml = std::fs::read_to_string("static/epg/20260211/epg").unwrap();
+        let xml = std::fs::read_to_string(format!("static/epg/{}/epg", date_str)).unwrap();
         let tv: Tv = parse_epg_xml_str(&xml).unwrap();
         let mut channel_hash_map = HashMap::new();
         let mut channel_list_map: HashMap<String, Vec<Programme>> = HashMap::new();
@@ -968,6 +997,12 @@ mod tests {
             p_list.sort_by(|a, b| a.start_unix.cmp(&b.start_unix));
             channel_list_map.insert(index.clone(), p_list);
         }
+        let mut epg_all = EpgAllListItem::new();
+        epg_all.set_channel_map(channel_hash_map.clone());
+        epg_all.set_list_map(channel_list_map.clone());
+        epg_all.save_json_file("./static/epg/result.json".to_string());
+
+
         let channel_name = "CCTV-13高清".to_string();
         let channel_id = channel_hash_map.get(channel_name.to_lowercase().as_str());
         if let Some(channel_id) = channel_id {
@@ -991,7 +1026,7 @@ mod tests {
             new_epg.set_channels(channels);
             new_epg.set_programmes(programs);
 
-            let _ = new_epg.to_epg_xml_file("./static/epg/1111.xml".to_string());
+            let _ = new_epg.to_epg_xml_file(format!("./static/epg/{}/iptv_finial_res.xml", date_str));
         } else {
             println!("channel not found");
         }
@@ -999,7 +1034,42 @@ mod tests {
 
     #[tokio::test]
     async fn test_init_epg_data() {
+        // 先下载文件
         let data = init_epg_data();
         data.download().await.unwrap();
+        // 获取下载的文件
+
+    }
+
+    fn get_epg_info() {
+        let date_str = "20260211";
+        // 方式一：分两步（先得到 Rust 对象，再转 JSON）
+        let xml = std::fs::read_to_string(format!("static/epg/{}/epg", date_str)).unwrap();
+        let tv: Tv = parse_epg_xml_str(&xml).unwrap();
+        let mut channel_hash_map = HashMap::new();
+        let mut channel_list_map: HashMap<String, Vec<Programme>> = HashMap::new();
+        for i in tv.channels {
+            for c in i.display_names {
+                channel_hash_map.insert(c.value.to_lowercase(), i.id.clone());
+            }
+        }
+        for mut i in tv.programmes {
+            let mut list = vec![];
+            let data = channel_list_map.get(&i.channel);
+            if let Some(hash_list) = data {
+                list = hash_list.to_vec();
+            }
+            i.to_unixtime();
+            list.push(i.clone());
+            channel_list_map.insert(i.channel.clone(), list);
+        }
+        for (index, mut p_list) in channel_list_map.clone() {
+            p_list.sort_by(|a, b| a.start_unix.cmp(&b.start_unix));
+            channel_list_map.insert(index.clone(), p_list);
+        }
+        let mut epg_all = EpgAllListItem::new();
+        epg_all.set_channel_map(channel_hash_map.clone());
+        epg_all.set_list_map(channel_list_map.clone());
+        epg_all.save_json_file("./static/epg/result.json".to_string());
     }
 }

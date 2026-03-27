@@ -529,7 +529,8 @@ pub async fn get_favourite_channel(channel_type: String) -> Result<String, Error
         quality: vec![],
     })
     .await;
-    return Ok(data.get_m3u_content_str(false));
+    let rename_channel_type = 0;
+    return Ok(data.get_m3u_content_str(rename_channel_type,false));
 }
 
 pub async fn do_check(
@@ -597,8 +598,12 @@ pub async fn do_check(
     data.save_raw_data(output_file);
     // 导出数据
     if export_file {
-        data.output_file(format!("{}{}.m3u", OUTPUT_FOLDER, output_id), true)
-            .await;
+        data.output_file(
+            format!("{}{}.m3u", OUTPUT_FOLDER, output_id),
+            true,
+            rename_channel_type,
+        )
+        .await;
     }
     if print_result {
         if !no_check {

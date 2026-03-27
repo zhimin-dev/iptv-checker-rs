@@ -1,0 +1,16 @@
+schema: spec-driven
+
+context: |
+  # Project: iptv-checker-rs
+  This is a high-performance IPTV playlist (M3U) checker and EPG (XMLTV) manager written in Rust.
+  For full details on the tech stack, architecture, and coding conventions, please refer to `openspec/project.md`.
+
+  Key Tech Stack:
+  - Rust (Edition 2021)
+  - Async: tokio
+  - Web: actix-web
+  - HTTP: reqwest
+  - XML: quick-xml
+  - Serialization: serde, serde_json
+
+# Per-artifact rules (optional)
