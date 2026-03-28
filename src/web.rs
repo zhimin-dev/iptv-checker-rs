@@ -13,13 +13,13 @@ use crate::r#const::constant::{
 };
 use crate::search;
 use crate::search::{init_epg_data, init_search_data};
-use crate::epg_xml::query_epg_by_channel;
+use crate::epg_xml::{get_all_epg_channels, query_epg_by_channel, EpgChannelItem};
 use crate::config::epg::{get_epg_list, update_epg_list};
 use actix_files as actix_fs;
 use actix_files::NamedFile;
 use actix_multipart::form::{tempfile::TempFile, MultipartForm};
 use actix_web::middleware::Logger;
-use actix_web::{get, post, web, App, HttpResponse, HttpServer, Responder};
+use actix_web::{delete, get, post, web, App, HttpResponse, HttpServer, Responder};
 use chrono::Local;
 use clokwerk::{Scheduler, TimeUnits};
 use log::{debug, error, info};
@@ -1374,10 +1374,35 @@ async fn get_epg(query: web::Query<EpgQuery>) -> impl Responder {
     HttpResponse::Ok().json(programmes)
 }
 
+#[derive(Serialize)]
+struct EpgChannelListResponse {
+    list: Vec<EpgChannelItem>,
+}
+
+#[get("/epg/channel-list")]
+async fn get_epg_channel_list() -> impl Responder {
+    let list = get_all_epg_channels();
+    HttpResponse::Ok().json(EpgChannelListResponse { list })
+}
+
+#[derive(Serialize)]
+struct EpgSourcesResponse {
+    list: Vec<String>,
+    status: bool,
+}
+
 #[get("/epg/sources")]
 async fn get_epg_sources() -> impl Responder {
     let list = get_epg_list();
-    HttpResponse::Ok().json(list)
+    let today = chrono::Local::now().format("%Y%m%d").to_string();
+    let epg_folder = format!("./static/epg/{}/", today);
+    let status = std::path::Path::new(&epg_folder).exists();
+    
+    let response = EpgSourcesResponse {
+        list,
+        status,
+    };
+    HttpResponse::Ok().json(response)
 }
 
 #[derive(Deserialize)]
@@ -1400,6 +1425,24 @@ async fn sync_epg_api() -> impl Responder {
         let _ = init_epg_data().await;
     });
     HttpResponse::Ok().json(serde_json::json!({"status": "success", "message": "EPG sync started"}))
+}
+
+#[get("/epg/cache")]
+async fn delete_epg_cache_api() -> impl Responder {
+    let today = chrono::Local::now().format("%Y%m%d").to_string();
+    let epg_folder = format!("./static/epg/{}/", today);
+    
+    match std::fs::remove_dir_all(&epg_folder) {
+        Ok(_) => HttpResponse::Ok().json(serde_json::json!({"status": "success", "message": "Cache deleted"})),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // Folder doesn't exist, consider it a success
+            HttpResponse::Ok().json(serde_json::json!({"status": "success", "message": "Cache already empty"}))
+        }
+        Err(e) => {
+            error!("Failed to delete EPG cache: {}", e);
+            HttpResponse::InternalServerError().json(serde_json::json!({"status": "error", "message": format!("Failed to delete cache: {}", e)}))
+        }
+    }
 }
 
 /// 启动Web服务器
@@ -1487,9 +1530,11 @@ pub async fn start_web(port: u16) {
     let server = HttpServer::new(move || {
         App::new()
             .service(get_epg)
+            .service(get_epg_channel_list)
             .service(get_epg_sources)
             .service(update_epg_sources_api)
             .service(sync_epg_api)
+            .service(delete_epg_cache_api)
             .service(check_url_is_available)
             .service(fetch_m3u_body)
             .service(system_status)

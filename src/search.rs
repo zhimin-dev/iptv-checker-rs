@@ -630,7 +630,6 @@ pub async fn init_epg_data() -> EpgParseData {
                     match parse_epg_xml_str(&content) {
                         Ok(tv) => {
                             update_global_epg_cache(&tv);
-                            info!("成功解析并缓存 EPG 文件: {:?}", path);
                         }
                         Err(e) => error!("解析 EPG 文件 {:?} 失败: {}", path, e),
                     }

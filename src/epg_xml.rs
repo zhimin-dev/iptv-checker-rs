@@ -60,6 +60,28 @@ pub fn query_epg_by_channel(channel_name: &str) -> Vec<Programme> {
     Vec::new()
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EpgChannelItem {
+    pub name: String,
+    pub channel: String,
+}
+
+/// 获取所有可用的 EPG 频道列表
+pub fn get_all_epg_channels() -> Vec<EpgChannelItem> {
+    let mut result = Vec::new();
+    if let Ok(cache) = GLOBAL_EPG_CACHE.read() {
+        for (name, programmes) in cache.iter() {
+            if let Some(first_prog) = programmes.first() {
+                result.push(EpgChannelItem {
+                    name: name.clone(),
+                    channel: first_prog.channel.clone(),
+                });
+            }
+        }
+    }
+    result
+}
+
 // ============== JSON 可序列化结构（与 XML 语义一致） ==============
 
 /// 根节点 tv
