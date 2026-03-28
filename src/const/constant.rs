@@ -3,12 +3,15 @@ pub static LOGOS_JSON: &str = "static/core/logos.json";
 pub static REPLACE_JSON: &str = "static/core/replace.json";
 pub static SEARCH_JSON: &str = "static/core/search.json";
 pub static FAVOURITE_JSON: &str = "static/core/favourite.json";
+pub static BASE_JSON: &str = "static/core/base.json";
+pub static EPG_JSON: &str = "static/core/epg.json";
 pub static TRANSLATE_FILE: &str = "./src/assets/translate.txt";
 
 pub static STATIC_FOLDER: &str = "./static/";
 pub static UPLOAD_FOLDER: &str = "./static/core/upload/";
 pub static INPUT_FOLDER: &str = "./static/input/";
 pub static INPUT_SEARCH_FOLDER: &str = "./static/search/";
+pub static INPUT_EPG_FOLDER: &str = "./static/epg/";
 pub static INPUT_LIVE_FOLDER: &str = "./static/live/";
 pub static OUTPUT_FOLDER: &str = "./static/output/";
 pub static OUTPUT_THUMBNAIL_FOLDER: &str = "./static/thumbnail/";
@@ -86,4 +89,16 @@ pub static LOGOS_CONFIG_JSON_CONTENT: &str = r#"{
   "host": "",
   "remote_url2local_images": false,
   "logos": []
+}"#;
+
+pub static BASE_CONFIG_JSON_CONTENT: &str = r#"{
+  "host": "",
+  "replace_string": false,
+  "remote_url2local_images": false
+}"#;
+
+pub static EPG_CONFIG_JSON_CONTENT: &str = r#"{
+  "source": {
+    "list": []
+  }
 }"#;

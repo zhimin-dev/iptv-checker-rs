@@ -2,6 +2,7 @@
 name = "iptv-checker-rs"
 version = "4.4.0"
 edition = "2021"
+default-run = "iptv-checker-rs"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -14,7 +15,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1"
 futures = "0.3"
 reqwest = "0.12.12"
-chrono = "0.4.31"
+chrono = { version = "0.4.31", features = ["clock", "std"] }
 clap = { version = "4.4.11", features = ["derive"] }
 tokio = { version = "1.35.0", features = ["full", "macros"] }
 log = "0.4.20"
@@ -30,6 +31,8 @@ simplelog = "0.6"
 once_cell = "1.21.3"
 zip = "0.6"
 walkdir = "2.5"
+flate2 = "1.0"
+quick-xml = { version = "0.36", features = ["serialize"] }
 
 [target.'cfg(windows)'.dependencies]
 # 只在Windows平台上使用的依赖项

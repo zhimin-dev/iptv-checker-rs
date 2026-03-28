@@ -1,12 +1,12 @@
+use crate::common;
 use crate::common::m3u::m3u::list_str2obj;
 use crate::common::util::from_video_resolution;
 use crate::common::{AudioInfo, CheckOptions, SearchOptions, VideoInfo};
 use crate::config::favourite::get_favourite_list;
 use crate::r#const::constant::{INPUT_SEARCH_FOLDER, OUTPUT_FOLDER};
-use crate::{common};
 use log::info;
 use serde::{Deserialize, Serialize};
-use std::fmt::{Error};
+use std::fmt::Error;
 
 /// URL检查响应结构体
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -519,8 +519,8 @@ pub async fn get_favourite_channel(channel_type: String) -> Result<String, Error
     }
     // 搜索关键字
     data.search(SearchOptions {
-        keyword_full_match: keyword_full_match,
-        keyword_like: keyword_like,
+        keyword_full_match,
+        keyword_like,
         keyword_dislike: vec![],
         ipv4: false,
         ipv6: false,
@@ -529,7 +529,8 @@ pub async fn get_favourite_channel(channel_type: String) -> Result<String, Error
         quality: vec![],
     })
     .await;
-    return Ok(data.get_m3u_content_str(false));
+    let rename_channel_type = 0;
+    return Ok(data.get_m3u_content_str(rename_channel_type,false));
 }
 
 pub async fn do_check(
@@ -549,11 +550,13 @@ pub async fn do_check(
     not_http_skip: bool,
     video_quality: Vec<String>,
     export_file: bool,
+    rename_channel_type: i8,
 ) -> Result<bool, Error> {
     // 将文件转换为数组
     let list = common::m3u::m3u::from_arr(input_files.to_owned(), timeout as u64).await;
     // 将数组转换为对象
     let mut data = list_str2obj(list, false);
+    // 获取域名对应的ip类型
     data.to_ip_address();
     // 将频道名繁体转简体
     data.t2s();
@@ -595,8 +598,12 @@ pub async fn do_check(
     data.save_raw_data(output_file);
     // 导出数据
     if export_file {
-        data.output_file(format!("{}{}.m3u", OUTPUT_FOLDER, output_id), true)
-            .await;
+        data.output_file(
+            format!("{}{}.m3u", OUTPUT_FOLDER, output_id),
+            true,
+            rename_channel_type,
+        )
+        .await;
     }
     if print_result {
         if !no_check {

@@ -1,9 +1,10 @@
+use crate::common::{check, QualityType};
 use crate::common::task::{
     add_task, delete_task, get_file_contents, list_task, run_task, update_task, TaskManager,
 };
 use crate::common::translate::init_from_default_file;
 use crate::common::M3uObjectList;
-use crate::common::{check};
+use crate::common::M3uExt;
 use crate::config::favourite::FavouriteConfig;
 use crate::config::favourite::{get_favourite_map, reload_favourite_map};
 use crate::config::search::SearchConfig;
@@ -12,12 +13,14 @@ use crate::r#const::constant::{
     INPUT_SEARCH_FOLDER, LOGOS_FOLDER, OUTPUT_FOLDER, STATIC_FOLDER, UPLOAD_FOLDER,
 };
 use crate::search;
-use crate::search::init_search_data;
+use crate::search::{init_epg_data, init_search_data};
+use crate::epg_xml::{get_all_epg_channels, query_epg_by_channel, EpgChannelItem, generate_custom_epg_xml};
+use crate::config::epg::{get_epg_list, update_epg_list};
 use actix_files as actix_fs;
 use actix_files::NamedFile;
 use actix_multipart::form::{tempfile::TempFile, MultipartForm};
 use actix_web::middleware::Logger;
-use actix_web::{get, post, web, App, HttpResponse, HttpServer, Responder};
+use actix_web::{delete, get, post, web, App, HttpResponse, HttpServer, Responder};
 use chrono::Local;
 use clokwerk::{Scheduler, TimeUnits};
 use log::{debug, error, info};
@@ -35,6 +38,7 @@ use tokio::signal;
 use walkdir::WalkDir;
 use zip::write::FileOptions;
 use zip::{ZipArchive, ZipWriter};
+use crate::common::QualityType::{Quality240P, Quality360P, Quality480P, Quality720P, Quality1080P, Quality2K, Quality4K, Quality8K};
 
 /// 更新全局配置请求结构体
 #[derive(Serialize, Deserialize)]
@@ -343,7 +347,10 @@ async fn system_get_favourite_channel(
         }
     };
     return HttpResponse::Ok()
-        .append_header(("Content-Type", "text/plain; charset=utf-8"))
+        .append_header((
+            "Content-Type",
+            "application/vnd.apple.mpegurl; charset=utf-8",
+        ))
         .body(data);
 }
 
@@ -647,6 +654,74 @@ async fn update_logos_config(req: web::Json<UpdateLogosConfigRequest>) -> impl R
     }
 }
 
+/// 获取 base.json 配置
+#[get("/system/base-config")]
+async fn get_base_config() -> impl Responder {
+    match crate::config::base::get_base_json() {
+        Ok(json) => HttpResponse::Ok()
+            .append_header(("Content-Type", "application/json"))
+            .body(json),
+        Err(e) => {
+            log::error!("Failed to get base config: {}", e);
+            HttpResponse::InternalServerError().body("{\"msg\":\"Failed to get configuration\"}")
+        }
+    }
+}
+
+/// 更新 base.json 配置的请求结构体
+#[derive(Debug, Serialize, Deserialize)]
+struct UpdateBaseConfigRequest {
+    host: String,
+    #[serde(default)]
+    replace_string: bool,
+    #[serde(default)]
+    remote_url2local_images: bool,
+}
+
+/// 更新 base.json 配置的 API 端点
+#[post("/system/base-config")]
+async fn update_base_config(req: web::Json<UpdateBaseConfigRequest>) -> impl Responder {
+    match crate::config::base::partial_update_base_config(
+        req.host.trim_end_matches('/').to_string(),
+        req.replace_string,
+        req.remote_url2local_images,
+    ) {
+        Ok(_) => HttpResponse::Ok().json(serde_json::json!({"msg": "success"})),
+        Err(e) => {
+            log::error!("Failed to update base config: {}", e);
+            HttpResponse::InternalServerError()
+                .json(serde_json::json!({"msg": format!("Failed to save configuration: {}", e)}))
+        }
+    }
+}
+
+/// 获取 epg.json 配置
+#[get("/system/epg-config")]
+async fn get_epg_config() -> impl Responder {
+    match crate::config::epg::get_epg_json() {
+        Ok(json) => HttpResponse::Ok()
+            .append_header(("Content-Type", "application/json"))
+            .body(json),
+        Err(e) => {
+            log::error!("Failed to get epg config: {}", e);
+            HttpResponse::InternalServerError().body("{\"msg\":\"Failed to get configuration\"}")
+        }
+    }
+}
+
+/// 更新 epg.json 配置的 API 端点
+#[post("/system/epg-config")]
+async fn update_epg_config(req: web::Json<crate::config::epg::EpgConfig>) -> impl Responder {
+    match crate::config::epg::update_epg_config(req.into_inner()) {
+        Ok(_) => HttpResponse::Ok().json(serde_json::json!({"msg": "success"})),
+        Err(e) => {
+            log::error!("Failed to update epg config: {}", e);
+            HttpResponse::InternalServerError()
+                .json(serde_json::json!({"msg": format!("Failed to save configuration: {}", e)}))
+        }
+    }
+}
+
 /// 更新Logo配置API端点
 #[post("/media/logos/update")]
 async fn update_logo_config(req: web::Json<LogoConfig>) -> impl Responder {
@@ -672,6 +747,7 @@ struct QRequest {
     c: String, //config_id
     i: i8,     // ip类型 默认 0 ， ipv4: 1, ipv6:2
     r: i8,     // 输出结果 默认 0 m3u, 1 text
+    q: Option<i32>,
 }
 
 /// 获取任务内容的请求结构体
@@ -751,6 +827,7 @@ pub async fn get_task_detail(
                         vec![],
                         only_succ,
                         0,
+                        vec![],
                     );
                     check_result.push(TaskContentItem {
                         content_type: "sub".to_string(),
@@ -765,6 +842,7 @@ pub async fn get_task_detail(
                         vec![],
                         only_succ,
                         0,
+                        vec![],
                     );
                     check_result.push(TaskContentItem {
                         content_type: "ipv4".to_string(),
@@ -779,6 +857,7 @@ pub async fn get_task_detail(
                         vec![],
                         only_succ,
                         0,
+                        vec![],
                     );
                     check_result.push(TaskContentItem {
                         content_type: "ipv6".to_string(),
@@ -847,13 +926,14 @@ pub async fn get_task_content(
     };
 
     let mut logo_content = String::new();
+    let rename_channel_type = 0;
 
     let host = crate::config::logos::get_logos_config().host;
     if !host.is_empty() {
         // 解析 M3U 并替换 Logo
         let mut m3u_list = M3uObjectList::from(m3u_content);
         m3u_list.replace_logos(host.clone(), &logos_map);
-        logo_content = m3u_list.get_m3u_content_str(false);
+        logo_content = m3u_list.get_m3u_content_str(rename_channel_type,false);
     }
 
     let mut response = Vec::new();
@@ -1189,6 +1269,53 @@ async fn system_import_config(
     }))
 }
 
+fn to_bin_prefixed(n: i32) -> String {
+    format!("{:0width$b}", n, width = 8)
+}
+
+// 1 0 1 0 1 0
+pub fn get_str_to_quality(n:i32) -> Vec<QualityType> {
+    let mut qualities = Vec::new();
+    let bin_str = to_bin_prefixed(n);
+    for (i, ch) in bin_str.chars().enumerate() {
+        let bit = if ch == '1' { 1 } else { 0 };
+        if bit == 1 {
+            if i == 7 {
+                qualities.push(Quality240P)
+            }else if i == 6 {
+                qualities.push(Quality360P)
+            }else if i == 5 {
+                qualities.push(Quality480P)
+            }else if i == 4 {
+                qualities.push(Quality720P)
+            }else if i == 3 {
+                qualities.push(Quality1080P)
+            }else if i == 2 {
+                qualities.push(Quality2K)
+            }else if i == 1 {
+                qualities.push(Quality4K)
+            }else if i == 0 {
+                qualities.push(Quality8K)
+            }
+        }
+    }
+    qualities
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::web::get_str_to_quality;
+
+    #[test]
+    fn test_get_str_to_quality() {
+        println!("{:?}", get_str_to_quality(63));
+        println!("{:?}", get_str_to_quality(47));
+        println!("{:?}", get_str_to_quality(45));
+        println!("{:?}", get_str_to_quality(13));
+        println!("{:?}", get_str_to_quality(12));
+    }
+}
+
 /// M3U解析和Logo替换API端点
 #[get("/q")]
 async fn q_m3u(req: web::Query<QRequest>) -> impl Responder {
@@ -1198,13 +1325,20 @@ async fn q_m3u(req: web::Query<QRequest>) -> impl Responder {
 
     let logos_map = crate::config::logos::get_logos_map();
     let host = crate::config::logos::get_logos_config().host;
+    let mut qualities: Vec<QualityType> = Vec::new();
+    if req.q.is_some() {
+        qualities = get_str_to_quality(req.q.unwrap());
+    }
     return match json_file {
         Ok(mut file) => {
             let mut json_content = String::default();
             let _ = file.read_to_string(&mut json_content);
             let ser_res = serde_json::from_str::<M3uObjectList>(&json_content);
             match ser_res {
-                Ok(m3u_obj) => {
+                Ok(mut m3u_obj) => {
+                    let mut m3u_header: M3uExt = M3uExt::new();
+                    m3u_header.set_x_tv_url(vec![format!("{}/epg/info/{}", host, req.c)]);
+                    m3u_obj.set_header(m3u_header);
                     let all_content_m3u = &m3u_obj.clone().export(
                         req.i as i32,
                         host.clone(),
@@ -1213,6 +1347,7 @@ async fn q_m3u(req: web::Query<QRequest>) -> impl Responder {
                         vec![],
                         true,
                         req.r,
+                        qualities,
                     );
                     HttpResponse::Ok()
                         .append_header((
@@ -1228,6 +1363,134 @@ async fn q_m3u(req: web::Query<QRequest>) -> impl Responder {
         Err(e) => HttpResponse::BadRequest()
             .json(serde_json::json!({"msg": format!("Failed to read json file: {}", e)})),
     };
+}
+
+// ============== EPG API ==============
+
+#[derive(Deserialize)]
+struct EpgQuery {
+    channel: String,
+}
+
+#[get("/epg")]
+async fn get_epg(query: web::Query<EpgQuery>) -> impl Responder {
+    let programmes = query_epg_by_channel(&query.channel);
+    HttpResponse::Ok().json(programmes)
+}
+
+#[derive(Serialize)]
+struct EpgChannelListResponse {
+    list: Vec<EpgChannelItem>,
+}
+
+#[get("/epg/channel-list")]
+async fn get_epg_channel_list() -> impl Responder {
+    let list = get_all_epg_channels();
+    HttpResponse::Ok().json(EpgChannelListResponse { list })
+}
+
+#[get("/epg/info/{id}")]
+async fn get_epg_info(path: web::Path<String>) -> impl Responder {
+    let id = path.into_inner();
+    let file_path = format!("./static/output/{}.json", id);
+
+    let content = match std::fs::read_to_string(&file_path) {
+        Ok(c) => c,
+        Err(_) => return HttpResponse::NotFound().body("Output file not found"),
+    };
+
+    let json_data: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(data) => data,
+        Err(_) => return HttpResponse::BadRequest().body("Invalid JSON format"),
+    };
+
+    let mut channel_names = Vec::new();
+
+    if let Some(list) = json_data.get("list").and_then(|l| l.as_array()) {
+        for item in list {
+            let mut name_found = false;
+            if let Some(extend) = item.get("extend") {
+                if let Some(tv_name) = extend.get("tv_name").and_then(|n| n.as_str()) {
+                    if !tv_name.is_empty() {
+                        channel_names.push(tv_name.to_string());
+                        name_found = true;
+                    }
+                }
+            }
+            if !name_found {
+                if let Some(name) = item.get("name").and_then(|n| n.as_str()) {
+                    if !name.is_empty() {
+                        channel_names.push(name.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    match generate_custom_epg_xml(channel_names) {
+        Ok(xml_str) => HttpResponse::Ok().content_type("application/xml").body(xml_str),
+        Err(e) => HttpResponse::InternalServerError().body(format!("Failed to generate EPG: {}", e)),
+    }
+}
+
+#[derive(Serialize)]
+struct EpgSourcesResponse {
+    list: Vec<String>,
+    status: bool,
+}
+
+#[get("/epg/sources")]
+async fn get_epg_sources() -> impl Responder {
+    let list = get_epg_list();
+    let today = chrono::Local::now().format("%Y%m%d").to_string();
+    let epg_folder = format!("./static/epg/{}/", today);
+    let status = std::path::Path::new(&epg_folder).exists();
+    
+    let response = EpgSourcesResponse {
+        list,
+        status,
+    };
+    HttpResponse::Ok().json(response)
+}
+
+#[derive(Deserialize)]
+struct EpgSourceUpdatePayload {
+    list: Vec<String>,
+}
+
+#[post("/epg/sources")]
+async fn update_epg_sources_api(payload: web::Json<EpgSourceUpdatePayload>) -> impl Responder {
+    match update_epg_list(payload.list.clone()) {
+        Ok(_) => HttpResponse::Ok().json(serde_json::json!({"status": "success"})),
+        Err(e) => HttpResponse::BadRequest().json(serde_json::json!({"status": "error", "message": e})),
+    }
+}
+
+#[post("/epg/sync")]
+async fn sync_epg_api() -> impl Responder {
+    // 触发后台同步
+    tokio::spawn(async {
+        let _ = init_epg_data().await;
+    });
+    HttpResponse::Ok().json(serde_json::json!({"status": "success", "message": "EPG sync started"}))
+}
+
+#[get("/epg/cache")]
+async fn delete_epg_cache_api() -> impl Responder {
+    let today = chrono::Local::now().format("%Y%m%d").to_string();
+    let epg_folder = format!("./static/epg/{}/", today);
+    
+    match std::fs::remove_dir_all(&epg_folder) {
+        Ok(_) => HttpResponse::Ok().json(serde_json::json!({"status": "success", "message": "Cache deleted"})),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // Folder doesn't exist, consider it a success
+            HttpResponse::Ok().json(serde_json::json!({"status": "success", "message": "Cache already empty"}))
+        }
+        Err(e) => {
+            error!("Failed to delete EPG cache: {}", e);
+            HttpResponse::InternalServerError().json(serde_json::json!({"status": "error", "message": format!("Failed to delete cache: {}", e)}))
+        }
+    }
 }
 
 /// 启动Web服务器
@@ -1273,6 +1536,17 @@ pub async fn start_web(port: u16) {
                 info!("search task finished");
             });
         });
+        scheduler.every(1.hour()).run(move || {
+            info!("start search task");
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+
+            rt.block_on(async {
+                let _ = init_epg_data();
+            });
+        });
         // 检查任务
         scheduler.every(30.seconds()).run(move || {
             // 判断当前是否有任务在并行运行，如果有，再判断任务是否已经运行了超过10分钟，如果超过了，可以再次运行
@@ -1303,6 +1577,13 @@ pub async fn start_web(port: u16) {
 
     let server = HttpServer::new(move || {
         App::new()
+            .service(get_epg)
+            .service(get_epg_channel_list)
+            .service(get_epg_info)
+            .service(get_epg_sources)
+            .service(update_epg_sources_api)
+            .service(sync_epg_api)
+            .service(delete_epg_cache_api)
             .service(check_url_is_available)
             .service(fetch_m3u_body)
             .service(system_status)
@@ -1324,6 +1605,10 @@ pub async fn start_web(port: u16) {
             .service(get_logos_list)
             .service(update_logos_config)
             .service(update_logo_config)
+            .service(get_base_config)
+            .service(update_base_config)
+            .service(get_epg_config)
+            .service(update_epg_config)
             .service(q_m3u)
             .service(get_task_detail)
             .service(get_task_content)

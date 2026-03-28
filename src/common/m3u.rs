@@ -6,7 +6,7 @@ use crate::common::CheckDataStatus::{Failed, Success, Unchecked};
 use crate::common::FfmpegInfo;
 use crate::common::QualityType::QualityUnknown;
 use crate::common::SourceType::{Normal, Quota};
-use crate::search::{generate_channel_thumbnail_folder_name};
+use crate::search::generate_channel_thumbnail_folder_name;
 use crate::utils::{
     get_host_ip_address, get_url_host_and_port, is_ipv4, is_ipv6, is_valid_ip, remove_other_char,
 };
@@ -249,9 +249,14 @@ impl M3uObject {
             if !extend.tv_name.is_empty() {
                 header.push_str(&format!(" tvg-name=\"{}\"", extend.tv_name));
             }
-            if !extend.tv_id.is_empty() {
-                header.push_str(&format!(" tvg-id=\"{}\"", extend.tv_id));
-            }
+            
+            // Generate tvg-id using the matching algorithm
+            let tvg_id = crate::epg_mapping::get_best_tvg_id(
+                if extend.tv_name.is_empty() { None } else { Some(&extend.tv_name) },
+                &self.name
+            );
+            header.push_str(&format!(" tvg-id=\"{}\"", tvg_id));
+            
             if !extend.tv_logo.is_empty() {
                 header.push_str(&format!(" tvg-logo=\"{}\"", extend.tv_logo));
             }
@@ -264,6 +269,10 @@ impl M3uObject {
             if !extend.tv_language.is_empty() {
                 header.push_str(&format!(" tvg-language=\"{}\"", extend.tv_language));
             }
+        } else {
+            // Fallback when no extend info is available
+            let tvg_id = crate::epg_mapping::get_best_tvg_id(None, &self.name);
+            header.push_str(&format!(" tvg-id=\"{}\"", tvg_id));
         }
         self.raw = format!("{},{}\n{}", header, self.name, self.url);
     }
@@ -442,6 +451,7 @@ impl M3uObjectList {
         full_list: Vec<String>,
         only_success: bool,
         export_type: i8,
+        quality_type_list: Vec<QualityType>,
     ) -> String {
         let mut save_list = vec![];
         for i in &self.list {
@@ -483,6 +493,21 @@ impl M3uObjectList {
                     }
                 }
             }
+            if !is_save {
+                continue;
+            }
+            if !quality_type_list.is_empty() {
+                is_save = false;
+                if i.other_status.ffmpeg_info.is_some() {
+                    for v in i.other_status.ffmpeg_info.clone().unwrap().video {
+                        for k in quality_type_list.clone() {
+                            if v.quality_type.eq(&k) {
+                                is_save = true;
+                            }
+                        }
+                    }
+                }
+            }
             if is_save {
                 save_list.push(i.clone());
             }
@@ -493,11 +518,12 @@ impl M3uObjectList {
         if !replace_logo_host.is_empty() && !replace_logo_host.is_empty() {
             new_obj.replace_logos(replace_logo_host, &replace_logo_map);
         }
+        let rename_channel_type= 0;
         if export_type == 0 {
             // let _ = new_obj.generate_m3u_file(format!("{}{}.m3u", OUTPUT_FOLDER, custom_id), true);
-            new_obj.get_m3u_content_str(only_success)
+            new_obj.get_m3u_content_str(rename_channel_type, only_success)
         } else if export_type == 1 {
-            new_obj.get_text_content_str(only_success)
+            new_obj.get_text_content_str(rename_channel_type, only_success)
             // let _ = new_obj.generate_text_file(format!("{}{}.m3u", OUTPUT_FOLDER, custom_id), true);
         } else {
             String::default()
@@ -588,8 +614,7 @@ impl M3uObjectList {
     pub async fn search(&mut self, search: SearchOptions) {
         let mut list = vec![];
         debug!(
-            "query params --- full -- {:?} like --{:?} dislike{:?} search data count {:?}",
-            search.keyword_full_match,
+            "query params --- like --{:?} dislike{:?} search data count {:?}",
             search.keyword_like,
             search.keyword_dislike,
             self.list.len()
@@ -806,14 +831,22 @@ impl M3uObjectList {
     //     x
     // }
 
-    pub async fn output_file(&mut self, output_file: String, only_success: bool) {
+    pub async fn output_file(
+        &mut self,
+        output_file: String,
+        only_success: bool,
+        rename_channel_type: i8,
+    ) {
         // 生成.m3u 文件
-        if let Err(e) = self.generate_m3u_file(output_file.clone(), only_success) {
+        if let Err(e) =
+            self.generate_m3u_file(output_file.clone(), rename_channel_type, only_success)
+        {
             error!("Failed to generate m3u file: {}", e);
         }
         // 生成.txt 文件
         let txt_file = output_file.clone().replace(".m3u", ".txt");
-        if let Err(e) = self.generate_text_file(txt_file.clone(), only_success) {
+        if let Err(e) = self.generate_text_file(txt_file.clone(), rename_channel_type, only_success)
+        {
             error!("Failed to generate text file: {}", e);
         }
         time::sleep(Duration::from_millis(500)).await;
@@ -908,7 +941,7 @@ impl M3uObjectList {
         }
     }
 
-    pub fn get_m3u_content_str(&mut self, only_succ: bool) -> String {
+    pub fn get_m3u_content_str(&mut self,rename_channel_type:i8, only_succ: bool) -> String {
         let res_arr = self.get_m3u_content(only_succ);
         if res_arr.len() == 0 {
             String::default()
@@ -939,7 +972,12 @@ impl M3uObjectList {
         result_m3u_content
     }
 
-    pub fn generate_m3u_file(&mut self, output_file: String, only_succ: bool) -> io::Result<()> {
+    pub fn generate_m3u_file(
+        &mut self,
+        output_file: String,
+        rename_channel_type: i8,
+        only_succ: bool,
+    ) -> io::Result<()> {
         let result_m3u_content = self.get_m3u_content(only_succ);
         if result_m3u_content.len() > 0 {
             let mut fd = File::create(output_file.to_owned())?;
@@ -951,12 +989,12 @@ impl M3uObjectList {
         Ok(())
     }
 
-    pub fn get_text_content_str(&mut self, only_succ: bool) -> String {
-        let res_arr = self.get_text_content(only_succ);
+    pub fn get_text_content_str(&mut self,rename_channel_type:i8, only_succ: bool) -> String {
+        let res_arr = self.get_text_content(rename_channel_type, only_succ);
         res_arr.join("\n")
     }
 
-    pub fn get_text_content(&mut self, only_succ: bool) -> Vec<String> {
+    pub fn get_text_content(&mut self, rename_channel_type: i8, only_succ: bool) -> Vec<String> {
         let mut text_arr = vec![];
         if self.list.len() > 0 {
             // 打开文件 b 并准备写入
@@ -979,8 +1017,13 @@ impl M3uObjectList {
         text_arr
     }
 
-    pub fn generate_text_file(&mut self, output_file: String, only_succ: bool) -> io::Result<()> {
-        let txt_arr = self.get_text_content(only_succ);
+    pub fn generate_text_file(
+        &mut self,
+        output_file: String,
+        rename_channel_type: i8,
+        only_succ: bool,
+    ) -> io::Result<()> {
+        let txt_arr = self.get_text_content(rename_channel_type, only_succ);
         if txt_arr.len() > 0 {
             // 打开文件 b 并准备写入
             let mut file_b = File::create(output_file)?;
@@ -998,8 +1041,12 @@ pub struct M3uExt {
 }
 
 impl M3uExt {
-    fn new() -> Self {
+    pub fn new() -> Self {
         M3uExt { x_tv_url: vec![] }
+    }
+
+    pub fn set_x_tv_url(&mut self, x_tv_url: Vec<String>) {
+        self.x_tv_url = x_tv_url
     }
 }
 

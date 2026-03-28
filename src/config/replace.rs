@@ -11,9 +11,8 @@ use std::sync::RwLock;
 /// Replace配置结构体
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReplaceConfig {
-    #[serde(rename = "replace_string")]
+    #[serde(default)]
     pub replace_string: bool,
-    #[serde(rename = "replace_map")]
     pub replace_map: HashMap<String, String>,
 }
 

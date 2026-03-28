@@ -1,6 +1,8 @@
 mod common;
 mod config;
 mod r#const;
+mod epg_xml;
+mod epg_mapping;
 mod live;
 mod search;
 mod utils;
@@ -10,10 +12,10 @@ use crate::common::{do_check, SearchOptions, SearchParams};
 use crate::config::init_all_config_files;
 use crate::live::do_ob;
 use crate::r#const::constant::{
-    INPUT_FOLDER, INPUT_LIVE_FOLDER, INPUT_SEARCH_FOLDER, LOGOS_FOLDER, LOGS_FOLDER, OUTPUT_FOLDER,
-    OUTPUT_THUMBNAIL_FOLDER, STATIC_FOLDER, UPLOAD_FOLDER,
+    INPUT_EPG_FOLDER, INPUT_FOLDER, INPUT_LIVE_FOLDER, INPUT_SEARCH_FOLDER, LOGOS_FOLDER,
+    LOGS_FOLDER, OUTPUT_FOLDER, OUTPUT_THUMBNAIL_FOLDER, STATIC_FOLDER, UPLOAD_FOLDER,
 };
-use crate::search::{clear_search_folder, do_search};
+use crate::search::{clear_search_folder, do_search, init_epg_data};
 use crate::utils::{create_folder, get_out_put_filename};
 use chrono::Local;
 use clap::{arg, Args as clapArgs, Parser, Subcommand};
@@ -132,10 +134,6 @@ pub struct CheckArgs {
     #[arg(long = "dislike")]
     keyword_dislike: Vec<String>,
 
-    /// 频道名称不包含的关键词
-    #[arg(long = "fmword")]
-    keyword_full: Vec<String>,
-
     /// 是否对频道进行排序
     #[arg(long = "sort", default_value_t = false)]
     sort: bool,
@@ -163,6 +161,10 @@ pub struct CheckArgs {
     /// 导出m3u文件
     #[arg(long = "export-file", default_value_t = true)]
     export_file: bool,
+
+    /// 重命名频道名称类型，0原始名称 1：【channelName 360p 720p 1080p】 2: 【channelName SD HD FHD】 11：【chanelName 720p 20ms】21: 【channelName HD 20ms】
+    #[arg(long = "rename-channel-type", default_value_t = 0)]
+    rename_channel_type: i8,
 }
 
 #[derive(Parser)]
@@ -203,6 +205,7 @@ fn init_folder() {
         LOGS_FOLDER,
         logos_folder.as_str(),
         UPLOAD_FOLDER,
+        INPUT_EPG_FOLDER,
     ];
     for f in folder {
         create_folder(&f.to_string()).unwrap()
@@ -270,6 +273,17 @@ pub async fn main() {
     init_all_config_files();
     init_folder();
     init_translate();
+    // 初始化 EPG 数据并启动后台同步任务
+    tokio::spawn(async {
+        init_epg_data().await;
+        // 每天同步一次
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(24 * 3600));
+        loop {
+            interval.tick().await;
+            init_epg_data().await;
+        }
+    });
+
     match args.command {
         Commands::Web(_) => {
             init_file_log();
@@ -313,6 +327,7 @@ pub async fn main() {
                     args.not_http_skip,
                     args.video_quality,
                     args.export_file,
+                    args.rename_channel_type,
                 )
                 .await
                 .unwrap();
