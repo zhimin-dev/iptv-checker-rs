@@ -4,6 +4,7 @@ use crate::common::task::{
 };
 use crate::common::translate::init_from_default_file;
 use crate::common::M3uObjectList;
+use crate::common::M3uExt;
 use crate::config::favourite::FavouriteConfig;
 use crate::config::favourite::{get_favourite_map, reload_favourite_map};
 use crate::config::search::SearchConfig;
@@ -13,7 +14,7 @@ use crate::r#const::constant::{
 };
 use crate::search;
 use crate::search::{init_epg_data, init_search_data};
-use crate::epg_xml::{get_all_epg_channels, query_epg_by_channel, EpgChannelItem};
+use crate::epg_xml::{get_all_epg_channels, query_epg_by_channel, EpgChannelItem, generate_custom_epg_xml};
 use crate::config::epg::{get_epg_list, update_epg_list};
 use actix_files as actix_fs;
 use actix_files::NamedFile;
@@ -1334,7 +1335,10 @@ async fn q_m3u(req: web::Query<QRequest>) -> impl Responder {
             let _ = file.read_to_string(&mut json_content);
             let ser_res = serde_json::from_str::<M3uObjectList>(&json_content);
             match ser_res {
-                Ok(m3u_obj) => {
+                Ok(mut m3u_obj) => {
+                    let mut m3u_header: M3uExt = M3uExt::new();
+                    m3u_header.set_x_tv_url(vec![format!("{}/epg/info/{}", host, req.c)]);
+                    m3u_obj.set_header(m3u_header);
                     let all_content_m3u = &m3u_obj.clone().export(
                         req.i as i32,
                         host.clone(),
@@ -1383,6 +1387,50 @@ struct EpgChannelListResponse {
 async fn get_epg_channel_list() -> impl Responder {
     let list = get_all_epg_channels();
     HttpResponse::Ok().json(EpgChannelListResponse { list })
+}
+
+#[get("/epg/info/{id}")]
+async fn get_epg_info(path: web::Path<String>) -> impl Responder {
+    let id = path.into_inner();
+    let file_path = format!("./static/output/{}.json", id);
+
+    let content = match std::fs::read_to_string(&file_path) {
+        Ok(c) => c,
+        Err(_) => return HttpResponse::NotFound().body("Output file not found"),
+    };
+
+    let json_data: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(data) => data,
+        Err(_) => return HttpResponse::BadRequest().body("Invalid JSON format"),
+    };
+
+    let mut channel_names = Vec::new();
+
+    if let Some(list) = json_data.get("list").and_then(|l| l.as_array()) {
+        for item in list {
+            let mut name_found = false;
+            if let Some(extend) = item.get("extend") {
+                if let Some(tv_name) = extend.get("tv_name").and_then(|n| n.as_str()) {
+                    if !tv_name.is_empty() {
+                        channel_names.push(tv_name.to_string());
+                        name_found = true;
+                    }
+                }
+            }
+            if !name_found {
+                if let Some(name) = item.get("name").and_then(|n| n.as_str()) {
+                    if !name.is_empty() {
+                        channel_names.push(name.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    match generate_custom_epg_xml(channel_names) {
+        Ok(xml_str) => HttpResponse::Ok().content_type("application/xml").body(xml_str),
+        Err(e) => HttpResponse::InternalServerError().body(format!("Failed to generate EPG: {}", e)),
+    }
 }
 
 #[derive(Serialize)]
@@ -1531,6 +1579,7 @@ pub async fn start_web(port: u16) {
         App::new()
             .service(get_epg)
             .service(get_epg_channel_list)
+            .service(get_epg_info)
             .service(get_epg_sources)
             .service(update_epg_sources_api)
             .service(sync_epg_api)

@@ -249,9 +249,14 @@ impl M3uObject {
             if !extend.tv_name.is_empty() {
                 header.push_str(&format!(" tvg-name=\"{}\"", extend.tv_name));
             }
-            if !extend.tv_id.is_empty() {
-                header.push_str(&format!(" tvg-id=\"{}\"", extend.tv_id));
-            }
+            
+            // Generate tvg-id using the matching algorithm
+            let tvg_id = crate::epg_mapping::get_best_tvg_id(
+                if extend.tv_name.is_empty() { None } else { Some(&extend.tv_name) },
+                &self.name
+            );
+            header.push_str(&format!(" tvg-id=\"{}\"", tvg_id));
+            
             if !extend.tv_logo.is_empty() {
                 header.push_str(&format!(" tvg-logo=\"{}\"", extend.tv_logo));
             }
@@ -264,6 +269,10 @@ impl M3uObject {
             if !extend.tv_language.is_empty() {
                 header.push_str(&format!(" tvg-language=\"{}\"", extend.tv_language));
             }
+        } else {
+            // Fallback when no extend info is available
+            let tvg_id = crate::epg_mapping::get_best_tvg_id(None, &self.name);
+            header.push_str(&format!(" tvg-id=\"{}\"", tvg_id));
         }
         self.raw = format!("{},{}\n{}", header, self.name, self.url);
     }
@@ -1032,8 +1041,12 @@ pub struct M3uExt {
 }
 
 impl M3uExt {
-    fn new() -> Self {
+    pub fn new() -> Self {
         M3uExt { x_tv_url: vec![] }
+    }
+
+    pub fn set_x_tv_url(&mut self, x_tv_url: Vec<String>) {
+        self.x_tv_url = x_tv_url
     }
 }
 

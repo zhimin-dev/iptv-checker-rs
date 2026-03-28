@@ -2,6 +2,7 @@ mod common;
 mod config;
 mod r#const;
 mod epg_xml;
+mod epg_mapping;
 mod live;
 mod search;
 mod utils;

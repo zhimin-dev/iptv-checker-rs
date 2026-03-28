@@ -2,6 +2,7 @@
 name = "iptv-checker-rs"
 version = "4.4.0"
 edition = "2021"
+default-run = "iptv-checker-rs"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

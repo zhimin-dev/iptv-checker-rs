@@ -6,6 +6,8 @@
 //! - 子节点 `<programme start="..." stop="..." channel="...">`，内嵌 `<title lang="...">文本</title>`
 
 use crate::search::parse_epg_time_str;
+use crate::common::translate::trad_to_simp;
+use crate::epg_mapping::get_best_tvg_id;
 use log::error;
 use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, BytesText, Event};
 use quick_xml::Reader;
@@ -80,6 +82,42 @@ pub fn get_all_epg_channels() -> Vec<EpgChannelItem> {
         }
     }
     result
+}
+
+/// 根据频道名称列表生成自定义 EPG XML 字符串
+pub fn generate_custom_epg_xml(channel_names: Vec<String>) -> Result<String, String> {
+    let mut tv = Tv {
+        generator_info_name: Some("iptv-checker-rs".to_string()),
+        generator_info_url: Some("https://github.com/iptv-checker-rs".to_string()),
+        channels: Vec::new(),
+        programmes: Vec::new(),
+    };
+
+    let mut added_channels = std::collections::HashSet::new();
+
+    if let Ok(cache) = GLOBAL_EPG_CACHE.read() {
+        for name in channel_names {
+            if added_channels.contains(&name) {
+                continue;
+            }
+            if let Some(programmes) = cache.get(&name) {
+                if let Some(first_prog) = programmes.first() {
+                    let channel_id = first_prog.channel.clone();
+                    tv.channels.push(Channel {
+                        id: channel_id,
+                        display_names: vec![DisplayName {
+                            lang: Some("zh".to_string()),
+                            value: name.clone(),
+                        }],
+                    });
+                    tv.programmes.extend(programmes.clone());
+                    added_channels.insert(name);
+                }
+            }
+        }
+    }
+
+    tv_to_epg_xml(&tv)
 }
 
 // ============== JSON 可序列化结构（与 XML 语义一致） ==============
@@ -240,6 +278,7 @@ pub fn parse_epg_xml_str(xml_str: &str) -> Result<Tv, String> {
     let mut current_channel: Option<Channel> = None;
     let mut current_programme: Option<Programme> = None;
     let mut attrs_map: HashMap<String, String> = HashMap::new();
+    let mut channel_id_mapping: HashMap<String, String> = HashMap::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
@@ -277,10 +316,16 @@ pub fn parse_epg_xml_str(xml_str: &str) -> Result<Tv, String> {
                         }
                     }
                     "programme" => {
+                        let mut channel_id = attrs_map.remove("channel").unwrap_or_default();
+                        // Map the original channel ID to the standardized one
+                        if let Some(mapped_id) = channel_id_mapping.get(&channel_id) {
+                            channel_id = mapped_id.clone();
+                        }
+                        
                         current_programme = Some(Programme {
                             start: attrs_map.remove("start").unwrap_or_default(),
                             stop: attrs_map.remove("stop").unwrap_or_default(),
-                            channel: attrs_map.remove("channel").unwrap_or_default(),
+                            channel: channel_id,
                             start_unix: 0,
                             stop_unix: 0,
                             titles: Vec::new(),
@@ -312,7 +357,8 @@ pub fn parse_epg_xml_str(xml_str: &str) -> Result<Tv, String> {
                         "display-name" => {
                             if let Some(ref mut ch) = current_channel {
                                 if let Some(last) = ch.display_names.last_mut() {
-                                    last.value = text;
+                                    // Convert to simplified Chinese
+                                    last.value = trad_to_simp(&text);
                                 }
                             }
                         }
@@ -334,7 +380,18 @@ pub fn parse_epg_xml_str(xml_str: &str) -> Result<Tv, String> {
                 }
                 match name.as_str() {
                     "channel" => {
-                        if let Some(ch) = current_channel.take() {
+                        if let Some(mut ch) = current_channel.take() {
+                            // After parsing all display names, map the channel ID
+                            if let Some(dn) = ch.display_names.first() {
+                                let original_id = ch.id.clone();
+                                let standardized_id = get_best_tvg_id(None, &dn.value);
+                                
+                                // Save mapping for programmes
+                                channel_id_mapping.insert(original_id, standardized_id.clone());
+                                
+                                // Update channel ID
+                                ch.id = standardized_id;
+                            }
                             tv.channels.push(ch);
                         }
                     }
