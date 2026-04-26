@@ -56,7 +56,7 @@ impl TaskInfo {
     }
 
     pub fn set_last_run_time(&mut self, time: i32) {
-        self.next_run_time = time
+        self.last_run_time = time
     }
 }
 
@@ -338,6 +338,10 @@ impl Task {
         self.id.clone()
     }
 
+    pub fn get_create_time(&self) -> u64 {
+        self.create_time
+    }
+
     pub fn set_id(&mut self, id: String) {
         self.id = id.clone()
     }
@@ -359,6 +363,14 @@ impl Task {
         if self.task_info.next_run_time != 0 && self.task_info.next_run_time - now() as i32 > 0 {
             return;
         }
+        self.run_inner();
+    }
+
+    pub fn force_run(&mut self) {
+        self.run_inner();
+    }
+
+    fn run_inner(&mut self) {
         self.task_info.is_running = true;
         let _ = save_task(self.id.clone(), self.clone().get_task());
         let _ = save_task_config();

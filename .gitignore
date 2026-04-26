@@ -8,3 +8,4 @@ tasks.json
 .cargo
 static/*
 core/*
+iptv_checker_web_server.pid

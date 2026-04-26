@@ -9,7 +9,7 @@ mod utils;
 mod web;
 use crate::common::{do_check, SearchOptions, SearchParams};
 // 配置初始化在 init_all_config_files 中完成
-use crate::config::init_all_config_files;
+use crate::config::{get_all_tasks, get_task, init_all_config_files};
 use crate::live::do_ob;
 use crate::r#const::constant::{
     INPUT_EPG_FOLDER, INPUT_FOLDER, INPUT_LIVE_FOLDER, INPUT_SEARCH_FOLDER, LOGOS_FOLDER,
@@ -23,7 +23,6 @@ use log::{error, info, LevelFilter};
 use simplelog::{CombinedLogger, Config, WriteLogger};
 use std::env;
 use std::fs::File;
-use tempfile::tempdir;
 
 const DEFAULT_HTTP_PORT: u16 = 8089;
 
@@ -81,6 +80,17 @@ pub struct ObArgs {
     input_url: String,
 }
 
+#[derive(Subcommand)]
+enum TaskSubcommands {
+    /// 列出所有任务（taskId、id、最后更新时间）
+    List,
+    /// 获取任务信息并执行
+    Check {
+        /// 任务ID
+        task_id: String,
+    },
+}
+
 #[derive(clapArgs)]
 pub struct WebArgs {
     /// 启动Web服务
@@ -98,6 +108,9 @@ pub struct WebArgs {
     /// 查看Web服务状态
     #[arg(long = "status", default_value_t = false)]
     status: bool,
+
+    #[command(subcommand)]
+    task: Option<TaskSubcommands>,
 }
 
 #[derive(clapArgs)]
@@ -179,16 +192,29 @@ pub struct Args {
 }
 
 fn get_pid_file() -> String {
-    if let Ok(dir) = tempdir() {
-        if let Some(a) = dir.path().join("iptv_checker_web_server.pid").to_str() {
-            return a.to_owned();
-        }
+    "./iptv_checker_web_server.pid".to_string()
+}
+
+fn write_pid_file(pid_name: &String) {
+    let pid = std::process::id();
+    if let Err(e) = std::fs::write(pid_name, pid.to_string()) {
+        error!("write pid file failed: {}", e);
     }
-    String::default()
+}
+
+fn check_web_running(pid_name: &String) -> bool {
+    if !utils::file_exists(pid_name) {
+        return false;
+    }
+    match utils::read_pid_num(pid_name) {
+        Ok(pid) => utils::check_process(pid).unwrap_or(false),
+        Err(_) => false,
+    }
 }
 
 async fn start_daemonize_web(pid_name: &String, port: u16) {
     utils::check_pid_exits(pid_name);
+    write_pid_file(pid_name);
     info!("start web server, port:{}", port);
     web::start_web(port).await;
 }
@@ -305,6 +331,46 @@ pub async fn main() {
                 start_daemonize_web(&pid_name, port).await;
             } else if args.stop {
                 utils::check_pid_exits(&pid_name);
+            } else if let Some(task_cmd) = args.task {
+                match task_cmd {
+                    TaskSubcommands::List => {
+                        if let Ok(tasks) = get_all_tasks() {
+                            println!("{:<40} {:<20} {:<20}", "taskId", "id", "last_run_time");
+                            for (id, task) in &tasks {
+                                println!(
+                                    "{:<40} {:<20} {:<20}",
+                                    id,
+                                    task.get_uuid(),
+                                    task.task_info.last_run_time,
+                                );
+                            }
+                        }
+                    }
+                    TaskSubcommands::Check { task_id } => {
+                        if !check_web_running(&pid_name) {
+                            error!("web server is not running, cannot execute task check");
+                            return;
+                        }
+                        if let Ok(Some(mut task)) = get_task(&task_id) {
+                            println!("taskId: {}", task_id);
+                            println!("id: {}", task.get_uuid());
+                            println!("create_time: {}", task.get_create_time());
+                            println!("last_run_time: {}", task.task_info.last_run_time);
+                            println!("next_run_time: {}", task.task_info.next_run_time);
+                            println!("is_running: {}", task.task_info.is_running);
+                            println!("running task...");
+                            // task.run() 内部会创建新的 tokio runtime (block_on)，
+                            // 必须在独立线程中运行，否则会与当前 actix runtime 冲突导致 panic
+                            std::thread::spawn(move || {
+                                task.force_run();
+                            })
+                            .join()
+                            .ok();
+                        } else {
+                            error!("task not found: {}", task_id);
+                        }
+                    }
+                }
             }
         }
         Commands::Check(args) => {
