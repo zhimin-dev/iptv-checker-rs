@@ -1309,14 +1309,14 @@ where
 {
     let mut locked_flag = lock.lock().unwrap_or_else(|e| e.into_inner());
     if *locked_flag {
-        debug!("scheduler thread lock");
+        debug!("Skipping check task: lock already held");
         return false;
     }
     *locked_flag = true;
     drop(locked_flag);
 
-    let now_time = Local::now().format("%Y%m%d-%H:%M:%s").to_string();
-    info!("{}", now_time.clone() + "check task started");
+    let now_time = Local::now().format("%Y%m%d-%H:%M:%S").to_string();
+    info!("{} check task started", now_time);
     let run_result = panic::catch_unwind(AssertUnwindSafe(|| {
         runner();
     }));
@@ -1329,7 +1329,8 @@ where
     if let Err(e) = run_result {
         error!("check task panicked: {:?}", e);
     }
-    info!("{}", now_time.clone() + "check task ended");
+    let end_time = Local::now().format("%Y%m%d-%H:%M:%S").to_string();
+    info!("{} check task ended", end_time);
     is_ok
 }
 
