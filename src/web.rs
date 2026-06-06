@@ -29,6 +29,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::fs::File;
 use std::io::{Read, Write};
+use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -1302,9 +1303,41 @@ pub fn get_str_to_quality(n:i32) -> Vec<QualityType> {
     qualities
 }
 
+fn run_check_tasks_with_lock<F>(lock: &Arc<Mutex<bool>>, mut runner: F) -> bool
+where
+    F: FnMut(),
+{
+    let mut locked_flag = lock.lock().unwrap_or_else(|e| e.into_inner());
+    if *locked_flag {
+        debug!("Skipping check task: lock already held");
+        return false;
+    }
+    *locked_flag = true;
+    drop(locked_flag);
+
+    let now_time = Local::now().format("%Y%m%d-%H:%M:%S").to_string();
+    info!("{} check task started", now_time);
+    let run_result = panic::catch_unwind(AssertUnwindSafe(|| {
+        runner();
+    }));
+
+    let mut locked_flag = lock.lock().unwrap_or_else(|e| e.into_inner());
+    *locked_flag = false;
+    drop(locked_flag);
+
+    let is_ok = run_result.is_ok();
+    if let Err(e) = run_result {
+        error!("check task panicked: {:?}", e);
+    }
+    let end_time = Local::now().format("%Y%m%d-%H:%M:%S").to_string();
+    info!("{} check task ended", end_time);
+    is_ok
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::web::get_str_to_quality;
+    use crate::web::{get_str_to_quality, run_check_tasks_with_lock};
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn test_get_str_to_quality() {
@@ -1313,6 +1346,21 @@ mod tests {
         println!("{:?}", get_str_to_quality(45));
         println!("{:?}", get_str_to_quality(13));
         println!("{:?}", get_str_to_quality(12));
+    }
+
+    #[test]
+    fn test_run_check_tasks_with_lock_releases_lock_after_panic() {
+        let lock = Arc::new(Mutex::new(false));
+        let first_ok = run_check_tasks_with_lock(&lock, || {
+            panic!("panic in scheduled check");
+        });
+        assert!(!first_ok);
+
+        let lock_status = *lock.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(!lock_status);
+
+        let second_ok = run_check_tasks_with_lock(&lock, || {});
+        assert!(second_ok);
     }
 }
 
@@ -1505,9 +1553,12 @@ pub async fn start_web(port: u16) {
     let scheduler_thread = {
         let scheduler = Arc::clone(&scheduler);
         thread::spawn(move || loop {
-            {
-                let mut scheduler = scheduler.lock().unwrap();
+            let run_result = panic::catch_unwind(AssertUnwindSafe(|| {
+                let mut scheduler = scheduler.lock().unwrap_or_else(|e| e.into_inner());
                 scheduler.run_pending();
+            }));
+            if let Err(e) = run_result {
+                error!("scheduler run_pending panicked: {:?}", e);
             }
             thread::sleep(Duration::from_secs(30));
         })
@@ -1549,29 +1600,20 @@ pub async fn start_web(port: u16) {
         });
         // 检查任务
         scheduler.every(30.seconds()).run(move || {
-            // 判断当前是否有任务在并行运行，如果有，再判断任务是否已经运行了超过10分钟，如果超过了，可以再次运行
-            let mut locked_flag = lock_clone.lock().unwrap();
-            if *locked_flag {
-                debug!("scheduler thread lock");
-                return;
-            }
-            let now_time = Local::now().format("%Y%m%d-%H:%M:%s").to_string();
-            info!("{}", now_time.clone() + "check task started");
-            *locked_flag = true;
-            // 获取所有任务
-            if let Ok(tasks) = get_all_tasks() {
-                for (id, _) in tasks {
-                    // 运行任务
-                    if let Ok(task) = get_task(&id) {
-                        if let Some(mut task) = task {
-                            // 运行任务
-                            task.run();
+            run_check_tasks_with_lock(&lock_clone, || {
+                // 获取所有任务
+                if let Ok(tasks) = get_all_tasks() {
+                    for (id, _) in tasks {
+                        // 运行任务
+                        if let Ok(task) = get_task(&id) {
+                            if let Some(mut task) = task {
+                                // 运行任务
+                                task.run();
+                            }
                         }
                     }
                 }
-            }
-            *locked_flag = false;
-            info!("{}", now_time.clone() + "check task ended");
+            });
         });
     }
 
