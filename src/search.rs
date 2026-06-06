@@ -1034,7 +1034,7 @@ mod tests {
     #[tokio::test]
     async fn test_init_epg_data() {
         // 先下载文件
-        let data = init_epg_data();
+        let data = init_epg_data().await;
         data.download().await.unwrap();
         // 获取下载的文件
 

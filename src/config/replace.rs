@@ -1,12 +1,29 @@
 use crate::r#const::constant::{REPLACE_JSON, REPLACE_TXT_CONTENT};
 use crate::utils::file_exists;
 use once_cell::sync::Lazy;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
 use std::sync::RwLock;
+
+/// Matches empty parentheses or parentheses containing only a single known quality-tag
+/// suffix letter (`p`, `k`, `i` and their uppercase equivalents), e.g. `()`, `( )`, `(p)`,
+/// `(k)` — residuals left after partial substitution of resolution/quality tags such as
+/// `(1080p)` → `(p)` or `(4K)` → `(K)`.
+static RE_EMPTY_PARENS: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"\(\s*[pPkKiI]?\s*\)").unwrap());
+
+/// Matches empty square brackets or brackets containing only whitespace,
+/// e.g. `[]`, `[ ]`.
+static RE_EMPTY_BRACKETS: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"\[\s*\]").unwrap());
+
+/// Matches two or more consecutive whitespace characters.
+static RE_MULTI_SPACE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r" {2,}").unwrap());
 
 /// Replace配置结构体
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -165,7 +182,8 @@ pub fn get_replace_config_json() -> Result<String, String> {
 
 /// 将输入字符串中出现的所有 JSON key 替换为对应的 value
 ///
-/// 替换过程中优先替换较长的 key（避免部分匹配导致意外结果）
+/// 替换过程中优先替换较长的 key（避免部分匹配导致意外结果）。
+/// 替换完成后，自动清理残留的空括号、空方括号以及多余空格。
 pub fn replace(input: &str) -> String {
     let config = get_replace_config();
 
@@ -174,6 +192,12 @@ pub fn replace(input: &str) -> String {
         return input.to_string();
     }
 
+    replace_with_config(input, &config)
+}
+
+/// 纯函数：使用给定的 ReplaceConfig 对 input 执行替换和清理。
+/// 便于在不依赖全局状态的情况下进行单元测试。
+pub fn replace_with_config(input: &str, config: &ReplaceConfig) -> String {
     if config.replace_map.is_empty() {
         return input.to_string();
     }
@@ -184,37 +208,118 @@ pub fn replace(input: &str) -> String {
 
     let mut out = input.to_string();
     for k in keys {
-        if out.contains(k) {
+        // 跳过空 key，避免无意义替换
+        if k.is_empty() {
+            continue;
+        }
+        if out.contains(k.as_str()) {
             if let Some(v) = config.replace_map.get(k) {
-                out = out.replace(k, v);
+                out = out.replace(k.as_str(), v.as_str());
             }
         }
     }
-    out
+
+    // 清理替换后残留的空括号 / 单字符括号，例如 "(p)"、"(k)"、"()"
+    out = RE_EMPTY_PARENS.replace_all(&out, "").to_string();
+    // 清理替换后残留的空方括号，例如 "[]"、"[ ]"
+    out = RE_EMPTY_BRACKETS.replace_all(&out, "").to_string();
+    // 将连续多个空格压缩为一个空格，并去除首尾空格
+    out = RE_MULTI_SPACE.replace_all(&out, " ").to_string();
+    out.trim().to_string()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::replace::replace;
+
+    /// Build a ReplaceConfig with replace_string=true and the given key→value map.
+    fn make_config(map: HashMap<String, String>) -> ReplaceConfig {
+        ReplaceConfig {
+            replace_string: true,
+            replace_map: map,
+        }
+    }
 
     #[test]
     fn test_trad_to_simp_basic() {
-        // 构造临时文件，第一行简体，第二行繁体
-        // let mut f = NamedTempFile::new().unwrap();
-        // writeln!(f, "汉字测试和其它测层蹭插").unwrap(); // 简体行
-        // writeln!(f, "漢字測試和其它測層蹭插").unwrap(); // 繁体行
-        // f.flush().unwrap();
-        // let path = f.path().to_path_buf();
-
-        // 初始化映射
-        // init_from_default_file().unwrap();
-        // init_from_file(default_translate_file_path()).unwrap();
-
         let input = "漢字測試和其它測層蹭插[not 24/7]";
-
-        let out = replace(input);
+        let config = make_config({
+            let mut m = HashMap::new();
+            m.insert("[not 24/7]".to_string(), "".to_string());
+            m
+        });
+        let out = replace_with_config(input, &config);
         println!("Output: {}", out);
-        // assert_eq!(out, "汉字測試和其它测层蹭插"); // 注意：第二个"測"同字形在简体/繁体中相同，此处只是示例
+    }
+
+    #[test]
+    fn test_replace_leaves_no_empty_parens() {
+        // Simulates: user adds rule "1080" -> "" to filter quality tags.
+        // "CCTV-1 (1080p)" should become "CCTV-1" after cleanup, not "CCTV-1 (p)".
+        let mut map = HashMap::new();
+        map.insert("1080".to_string(), "".to_string());
+        let result = replace_with_config("CCTV-1 (1080p)", &make_config(map));
+        assert_eq!(result, "CCTV-1");
+    }
+
+    #[test]
+    fn test_replace_removes_empty_brackets() {
+        // After removing the content of square brackets, the empty "[]" should be removed too.
+        let mut map = HashMap::new();
+        map.insert("geo-blocked".to_string(), "".to_string());
+        let result = replace_with_config("SomeChannel [geo-blocked]", &make_config(map));
+        assert_eq!(result, "SomeChannel");
+    }
+
+    #[test]
+    fn test_replace_collapses_multiple_spaces() {
+        // After removals, consecutive spaces should be collapsed into one.
+        let mut map = HashMap::new();
+        map.insert(" (1080p)".to_string(), "".to_string());
+        let result = replace_with_config("CCTV-1  (1080p)", &make_config(map));
+        assert_eq!(result, "CCTV-1");
+    }
+
+    #[test]
+    fn test_replace_skips_empty_key() {
+        // An empty key in the replace map must not cause unexpected behaviour.
+        let mut map = HashMap::new();
+        map.insert("".to_string(), "REPLACED".to_string());
+        map.insert("[HD]".to_string(), "".to_string());
+        let result = replace_with_config("CCTV-1 [HD]", &make_config(map));
+        assert_eq!(result, "CCTV-1");
+    }
+
+    #[test]
+    fn test_replace_preserves_valid_parens() {
+        // Parentheses containing more than one character (e.g. "(民視)")
+        // must NOT be removed.
+        let mut map = HashMap::new();
+        // Replacement is case-sensitive: key must match the input exactly.
+        map.insert("[Not 24/7]".to_string(), "".to_string());
+        let result = replace_with_config("FTV (民視) [Not 24/7]", &make_config(map));
+        assert_eq!(result, "FTV (民視)");
+    }
+
+    #[test]
+    fn test_replace_is_case_sensitive() {
+        // Replace keys are matched case-sensitively: "[not 24/7]" must not
+        // remove "[Not 24/7]" from the input.
+        let mut map = HashMap::new();
+        map.insert("[not 24/7]".to_string(), "".to_string());
+        let result = replace_with_config("Channel [Not 24/7]", &make_config(map));
+        // Different casing → no match → input is returned as-is (after cleanup)
+        assert_eq!(result, "Channel [Not 24/7]");
+    }
+
+    #[test]
+    fn test_replace_preserves_other_single_letter_parens() {
+        // Only quality-tag suffix letters (p, k, i and their uppercase) are cleaned up.
+        // Other single-letter parenthesised content must be preserved.
+        let mut map = HashMap::new();
+        map.insert("720".to_string(), "".to_string());
+        // "(A)" is not a quality-tag residual and must survive.
+        let result = replace_with_config("Channel (A) (720p)", &make_config(map));
+        assert_eq!(result, "Channel (A)");
     }
 }
