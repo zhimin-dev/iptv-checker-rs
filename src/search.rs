@@ -89,6 +89,171 @@ impl GithubInfo {
     }
 }
 
+/// A single item returned by the GitHub Contents API.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+struct GithubApiItem {
+    pub name: String,
+    pub path: String,
+    #[serde(rename = "type")]
+    pub item_type: String,
+    pub download_url: Option<String>,
+}
+
+/// Parse a GitHub repository URL into `(owner, repo, branch, path)`.
+///
+/// Handles the following forms:
+/// - `https://github.com/owner/repo`
+/// - `https://github.com/owner/repo/tree/branch`
+/// - `https://github.com/owner/repo/tree/branch/some/path`
+fn parse_github_url(url: &str) -> Option<(String, String, Option<String>, String)> {
+    let url = url.trim_end_matches('/');
+    let remainder = url.strip_prefix("https://github.com/")?;
+    // Split into at most 5 parts so the sub-path (part 5) can itself contain slashes.
+    let parts: Vec<&str> = remainder.splitn(5, '/').collect();
+    match parts.len() {
+        2 => Some((
+            parts[0].to_string(),
+            parts[1].to_string(),
+            None,
+            String::new(),
+        )),
+        3 | 4 if parts[2] == "tree" => Some((
+            parts[0].to_string(),
+            parts[1].to_string(),
+            parts.get(3).map(|s| s.to_string()),
+            String::new(),
+        )),
+        5 if parts[2] == "tree" => Some((
+            parts[0].to_string(),
+            parts[1].to_string(),
+            Some(parts[3].to_string()),
+            parts[4].to_string(),
+        )),
+        _ => None,
+    }
+}
+
+/// Fetch the file list for a GitHub repository path using the GitHub Contents API
+/// and return `GithubInfo` entries for files that match the given filters.
+async fn fetch_github_api_contents(
+    url: String,
+    include_files: Vec<String>,
+    valid_extensions: Vec<String>,
+) -> Vec<GithubInfo> {
+    let parsed = match parse_github_url(&url) {
+        Some(v) => v,
+        None => {
+            error!("Failed to parse GitHub URL: {}", url);
+            return vec![];
+        }
+    };
+    let (owner, repo, branch, path) = parsed;
+
+    let api_url = if path.is_empty() {
+        format!("https://api.github.com/repos/{}/{}/contents/", owner, repo)
+    } else {
+        format!(
+            "https://api.github.com/repos/{}/{}/contents/{}",
+            owner, repo, path
+        )
+    };
+    let api_url = match branch {
+        Some(ref b) => format!("{}?ref={}", api_url, b),
+        None => api_url,
+    };
+
+    let client = match reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .user_agent("iptv-checker-rs")
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            error!("Failed to build HTTP client: {}", e);
+            return vec![];
+        }
+    };
+
+    let resp = match client
+        .get(&api_url)
+        .header("Accept", "application/vnd.github.v3+json")
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            error!("Failed to fetch GitHub API {}: {}", api_url, e);
+            return vec![];
+        }
+    };
+
+    if !resp.status().is_success() {
+        error!(
+            "GitHub API {} returned status {}",
+            api_url,
+            resp.status()
+        );
+        return vec![];
+    }
+
+    let body = match resp.text().await {
+        Ok(t) => t,
+        Err(e) => {
+            error!(
+                "Failed to read GitHub API response from {}: {}",
+                api_url, e
+            );
+            return vec![];
+        }
+    };
+
+    let items: Vec<GithubApiItem> = match serde_json::from_str(&body) {
+        Ok(v) => v,
+        Err(e) => {
+            error!(
+                "Failed to parse GitHub API response from {}: {}",
+                api_url, e
+            );
+            return vec![];
+        }
+    };
+
+    let mut urls = vec![];
+    for item in &items {
+        if item.item_type != "file" {
+            continue;
+        }
+
+        // Apply include_files filter (match by filename).
+        if !include_files.is_empty() && !include_files.iter().any(|f| item.name == *f) {
+            continue;
+        }
+
+        let Some(ref download_url) = item.download_url else {
+            continue;
+        };
+
+        if valid_extensions.is_empty() {
+            // No extension filter – derive extension from the filename.
+            let ext = std::path::Path::new(&item.name)
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| format!(".{}", e))
+                .unwrap_or_default();
+            urls.push(GithubInfo::new(download_url.clone(), ext));
+        } else {
+            for ext in &valid_extensions {
+                if item.path.ends_with(ext.as_str()) {
+                    urls.push(GithubInfo::new(download_url.clone(), ext.clone()));
+                    break;
+                }
+            }
+        }
+    }
+
+    urls
+}
+
 pub fn parse_github_sub_page_body_to_m3u_link(
     body: &str,
     include_files: Vec<String>,
@@ -197,18 +362,7 @@ async fn fetch_github_home_page(
     include_files: Vec<String>,
     valid_extensions: Vec<String>,
 ) -> Vec<GithubInfo> {
-    match get_url_body(url.clone()).await {
-        Ok(body) => parse_github_home_page_body_to_m3u_link(
-            &body,
-            include_files.clone(),
-            valid_extensions.clone(),
-        )
-        .unwrap_or_else(|_| vec![]),
-        Err(e) => {
-            error!("Failed to fetch github home page {}: {}", url, e);
-            vec![]
-        }
-    }
+    fetch_github_api_contents(url, include_files, valid_extensions).await
 }
 
 async fn fetch_github_sub_page(
@@ -216,18 +370,7 @@ async fn fetch_github_sub_page(
     include_files: Vec<String>,
     valid_extensions: Vec<String>,
 ) -> Vec<GithubInfo> {
-    match get_url_body(url.clone()).await {
-        Ok(body) => parse_github_sub_page_body_to_m3u_link(
-            &body,
-            include_files.clone(),
-            valid_extensions.clone(),
-        )
-        .unwrap_or_else(|_| vec![]),
-        Err(e) => {
-            error!("Failed to fetch github sub page {}: {}", url, e);
-            vec![]
-        }
-    }
+    fetch_github_api_contents(url, include_files, valid_extensions).await
 }
 
 #[derive(Debug)]
