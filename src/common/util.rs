@@ -4,8 +4,50 @@ use crate::common::QualityType::{
 };
 use crate::common::{M3uExt, M3uExtend, M3uObject, M3uObjectList, QualityType};
 use crate::utils::translator_t2s;
+use once_cell::sync::Lazy;
 use reqwest::Error;
 use url::Url;
+
+/// Default timeout for HTTP requests (20 seconds)
+pub const DEFAULT_HTTP_TIMEOUT: u64 = 20000;
+
+/// Shared reqwest Client for general IPTV/stream URL requests.
+/// Uses danger_accept_invalid_certs because many IPTV sources use self-signed certificates.
+pub static HTTP_CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
+    reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .build()
+        .expect("Failed to build shared HTTP client")
+});
+
+/// Shared reqwest Client for GitHub API requests (unauthenticated).
+/// Does NOT disable certificate verification — GitHub always has valid TLS.
+/// For authenticated requests, callers should add `.bearer_auth(token)` on each request.
+pub static GITHUB_CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(
+        reqwest::header::USER_AGENT,
+        reqwest::header::HeaderValue::from_static("iptv-checker-rs"),
+    );
+    headers.insert(
+        reqwest::header::ACCEPT,
+        reqwest::header::HeaderValue::from_static("application/vnd.github+json"),
+    );
+    reqwest::Client::builder()
+        .default_headers(headers)
+        .build()
+        .expect("Failed to build GitHub API client")
+});
+
+/// Get the GitHub token from base.json config, if configured.
+pub fn get_github_token() -> Option<String> {
+    let token = crate::config::base::get_base_config().github_token;
+    if token.is_empty() {
+        None
+    } else {
+        Some(token)
+    }
+}
 
 /// 获取URL的内容
 ///

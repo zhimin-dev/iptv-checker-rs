@@ -6,6 +6,7 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 use std::sync::RwLock;
+use log::{error, info, warn};
 
 /// Logos配置结构体
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -194,12 +195,12 @@ fn read_logos_json<P: AsRef<Path>>(path: P) -> LogosConfig {
     match fs::read_to_string(&path) {
         Ok(s) => {
             if s.trim().is_empty() {
-                eprintln!("logos: file {:?} is empty", path.as_ref());
+                warn!("logos: file {:?} is empty", path.as_ref());
                 return LogosConfig::new();
             }
             match serde_json::from_str::<LogosConfig>(&s) {
                 Ok(m) => {
-                    eprintln!(
+                    error!(
                         "logos: successfully loaded {} entries from {:?}",
                         m.logos.len(),
                         path.as_ref()
@@ -207,18 +208,18 @@ fn read_logos_json<P: AsRef<Path>>(path: P) -> LogosConfig {
                     m
                 }
                 Err(e) => {
-                    eprintln!(
+                    error!(
                         "logos: failed to parse JSON from {:?}: {}",
                         path.as_ref(),
                         e
                     );
-                    eprintln!("logos: file content: {}", s);
+                    error!("logos: file content: {}", s);
                     LogosConfig::new()
                 }
             }
         }
         Err(e) => {
-            eprintln!("logos: failed to read {:?}: {}", path.as_ref(), e);
+            error!("logos: failed to read {:?}: {}", path.as_ref(), e);
             LogosConfig::new()
         }
     }

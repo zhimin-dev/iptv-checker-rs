@@ -31,8 +31,7 @@ pub static REPLACE_TXT_CONTENT: &str = r#"{
         "hevc": "",
         "50 fps": "",
         "[not 24/7]": "",
-        " (600p)": "",
-        " ": ""
+        " (600p)": ""
     }
 }"#;
 
@@ -94,11 +93,14 @@ pub static LOGOS_CONFIG_JSON_CONTENT: &str = r#"{
 pub static BASE_CONFIG_JSON_CONTENT: &str = r#"{
   "host": "",
   "replace_string": false,
-  "remote_url2local_images": false
+  "remote_url2local_images": false,
+  "github_token": ""
 }"#;
 
 pub static EPG_CONFIG_JSON_CONTENT: &str = r#"{
   "source": {
-    "list": []
+    "list": [
+      "http://epg.51zmt.top:8000/e.xml.gz"
+    ]
   }
 }"#;

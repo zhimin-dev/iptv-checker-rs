@@ -6,6 +6,7 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 use std::sync::RwLock;
+use log::{error, info, warn};
 
 /// Replace配置结构体
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,30 +68,30 @@ fn read_favourite_json<P: AsRef<Path>>(path: P) -> FavouriteConfig {
     match fs::read_to_string(&path) {
         Ok(s) => {
             if s.trim().is_empty() {
-                eprintln!("favourite: file {:?} is empty", path.as_ref());
+                warn!("favourite: file {:?} is empty", path.as_ref());
                 return FavouriteConfig::new();
             }
             match serde_json::from_str::<FavouriteConfig>(&s) {
                 Ok(m) => {
-                    eprintln!(
+                    error!(
                         "favourite: successfully loaded entries from {:?}",
                         path.as_ref()
                     );
                     m
                 }
                 Err(e) => {
-                    eprintln!(
+                    error!(
                         "favourite: failed to parse JSON from {:?}: {}",
                         path.as_ref(),
                         e
                     );
-                    eprintln!("favourite: file content: {}", s);
+                    error!("favourite: file content: {}", s);
                     FavouriteConfig::new()
                 }
             }
         }
         Err(e) => {
-            eprintln!("favourite: failed to read {:?}: {}", path.as_ref(), e);
+            error!("favourite: failed to read {:?}: {}", path.as_ref(), e);
             FavouriteConfig::new()
         }
     }

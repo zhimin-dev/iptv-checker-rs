@@ -5,10 +5,9 @@ use crate::config::epg::get_epg_config;
 use crate::r#const::constant::{INPUT_EPG_FOLDER, INPUT_SEARCH_FOLDER, OUTPUT_THUMBNAIL_FOLDER};
 use crate::utils::{create_folder, folder_exists};
 use crate::epg_xml::{parse_epg_xml_str, update_global_epg_cache};
-use chrono::{DateTime, Datelike, FixedOffset, Local, NaiveDateTime, TimeZone};
-use clap::ValueHint::Url;
+use chrono::{Datelike, FixedOffset, Local, NaiveDateTime, TimeZone};
 use flate2::read::GzDecoder;
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -17,49 +16,91 @@ use std::string::String;
 use std::{fs, vec};
 use zip::read::ZipArchive;
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct GithubPageProps {
-    pub props: GithubPagePropInitialPayload,
+// === GitHub API response structs ===
+
+/// GET /repos/{owner}/{repo}
+#[derive(Debug, Deserialize)]
+struct GithubRepoInfo {
+    default_branch: String,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct GithubSubPageProps {
-    pub payload: GithubPagePropTree,
+/// GET /repos/{owner}/{repo}/git/trees/{branch}?recursive=1
+#[derive(Debug, Deserialize)]
+struct GithubTreeResponse {
+    tree: Vec<GithubTreeItem>,
+    truncated: bool,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct GithubPagePropInitialPayload {
+#[derive(Debug, Deserialize)]
+struct GithubTreeItem {
+    path: String,
+    #[serde(rename = "type")]
+    item_type: String,
+}
+
+/// GET /repos/{owner}/{repo}/contents/{path}
+#[derive(Debug, Deserialize)]
+struct GithubContentItem {
+    name: String,
+    #[serde(rename = "type")]
+    item_type: String,
+    download_url: Option<String>,
+}
+
+/// Contents API may return a single object (file) or an array (directory)
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum GithubContentsResponse {
+    Dir(Vec<GithubContentItem>),
+    File(GithubContentItem),
+}
+
+// === HTML scraping fallback structs (used when API is rate-limited) ===
+
+/// JSON structure embedded in GitHub home page <script> tags
+#[derive(Debug, Deserialize)]
+struct GithubPageProps {
+    props: GithubPagePropInitialPayload,
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubPagePropInitialPayload {
     #[serde(rename = "initialPayload")]
-    pub initial_payload: GithubPagePropTree,
+    initial_payload: GithubPagePropTree,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct GithubPagePropTree {
-    pub tree: GithubPagePropItems,
-    pub repo: GithubPagePropRepo,
+/// JSON structure embedded in GitHub sub-page <script> tags
+#[derive(Debug, Deserialize)]
+struct GithubSubPageProps {
+    payload: GithubPagePropTree,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct GithubPagePropRepo {
+#[derive(Debug, Clone, Deserialize)]
+struct GithubPagePropTree {
+    tree: GithubPagePropItems,
+    repo: GithubPagePropRepo,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GithubPagePropRepo {
     #[serde(rename = "ownerLogin")]
-    pub owner_login: String,
-    pub name: String,
+    owner_login: String,
+    name: String,
     #[serde(rename = "defaultBranch")]
-    pub default_branch: String,
+    default_branch: String,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct GithubPagePropItems {
-    pub items: Vec<GithubPagePropTreeItem>,
+#[derive(Debug, Clone, Deserialize)]
+struct GithubPagePropItems {
+    items: Vec<GithubPagePropTreeItem>,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct GithubPagePropTreeItem {
+#[derive(Debug, Clone, Deserialize)]
+struct GithubPagePropTreeItem {
     #[serde(rename = "contentType")]
-    pub content_type: String,
-
-    pub path: String,
-    pub name: String,
+    content_type: String,
+    path: String,
+    name: String,
 }
 
 #[derive(Debug)]
@@ -89,12 +130,19 @@ impl GithubInfo {
     }
 }
 
-pub fn parse_github_sub_page_body_to_m3u_link(
+// === HTML scraping fallback functions ===
+
+/// Parse a GitHub sub-page HTML body to extract m3u/txt file download URLs.
+/// Extracts embedded JSON from <script type="application/json" data-target="react-app.embeddedData">.
+fn parse_github_sub_page_body_to_m3u_link(
     body: &str,
     include_files: Vec<String>,
     valid_extensions: Vec<String>,
 ) -> Result<Vec<GithubInfo>, Error> {
-    let regex = Regex::new(r#"(?m)<script type="application\/json" data-target="react-app.embeddedData">(.+?)<\/script>"#).unwrap();
+    let regex = Regex::new(
+        r#"(?m)<script type="application\/json" data-target="react-app.embeddedData">(.+?)<\/script>"#,
+    )
+    .unwrap();
     let result = regex.captures_iter(body);
 
     let mut urls = vec![];
@@ -108,7 +156,7 @@ pub fn parse_github_sub_page_body_to_m3u_link(
                     Ok(props) => {
                         for value in props.payload.tree.items.iter() {
                             let mut is_save = true;
-                            if include_files.len() > 0 {
+                            if !include_files.is_empty() {
                                 is_save = false;
                                 for f in include_files.iter() {
                                     if value.name.eq(f) {
@@ -119,14 +167,14 @@ pub fn parse_github_sub_page_body_to_m3u_link(
                             if is_save && value.content_type.eq("file") {
                                 for ext in &valid_extensions {
                                     if value.path.ends_with(ext) {
-                                        let download_url = format!("https://raw.githubusercontent.com/{}/{}/refs/heads/{}/{}", props.payload.repo.owner_login, props.payload.repo.name, props.payload.repo.default_branch, value.path);
-                                        urls.push(GithubInfo::new(
-                                            // value.content_type.clone(),
-                                            // value.path.clone(),
-                                            // value.name.clone(),
-                                            download_url,
-                                            ext.to_string(),
-                                        ))
+                                        let download_url = format!(
+                                            "https://raw.githubusercontent.com/{}/{}/refs/heads/{}/{}",
+                                            props.payload.repo.owner_login,
+                                            props.payload.repo.name,
+                                            props.payload.repo.default_branch,
+                                            value.path
+                                        );
+                                        urls.push(GithubInfo::new(download_url, ext.to_string()))
                                     }
                                 }
                             }
@@ -137,15 +185,20 @@ pub fn parse_github_sub_page_body_to_m3u_link(
             }
         }
     }
-
     Ok(urls)
 }
-pub fn parse_github_home_page_body_to_m3u_link(
+
+/// Parse a GitHub home page HTML body to extract m3u/txt file download URLs.
+/// Extracts embedded JSON from <script type="application/json" data-target="react-partial.embeddedData">.
+fn parse_github_home_page_body_to_m3u_link(
     body: &str,
     include_files: Vec<String>,
     valid_extensions: Vec<String>,
 ) -> Result<Vec<GithubInfo>, Error> {
-    let regex = Regex::new(r#"(?m)<script type="application\/json" data-target="react-partial.embeddedData">(.+?)<\/script>"#).unwrap();
+    let regex = Regex::new(
+        r#"(?m)<script type="application\/json" data-target="react-partial.embeddedData">(.+?)<\/script>"#,
+    )
+    .unwrap();
     let result = regex.captures_iter(body);
 
     let mut urls = vec![];
@@ -159,7 +212,7 @@ pub fn parse_github_home_page_body_to_m3u_link(
                     Ok(props) => {
                         for value in props.props.initial_payload.tree.items.iter() {
                             let mut is_save = true;
-                            if include_files.len() > 0 {
+                            if !include_files.is_empty() {
                                 is_save = false;
                                 for f in include_files.iter() {
                                     if value.name.eq(f) {
@@ -170,14 +223,14 @@ pub fn parse_github_home_page_body_to_m3u_link(
                             if is_save && value.content_type.eq("file") {
                                 for ext in &valid_extensions {
                                     if value.path.ends_with(ext) {
-                                        let download_url = format!("https://raw.githubusercontent.com/{}/{}/refs/heads/{}/{}", props.props.initial_payload.repo.owner_login, props.props.initial_payload.repo.name, props.props.initial_payload.repo.default_branch, value.path);
-                                        urls.push(GithubInfo::new(
-                                            // value.content_type.clone(),
-                                            // value.path.clone(),
-                                            // value.name.clone(),
-                                            download_url,
-                                            ext.to_string(),
-                                        ))
+                                        let download_url = format!(
+                                            "https://raw.githubusercontent.com/{}/{}/refs/heads/{}/{}",
+                                            props.props.initial_payload.repo.owner_login,
+                                            props.props.initial_payload.repo.name,
+                                            props.props.initial_payload.repo.default_branch,
+                                            value.path
+                                        );
+                                        urls.push(GithubInfo::new(download_url, ext.to_string()))
                                     }
                                 }
                             }
@@ -188,8 +241,67 @@ pub fn parse_github_home_page_body_to_m3u_link(
             }
         }
     }
-
     Ok(urls)
+}
+
+/// Parse a GitHub URL into (owner, repo, branch?, path?).
+///
+/// Supports:
+/// - `https://github.com/{owner}/{repo}`           → home page
+/// - `https://github.com/{owner}/{repo}/tree/{branch}/{path}` → sub page
+fn parse_github_url(url_str: &str) -> Option<(String, String, Option<String>, Option<String>)> {
+    let parsed = url::Url::parse(url_str).ok()?;
+    let mut segments: Vec<&str> = parsed.path_segments()?.collect();
+
+    // Remove trailing empty segment from trailing slash
+    while segments.last() == Some(&"") {
+        segments.pop();
+    }
+
+    if segments.len() < 2 {
+        return None;
+    }
+
+    let owner = segments[0].to_string();
+    let repo = segments[1].trim_end_matches(".git").to_string();
+
+    if segments.len() >= 4 && segments[2] == "tree" {
+        let branch = segments[3].to_string();
+        let path = segments[4..].join("/");
+        Some((owner, repo, Some(branch), Some(path)))
+    } else {
+        Some((owner, repo, None, None))
+    }
+}
+
+/// Build a reqwest Client for GitHub API requests.
+/// Includes Authorization header if a token is configured in base.json.
+fn github_api_client() -> reqwest::Client {
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(
+        reqwest::header::USER_AGENT,
+        reqwest::header::HeaderValue::from_static("iptv-checker-rs"),
+    );
+    headers.insert(
+        reqwest::header::ACCEPT,
+        reqwest::header::HeaderValue::from_static("application/vnd.github+json"),
+    );
+    if let Some(token) = crate::common::util::get_github_token() {
+        if let Ok(val) = reqwest::header::HeaderValue::from_str(&format!("Bearer {}", token)) {
+            headers.insert(reqwest::header::AUTHORIZATION, val);
+        }
+    }
+    reqwest::Client::builder()
+        .default_headers(headers)
+        .build()
+        .expect("Failed to build GitHub API client")
+}
+
+/// Check if an API response is rate-limited (HTTP 403 with rate limit message,
+/// or HTTP 429). Returns true if we should fall back to HTML scraping.
+fn is_rate_limited(status: reqwest::StatusCode) -> bool {
+    status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        || status == reqwest::StatusCode::FORBIDDEN
 }
 
 async fn fetch_github_home_page(
@@ -197,18 +309,154 @@ async fn fetch_github_home_page(
     include_files: Vec<String>,
     valid_extensions: Vec<String>,
 ) -> Vec<GithubInfo> {
-    match get_url_body(url.clone()).await {
-        Ok(body) => parse_github_home_page_body_to_m3u_link(
-            &body,
-            include_files.clone(),
-            valid_extensions.clone(),
-        )
-        .unwrap_or_else(|_| vec![]),
+    let (owner, repo, _branch, _path) = match parse_github_url(&url) {
+        Some(v) => v,
+        None => {
+            error!("Failed to parse GitHub URL: {}", url);
+            return vec![];
+        }
+    };
+
+    // Try GitHub API first
+    let has_token = crate::common::util::get_github_token().is_some();
+    info!(
+        "Fetching GitHub home page via API (token={}): {}",
+        has_token, url
+    );
+
+    let client = github_api_client();
+
+    // Step 1: Get repo info for default branch
+    let repo_api_url = format!("https://api.github.com/repos/{}/{}", owner, repo);
+    let resp = client.get(&repo_api_url).send().await;
+    let rate_limited = match &resp {
+        Ok(r) => is_rate_limited(r.status()),
+        Err(_) => false,
+    };
+
+    if rate_limited {
+        warn!(
+            "GitHub API rate limited for {}. Falling back to HTML scraping.",
+            url
+        );
+        return fetch_github_home_page_fallback(url, include_files, valid_extensions).await;
+    }
+
+    let repo_info: GithubRepoInfo = match resp {
+        Ok(resp) => {
+            if !resp.status().is_success() {
+                error!(
+                    "GitHub API error {} ({}): {}",
+                    repo_api_url,
+                    resp.status(),
+                    url
+                );
+                return fetch_github_home_page_fallback(url, include_files, valid_extensions).await;
+            }
+            match resp.json().await {
+                Ok(info) => info,
+                Err(e) => {
+                    error!("Failed to parse repo info response: {}", e);
+                    return fetch_github_home_page_fallback(url, include_files, valid_extensions).await;
+                }
+            }
+        }
         Err(e) => {
-            error!("Failed to fetch github home page {}: {}", url, e);
-            vec![]
+            error!("Failed to fetch repo info {}: {}", url, e);
+            return fetch_github_home_page_fallback(url, include_files, valid_extensions).await;
+        }
+    };
+    let default_branch = repo_info.default_branch;
+
+    // Step 2: Get recursive file tree
+    let tree_api_url = format!(
+        "https://api.github.com/repos/{}/{}/git/trees/{}?recursive=1",
+        owner, repo, default_branch
+    );
+    let tree: GithubTreeResponse = match client.get(&tree_api_url).send().await {
+        Ok(resp) => {
+            if is_rate_limited(resp.status()) {
+                warn!("GitHub API rate limited on tree fetch. Falling back to HTML scraping.");
+                return fetch_github_home_page_fallback(url, include_files, valid_extensions).await;
+            }
+            if !resp.status().is_success() {
+                error!("GitHub API error {} ({})", tree_api_url, resp.status());
+                return fetch_github_home_page_fallback(url, include_files, valid_extensions).await;
+            }
+            match resp.json().await {
+                Ok(t) => t,
+                Err(e) => {
+                    error!("Failed to parse tree response: {}", e);
+                    return fetch_github_home_page_fallback(url, include_files, valid_extensions).await;
+                }
+            }
+        }
+        Err(e) => {
+            error!("Failed to fetch file tree {}: {}", url, e);
+            return fetch_github_home_page_fallback(url, include_files, valid_extensions).await;
+        }
+    };
+
+    if tree.truncated {
+        warn!(
+            "GitHub tree response truncated — results for {}/{} may be incomplete",
+            owner, repo
+        );
+    }
+
+    // Step 3: Filter by include_files and extensions, build raw download URLs
+    let mut results = Vec::new();
+    for item in &tree.tree {
+        if item.item_type != "blob" {
+            continue;
+        }
+
+        if !include_files.is_empty() {
+            let file_name = std::path::Path::new(&item.path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("");
+            if !include_files.iter().any(|f| f == file_name) {
+                continue;
+            }
+        }
+
+        for ext in &valid_extensions {
+            if item.path.ends_with(ext) {
+                let download_url = format!(
+                    "https://raw.githubusercontent.com/{}/{}/refs/heads/{}/{}",
+                    owner, repo, default_branch, item.path
+                );
+                results.push(GithubInfo::new(download_url, ext.to_string()));
+                break;
+            }
         }
     }
+
+    info!("GitHub home page {}: found {} matching files via API", url, results.len());
+    results
+}
+
+/// Fallback: scrape GitHub home page HTML to extract file listing.
+/// Used when the API is rate-limited or unavailable.
+async fn fetch_github_home_page_fallback(
+    url: String,
+    include_files: Vec<String>,
+    valid_extensions: Vec<String>,
+) -> Vec<GithubInfo> {
+    info!("Fetching GitHub home page via HTML scraping (fallback): {}", url);
+    let body = match crate::common::util::get_url_body(url.clone(), crate::common::util::DEFAULT_HTTP_TIMEOUT).await {
+        Ok(b) => b,
+        Err(e) => {
+            error!("Failed to fetch GitHub HTML page {}: {}", url, e);
+            return vec![];
+        }
+    };
+    parse_github_home_page_body_to_m3u_link(&body, include_files, valid_extensions)
+        .unwrap_or_else(|e| {
+            error!("Failed to parse GitHub HTML page {}: {}", url, e);
+            vec![]
+        })
 }
 
 async fn fetch_github_sub_page(
@@ -216,18 +464,135 @@ async fn fetch_github_sub_page(
     include_files: Vec<String>,
     valid_extensions: Vec<String>,
 ) -> Vec<GithubInfo> {
-    match get_url_body(url.clone()).await {
-        Ok(body) => parse_github_sub_page_body_to_m3u_link(
-            &body,
-            include_files.clone(),
-            valid_extensions.clone(),
-        )
-        .unwrap_or_else(|_| vec![]),
-        Err(e) => {
-            error!("Failed to fetch github sub page {}: {}", url, e);
-            vec![]
+    let (owner, repo, branch, path) = match parse_github_url(&url) {
+        Some(v) => v,
+        None => {
+            error!("Failed to parse GitHub URL: {}", url);
+            return vec![];
+        }
+    };
+
+    let branch = match branch {
+        Some(b) => b,
+        None => {
+            error!("Missing branch in URL: {}", url);
+            return vec![];
+        }
+    };
+
+    let path = match path {
+        Some(p) => p,
+        None => {
+            error!("Missing path in URL: {}", url);
+            return vec![];
+        }
+    };
+
+    let has_token = crate::common::util::get_github_token().is_some();
+    info!(
+        "Fetching GitHub sub page via API (token={}): {}",
+        has_token, url
+    );
+
+    let client = github_api_client();
+
+    // GET /repos/{owner}/{repo}/contents/{path}?ref={branch}
+    let api_url = format!(
+        "https://api.github.com/repos/{}/{}/contents/{}?ref={}",
+        owner, repo, path, branch
+    );
+
+    let resp = client.get(&api_url).send().await;
+    if let Ok(ref r) = resp {
+        if is_rate_limited(r.status()) {
+            warn!(
+                "GitHub API rate limited for {}. Falling back to HTML scraping.",
+                url
+            );
+            return fetch_github_sub_page_fallback(url, include_files, valid_extensions).await;
         }
     }
+
+    let items: Vec<GithubContentItem> = match resp {
+        Ok(resp) => {
+            if !resp.status().is_success() {
+                error!(
+                    "GitHub API error {} ({}): {}",
+                    api_url,
+                    resp.status(),
+                    url
+                );
+                return fetch_github_sub_page_fallback(url, include_files, valid_extensions).await;
+            }
+            match resp.json::<GithubContentsResponse>().await {
+                Ok(GithubContentsResponse::Dir(items)) => items,
+                Ok(GithubContentsResponse::File(item)) => vec![item],
+                Err(e) => {
+                    error!("Failed to parse directory contents response: {}", e);
+                    return fetch_github_sub_page_fallback(url, include_files, valid_extensions).await;
+                }
+            }
+        }
+        Err(e) => {
+            error!("Failed to fetch directory contents {}: {}", url, e);
+            return fetch_github_sub_page_fallback(url, include_files, valid_extensions).await;
+        }
+    };
+
+    let mut results = Vec::new();
+    for item in &items {
+        if item.item_type != "file" {
+            continue;
+        }
+
+        if !include_files.is_empty() {
+            if !include_files.iter().any(|f| f == &item.name) {
+                continue;
+            }
+        }
+
+        if !valid_extensions.is_empty() {
+            for ext in &valid_extensions {
+                if item.name.ends_with(ext) {
+                    if let Some(ref dl_url) = item.download_url {
+                        results.push(GithubInfo::new(dl_url.clone(), ext.to_string()));
+                    }
+                    break;
+                }
+            }
+        } else if let Some(ref dl_url) = item.download_url {
+            let ext = std::path::Path::new(&item.name)
+                .extension()
+                .map(|e| format!(".{}", e.to_string_lossy()))
+                .unwrap_or_default();
+            results.push(GithubInfo::new(dl_url.clone(), ext));
+        }
+    }
+
+    info!("GitHub sub page {}: found {} matching files via API", url, results.len());
+    results
+}
+
+/// Fallback: scrape GitHub sub page HTML to extract file listing.
+/// Used when the API is rate-limited or unavailable.
+async fn fetch_github_sub_page_fallback(
+    url: String,
+    include_files: Vec<String>,
+    valid_extensions: Vec<String>,
+) -> Vec<GithubInfo> {
+    info!("Fetching GitHub sub page via HTML scraping (fallback): {}", url);
+    let body = match crate::common::util::get_url_body(url.clone(), crate::common::util::DEFAULT_HTTP_TIMEOUT).await {
+        Ok(b) => b,
+        Err(e) => {
+            error!("Failed to fetch GitHub HTML page {}: {}", url, e);
+            return vec![];
+        }
+    };
+    parse_github_sub_page_body_to_m3u_link(&body, include_files, valid_extensions)
+        .unwrap_or_else(|e| {
+            error!("Failed to parse GitHub HTML page {}: {}", url, e);
+            vec![]
+        })
 }
 
 #[derive(Debug)]
@@ -242,14 +607,16 @@ pub struct EpgM3u8Info {
 fn epg_live_stream_html_parse(html: &str) -> Vec<EpgM3u8Info> {
     let mut result: Vec<Vec<HashMap<String, Vec<String>>>> = Vec::new();
 
-    // 匹配行的正则表达式
-    let tr_regex = Regex::new(r"<tr>([\s\S]*?)<\/tr>").unwrap();
-    // 匹配单元格的正则表达式
-    let td_regex = Regex::new(r"<td>([\s\S]*?)<\/td>").unwrap();
-    // 匹配链接的正则表达式
-    let link_regex = Regex::new(r#"(?m)<a href="([\s\S]+?)""#).unwrap();
+    // Static regexes — compiled once and reused across all calls
+    use once_cell::sync::Lazy;
+    static TR_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"<tr>([\s\S]*?)<\/tr>").unwrap());
+    static TD_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"<td>([\s\S]*?)<\/td>").unwrap());
+    static LINK_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r#"(?m)<a href="([\s\S]+?)""#).unwrap());
 
-    for tr_match in tr_regex.captures_iter(html) {
+    for tr_match in TR_RE.captures_iter(html) {
         if tr_match.len() < 2 {
             continue;
         }
@@ -258,7 +625,7 @@ fn epg_live_stream_html_parse(html: &str) -> Vec<EpgM3u8Info> {
         // 提取当前行中的所有 td
         let row_content = &tr_match[1]; // 当前行的内容
 
-        for td_match in td_regex.captures_iter(row_content) {
+        for td_match in TD_RE.captures_iter(row_content) {
             if td_match.len() < 2 {
                 continue;
             }
@@ -266,7 +633,7 @@ fn epg_live_stream_html_parse(html: &str) -> Vec<EpgM3u8Info> {
 
             let mut links = Vec::new(); // 存储链接
 
-            for link_match in link_regex.captures_iter(cell_content) {
+            for link_match in LINK_RE.captures_iter(cell_content) {
                 if link_match.len() < 2 {
                     continue;
                 }
@@ -274,7 +641,7 @@ fn epg_live_stream_html_parse(html: &str) -> Vec<EpgM3u8Info> {
             }
 
             // 处理没有链接的普通文本
-            let text_without_links = link_regex
+            let text_without_links = LINK_RE
                 .replace_all(cell_content, "")
                 .to_string()
                 .replace(&['<', '>'][..], "")
@@ -328,34 +695,13 @@ fn epg_list_to_m3u_file(list: Vec<EpgM3u8Info>, file_name: String) -> Result<(),
 }
 
 async fn fetch_epg_page(url: String) -> Vec<EpgM3u8Info> {
-    match get_url_body(url.clone()).await {
+    match crate::common::util::get_url_body(url.clone(), crate::common::util::DEFAULT_HTTP_TIMEOUT).await {
         Ok(body) => epg_live_stream_html_parse(body.as_str()),
         Err(e) => {
             error!("Failed to fetch epg page {}: {}", url, e);
             vec![]
         }
     }
-}
-
-async fn get_url_body(_url: String) -> Result<String, Error> {
-    let client = reqwest::Client::builder()
-        .danger_accept_invalid_certs(true)
-        .build()
-        .unwrap();
-    let resp = client.get(_url.to_owned()).send().await;
-    return match resp {
-        Ok(res) => {
-            if res.status().is_success() {
-                Ok(res.text().await.unwrap())
-            } else {
-                Ok("".to_string())
-            }
-        }
-        Err(e) => {
-            error!("get url body error: {}", e);
-            Err(Error::new(ErrorKind::Other, format!("error {}", e)))
-        }
-    };
 }
 
 fn check_epg_data_exists() -> std::io::Result<bool> {
@@ -411,13 +757,9 @@ fn filename_from_epg_url(url_str: &str) -> String {
 
 /// 下载 URL 返回字节
 async fn get_url_bytes(url: &str) -> Result<Vec<u8>, Error> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(60))
-        .danger_accept_invalid_certs(true)
-        .build()
-        .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
-    let bytes = client
+    let bytes = crate::common::util::HTTP_CLIENT
         .get(url)
+        .timeout(std::time::Duration::from_secs(60))
         .send()
         .await
         .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?
@@ -567,7 +909,22 @@ impl EpgParseData {
                                     info!("epg gz 已解压保存: {}", path);
                                 }
                             }
-                            Err(e) => error!("解压 gz 失败 {}: {}", url, e),
+                            Err(e) => {
+                                // gzip decompression failed — the server may return raw XML
+                                // despite the .gz extension. Try using the raw bytes as XML.
+                                warn!("解压 gz 失败，尝试作为原始 XML 处理 {}: {}", url, e);
+                                let name = filename_from_epg_url(url);
+                                let out_name = name
+                                    .strip_suffix(".gz")
+                                    .map(String::from)
+                                    .unwrap_or_else(|| format!("epg_gz_fb_{}.xml", i));
+                                let path = format!("{}{}", folder, out_name);
+                                if let Err(e) = fs::write(&path, &bytes) {
+                                    error!("保存 gz 降级文件失败 {} -> {}: {}", url, path, e);
+                                } else {
+                                    info!("epg gz 降级为原始 XML 保存: {}", path);
+                                }
+                            }
                         }
                     } else if ext == "zip" {
                         if let Err(e) = extract_zip_to_folder(&bytes, &folder) {
@@ -588,11 +945,17 @@ impl EpgParseData {
 }
 
 pub async fn init_epg_data() -> EpgParseData {
-    let exists = check_epg_data_exists().expect("Failed to check search data");
+    let exists = check_epg_data_exists().unwrap_or_else(|e| {
+        error!("Failed to check epg data: {}", e);
+        false
+    });
     let mut epg_data = EpgParseData::new();
-    
+
     // 初始化search文件夹
-    let _ = create_folder(&get_epg_folder()).expect("文件夹创建失败");
+    if let Err(e) = create_folder(&get_epg_folder()) {
+        error!("EPG 文件夹创建失败: {}", e);
+        return epg_data;
+    }
     // 下线相关文件
     let config = get_epg_config();
     let mut xml_url: Vec<String> = vec![];
@@ -642,15 +1005,21 @@ pub async fn init_epg_data() -> EpgParseData {
 }
 
 pub async fn init_search_data() -> Result<(), Error> {
-    let exists = check_search_data_exists().expect("Failed to check search data");
+    let exists = check_search_data_exists().map_err(|e| {
+        Error::new(ErrorKind::Other, format!("Failed to check search data: {}", e))
+    })?;
     if exists {
         return Ok(());
     }
     // 初始化search文件夹
-    let _ = create_folder(&get_search_folder()).expect("文件夹创建失败");
+    let _ = create_folder(&get_search_folder()).map_err(|e| {
+        Error::new(ErrorKind::Other, format!("文件夹创建失败: {}", e))
+    })?;
 
     // 下线相关文件
-    let config = read_search_configs().await.expect("配置获取失败");
+    let config = read_search_configs().await.map_err(|e| {
+        Error::new(ErrorKind::Other, format!("配置获取失败: {}", e))
+    })?;
     let mut i = 0;
     for fetch_values in config.source {
         match fetch_values.parse_type {
@@ -680,7 +1049,7 @@ pub async fn init_search_data() -> Result<(), Error> {
                         fetch_values.extensions.clone(),
                     )
                     .await;
-                    debug!("{:?}", m3u_and_txt_files);
+                    info!("{:?}", m3u_and_txt_files);
                     // 下载m3u文件
                     for _url in m3u_and_txt_files {
                         i += 1;
@@ -959,9 +1328,70 @@ pub fn parse_epg_time_str(s: &str) -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{get_url_extension, init_epg_data, parse_epg_time_str};
+    use super::{get_url_extension, init_epg_data, parse_epg_time_str, parse_github_url};
     use crate::epg_xml::{parse_epg_xml_str, Channel, DisplayName, EpgAllListItem, Programme, Tv};
     use std::collections::HashMap;
+
+    #[test]
+    fn test_parse_github_url_home_page() {
+        // Standard home page
+        let result = parse_github_url("https://github.com/YueChan/Live");
+        assert!(result.is_some());
+        let (owner, repo, branch, path) = result.unwrap();
+        assert_eq!(owner, "YueChan");
+        assert_eq!(repo, "Live");
+        assert!(branch.is_none());
+        assert!(path.is_none());
+    }
+
+    #[test]
+    fn test_parse_github_url_home_page_trailing_slash() {
+        let result = parse_github_url("https://github.com/fanmingming/live/");
+        assert!(result.is_some());
+        let (owner, repo, branch, path) = result.unwrap();
+        assert_eq!(owner, "fanmingming");
+        assert_eq!(repo, "live");
+        assert!(branch.is_none());
+        assert!(path.is_none());
+    }
+
+    #[test]
+    fn test_parse_github_url_sub_page() {
+        let result = parse_github_url("https://github.com/iptv-org/iptv/tree/master/streams");
+        assert!(result.is_some());
+        let (owner, repo, branch, path) = result.unwrap();
+        assert_eq!(owner, "iptv-org");
+        assert_eq!(repo, "iptv");
+        assert_eq!(branch, Some("master".to_string()));
+        assert_eq!(path, Some("streams".to_string()));
+    }
+
+    #[test]
+    fn test_parse_github_url_sub_page_nested() {
+        let result = parse_github_url("https://github.com/foo/bar/tree/main/sub/dir/deep");
+        assert!(result.is_some());
+        let (owner, repo, branch, path) = result.unwrap();
+        assert_eq!(owner, "foo");
+        assert_eq!(repo, "bar");
+        assert_eq!(branch, Some("main".to_string()));
+        assert_eq!(path, Some("sub/dir/deep".to_string()));
+    }
+
+    #[test]
+    fn test_parse_github_url_dot_git() {
+        let result = parse_github_url("https://github.com/user/repo.git");
+        assert!(result.is_some());
+        let (owner, repo, _, _) = result.unwrap();
+        assert_eq!(owner, "user");
+        assert_eq!(repo, "repo"); // .git stripped
+    }
+
+    #[test]
+    fn test_parse_github_url_invalid() {
+        assert!(parse_github_url("https://github.com/onlyowner").is_none());
+        assert!(parse_github_url("not-a-url").is_none());
+        assert!(parse_github_url("https://gitlab.com/owner/repo").is_some()); // parses but won't work with GitHub API
+    }
 
     #[test]
     fn convert_to_timestamp() {

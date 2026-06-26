@@ -1,5 +1,5 @@
 use crate::common::do_check;
-use crate::config::task::{file_config, save_task_to_file};
+use crate::config::task::file_config;
 use crate::config::{get_now_check_task_id, save_task, save_task_config, set_now_check_id};
 use actix_web::{web, HttpResponse, Responder};
 use log::{debug, error, info};
@@ -187,8 +187,8 @@ impl TaskContent {
         Ok(ori)
     }
 
-    pub fn get_urls(self) -> Vec<String> {
-        self.urls
+    pub fn get_urls(&self) -> Vec<String> {
+        self.urls.clone()
     }
 
     pub fn gen_md5(&mut self) {
@@ -253,7 +253,7 @@ impl TaskContent {
         self.http_timeout = timeout
     }
 
-    pub fn get_current(self) -> i32 {
+    pub fn get_current(&self) -> i32 {
         let default_val = DEFAULT_CONCURRENT;
         if self.concurrent == 0 {
             default_val
@@ -262,7 +262,7 @@ impl TaskContent {
         }
     }
 
-    pub fn get_http_timeout(self) -> i32 {
+    pub fn get_http_timeout(&self) -> i32 {
         let default_val = DEFAULT_TIMEOUT;
         if self.http_timeout > 0 {
             self.http_timeout
@@ -271,7 +271,7 @@ impl TaskContent {
         }
     }
 
-    pub fn get_check_timeout(self) -> i32 {
+    pub fn get_check_timeout(&self) -> i32 {
         let default_val = DEFAULT_TIMEOUT;
         if self.check_timeout > 0 {
             self.check_timeout
@@ -350,12 +350,12 @@ impl Task {
         self.task_info = task_info
     }
 
-    pub fn get_task_info(self) -> TaskInfo {
-        self.task_info
+    pub fn get_task_info(&self) -> &TaskInfo {
+        &self.task_info
     }
 
-    pub fn get_task(self) -> Task {
-        return self.clone();
+    pub fn get_task(&self) -> Task {
+        self.clone()
     }
 
     pub fn run(&mut self) {
@@ -372,64 +372,70 @@ impl Task {
 
     fn run_inner(&mut self) {
         self.task_info.is_running = true;
-        let _ = save_task(self.id.clone(), self.clone().get_task());
+        self.task_info.task_status = TaskStatus::InProgress;
+        let _ = save_task(self.id.clone(), self.get_task());
         let _ = save_task_config();
-        let urls = self.clone().original.get_urls();
-        let out_out_file = self.clone().original.result_name;
-        let mut keyword_like = vec![];
-        if self.clone().original.keyword_like.len() > 0 {
-            keyword_like = self.clone().original.keyword_like
-        }
-        let mut keyword_dislike = vec![];
-        if self.clone().original.keyword_dislike.len() > 0 {
-            keyword_dislike = self.clone().original.keyword_dislike
-        }
-        let mut sort = false;
-        if self.clone().original.sort {
-            sort = self.clone().original.sort;
-        }
-        let task_id = self.clone().id.clone();
+
+        let urls = self.original.get_urls();
+        let out_out_file = self.original.result_name.clone();
+        let keyword_like = self.original.keyword_like.clone();
+        let keyword_dislike = self.original.keyword_dislike.clone();
+        let sort = self.original.sort;
+        let task_id = self.id.clone();
         // 设置当前任务id
-        set_now_check_id(Some(self.clone().id.clone()));
-        let http_timeout = self.clone().original.get_http_timeout();
-        let concurrent = self.clone().original.get_current();
-        let no_check = self.clone().original.no_check;
-        let check_timeout = self.clone().original.get_check_timeout();
-        let rename = self.clone().original.rename;
-        let ffmpeg_check = self.clone().original.ffmpeg_check;
-        let same_save_num = self.clone().original.same_save_num;
-        let not_http_skip = self.clone().original.not_http_skip;
-        let video_quality = self.clone().original.video_quality;
+        set_now_check_id(Some(self.id.clone()));
+        let http_timeout = self.original.get_http_timeout();
+        let concurrent = self.original.get_current();
+        let no_check = self.original.no_check;
+        let check_timeout = self.original.get_check_timeout();
+        let rename = self.original.rename;
+        let ffmpeg_check = self.original.ffmpeg_check;
+        let same_save_num = self.original.same_save_num;
+        let not_http_skip = self.original.not_http_skip;
+        let video_quality = self.original.video_quality.clone();
         let rename_channel_name = 0;
         let export_file = false;
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        rt.block_on(async {
-            debug!("start taskId: {}", task_id);
-            let _ = do_check(
-                urls,
-                out_out_file.clone(),
-                http_timeout,
-                true,
-                check_timeout,
-                concurrent,
-                keyword_like.clone(),
-                keyword_dislike.clone(),
-                sort,
-                no_check,
-                rename,
-                ffmpeg_check,
-                same_save_num,
-                not_http_skip,
-                video_quality,
-                export_file,
-                rename_channel_name,
-            )
-            .await;
-            debug!("end taskId: {}", task_id);
-        });
+
+        // Use catch_unwind to ensure is_running is always reset, even on panic
+        let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(async {
+                debug!("start taskId: {}", task_id);
+                if let Err(e) = do_check(
+                    urls,
+                    out_out_file.clone(),
+                    http_timeout,
+                    true,
+                    check_timeout,
+                    concurrent,
+                    keyword_like.clone(),
+                    keyword_dislike.clone(),
+                    sort,
+                    no_check,
+                    rename,
+                    ffmpeg_check,
+                    same_save_num,
+                    not_http_skip,
+                    video_quality,
+                    export_file,
+                    rename_channel_name,
+                )
+                .await
+                {
+                    error!("task {} check failed: {}", task_id, e);
+                };
+                debug!("end taskId: {}", task_id);
+            });
+        }));
+
+        // Always reset state, even after panic
+        if let Err(e) = panic_result {
+            error!("task {} panicked during check: {:?}", task_id, e);
+        }
+
         self.task_info.task_status = TaskStatus::Pending;
         self.task_info.is_running = false;
         let now_time = now() as i32;
@@ -506,7 +512,7 @@ impl TaskManager {
 
     pub fn update_task(&self, id: String, pass_task: TaskContent) -> Result<bool> {
         if let Ok(Some(task)) = file_config::get_task(&id) {
-            let mut task_info = task.clone().get_task_info();
+            let mut task_info = task.get_task_info().clone();
             let ori = pass_task.valid()?;
             let mut new_task = Task::new();
             new_task.set_original(ori);

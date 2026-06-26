@@ -1,4 +1,5 @@
 use crate::r#const::constant::TRANSLATE_FILE;
+use log::debug;
 use std::collections::HashMap;
 use std::fs;
 use std::io;
@@ -23,7 +24,7 @@ fn load_map_from_content(content: &str) -> HashMap<char, char> {
     for i in 0..std::cmp::min(simp_chars.len(), trad_chars.len()) {
         m.insert(trad_chars[i], simp_chars[i]);
     }
-    println!("load_map_from_content --- m: {:?}", m.len());
+    debug!("load_map_from_content --- m: {:?}", m.len());
     m
 }
 
@@ -32,12 +33,12 @@ fn load_map_from_path() -> io::Result<HashMap<char, char>> {
     // 优先尝试从文件系统读取
     match fs::read_to_string(TRANSLATE_FILE) {
         Ok(content) => {
-            println!("Using translate file from filesystem: {}", TRANSLATE_FILE);
+            debug!("Using translate file from filesystem: {}", TRANSLATE_FILE);
             Ok(load_map_from_content(&content))
         }
         Err(_) => {
             // 如果文件不存在，使用嵌入的内容
-            println!("Translate file not found, using embedded content");
+            debug!("Translate file not found, using embedded content");
             Ok(load_map_from_content(EMBEDDED_TRANSLATE_CONTENT))
         }
     }
@@ -52,7 +53,7 @@ pub fn init_from_default_file() -> io::Result<()> {
 /// 使用指定文件初始化全局映射
 pub fn init_from_file() -> io::Result<()> {
     let map = load_map_from_path()?;
-    println!("init_from_file --- map: {:?}", map.len());
+    debug!("init_from_file --- map: {:?}", map.len());
     // OnceLock::set 返回 Err(map) 如果已经设置过，这里忽略已设置的情况
     let _ = TRANSLATE_MAP.set(map);
     Ok(())
