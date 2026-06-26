@@ -72,6 +72,37 @@ Options:
   -h, --help                   Print help
 ```
 
+## 环境变量
+
+| 变量名 | 说明 | 默认值 |
+| --- | --- | --- |
+| `WEB_PORT` | Web 服务端口号 | `8089` |
+
+## GitHub Token 配置
+
+GitHub API 对未认证请求有严格的频率限制（60次/时），配置 token 后可提升至 5000次/时。
+
+### 申请步骤
+
+1. 登录 GitHub，访问 **[github.com/settings/tokens](https://github.com/settings/tokens)**
+2. 点击 **Generate new token** → 选择 **Fine-grained token**（推荐）或 **Tokens (classic)**
+3. 配置权限（最小化原则）：
+   - **Expiration**: 自定义过期时间
+   - **Repository access**: 选择 `Public repositories (read-only)`
+   - **Permissions**: `Contents` → `Read-only`
+4. 点击 **Generate token**，复制生成的 `github_pat_xxxxxxxxxxxx` 字符串
+5. 打开 Web 管理后台 → 系统配置 → base.json，将 token 填入 `github_token` 字段
+
+> 保存时系统会自动调用 GitHub API 验证 token 是否有效，无效会提示错误。
+
+### 请求策略
+
+| 场景 | 行为 |
+| --- | --- |
+| 已配置有效 token | 使用 GitHub API（认证，5000次/时） |
+| 未配置 token | 先尝试 API，触发限流（403/429）后自动降级为 HTML 页面解析 |
+| token 无效 | 保存时拒绝，提示错误信息 |
+
 ## build
 
 ```bash
@@ -88,6 +119,36 @@ make build
 
 ## 更新日志
 
+- 4.6.0
+  - **GitHub 抓取迁移至 REST API**: 将 GitHub 仓库文件获取从 HTML 页面解析改为 GitHub REST API (`api.github.com`)
+    - `github_token` 配置在 base.json 中，保存时自动验证有效性
+    - 未配置 token 时 API 优先，触发限流自动降级为 HTML 页面解析
+    - 修复 `extensions` 为空且 `include_files` 非空时无法获取文件的问题
+  - **安全加固**:
+    - 修复 `/system/open-url` 端点 SSRF 漏洞，增加内网 IP 和危险协议拦截
+    - 修复 `/media/upload` 端点路径穿越漏洞，文件名增加安全过滤
+    - GitHub API 客户端移除 `danger_accept_invalid_certs`，始终验证 TLS 证书
+  - **性能优化**:
+    - 新增共享 HTTP 客户端 (`HTTP_CLIENT` / `GITHUB_CLIENT`)，复用连接池
+    - 修复 `Task::run_inner` 中 15+ 次不必要的 `self.clone()`，改为借用
+    - EPG HTML 解析的正则表达式改为静态编译
+    - 删除重复的 `get_url_body` 函数
+  - **代码质量**:
+    - 将所有 `println!` / `eprintln!` 迁移至 `log` 宏
+    - 清理未使用的导入和依赖（移除 `tempfile` crate）
+  - **Bug 修复**:
+    - 修复 EPG 定时刷新从未执行的问题（`init_epg_data` 漏了 `.await`）
+    - 修复任务 panic 后 `is_running` 永久卡在 true 的问题
+    - 修复字符串替换默认配置 `" ": ""` 会删除所有空格的问题
+    - 修复替换配置保存时错误调用无关初始化函数的问题
+    - 修复 `init_search_data` 使用 `.expect()` 导致 panic 的问题
+    - 修复 `do_check` 错误返回值被丢弃的问题
+    - 修复调度器线程无法优雅退出的问题
+    - 修复检查结果计数在去重前计算导致终端显示数量与实际输出不一致的问题
+    - 修复 `/q` 端点 host 只从 logos.json 读取，base.json 配置不生效的问题
+    - 修复 `/q` 端点 host 为空时仍输出无效 `x-tvg-url` 的问题
+    - 修复 gz 解压失败无降级方案的问题（尝试作为原始 XML 处理）
+    - 新增默认 EPG 源：`http://epg.51zmt.top:8000/e.xml.gz`
 - 4.4.0
   - 支持配置备份和恢复
   - 支持ipv4、ipv6结果的单独导出

@@ -1,4 +1,5 @@
 use std::process::{Command, ExitStatus};
+use log::{error, info};
 
 /// 从M3U8流中捕获首帧图片
 ///
@@ -26,10 +27,10 @@ pub fn capture_stream_pic(m3u8_url: String, output_image: String, timeout_second
         .expect("failed to execute ffmpeg");
 
     if status.success() {
-        println!("First frame captured successfully to {}", &output_image);
+        info!("First frame captured successfully to {}", &output_image);
         true
     } else {
-        println!("Failed to capture the first frame");
+        error!("Failed to capture the first frame");
         false
     }
 }
@@ -76,10 +77,10 @@ pub fn live_steam_to_m3u8_steam(rtmp_url: String, hls_output: String) -> bool {
         .expect("failed to execute ffmpeg");
 
     if status.success() {
-        println!("Successfully converted RTMP to HLS!");
+        info!("Successfully converted RTMP to HLS!");
         true
     } else {
-        eprintln!("Error occurred while converting RTMP to HLS.");
+        error!("Error occurred while converting RTMP to HLS.");
         false
     }
 }

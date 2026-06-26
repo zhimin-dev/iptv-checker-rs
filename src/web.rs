@@ -2,7 +2,6 @@ use crate::common::{check, QualityType};
 use crate::common::task::{
     add_task, delete_task, get_file_contents, list_task, run_task, update_task, TaskManager,
 };
-use crate::common::translate::init_from_default_file;
 use crate::common::M3uObjectList;
 use crate::common::M3uExt;
 use crate::config::favourite::FavouriteConfig;
@@ -20,7 +19,7 @@ use actix_files as actix_fs;
 use actix_files::NamedFile;
 use actix_multipart::form::{tempfile::TempFile, MultipartForm};
 use actix_web::middleware::Logger;
-use actix_web::{delete, get, post, web, App, HttpResponse, HttpServer, Responder};
+use actix_web::{get, post, web, App, HttpResponse, HttpServer, Responder};
 use chrono::Local;
 use clokwerk::{Scheduler, TimeUnits};
 use log::{debug, error, info};
@@ -124,7 +123,6 @@ async fn update_replace_config(req: web::Json<UpdateReplaceConfigRequest>) -> im
         req.replace_map.clone(),
     ) {
         Ok(_) => {
-            let _ = init_from_default_file();
             HttpResponse::Ok()
                 .append_header(("Content-Type", "application/json"))
                 .body("{\"msg\":\"success\"}")
@@ -146,15 +144,7 @@ struct FetchM3uBodyRequest {
 /// 获取M3U文件内容的API端点
 #[get("/fetch/m3u-body")]
 async fn fetch_m3u_body(req: web::Query<FetchM3uBodyRequest>) -> impl Responder {
-    let mut timeout = 0;
-    if let Some(i) = req.timeout {
-        timeout = i;
-    }
-    let client = reqwest::Client::builder()
-        .timeout(time::Duration::from_millis(timeout as u64))
-        .danger_accept_invalid_certs(true)
-        .build()
-        .unwrap();
+    let client = &crate::common::util::HTTP_CLIENT;
     let resp = client.get(req.url.to_owned()).send().await;
     match resp {
         Ok(res) => {
@@ -286,6 +276,54 @@ async fn system_list_today_files() -> impl Responder {
         .body(resp)
 }
 
+/// SSRF protection: check if an IP address is in a private/internal range
+fn is_private_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            v4.is_loopback()     // 127.0.0.0/8
+            || v4.is_private()   // 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+            || v4.is_link_local() // 169.254.0.0/16
+        }
+        std::net::IpAddr::V6(v6) => {
+            v6.is_loopback()       // ::1
+            || v6.is_unique_local() // fc00::/7
+        }
+    }
+}
+
+/// Validate URL for SSRF: allow only http/https and block private/internal IPs
+async fn validate_url_ssrf(url_str: &str) -> Result<url::Url, String> {
+    let parsed = url::Url::parse(url_str).map_err(|e| format!("Invalid URL: {}", e))?;
+
+    // Only allow http and https schemes — block file://, gopher://, etc.
+    match parsed.scheme() {
+        "http" | "https" => {}
+        scheme => return Err(format!("URL scheme '{}' is not allowed", scheme)),
+    }
+
+    let host = parsed.host_str().ok_or("URL has no host")?;
+
+    // Resolve hostname to IP addresses and check for private/internal IPs
+    match tokio::net::lookup_host(format!("{}:0", host)).await {
+        Ok(addrs) => {
+            for addr in addrs {
+                if is_private_ip(addr.ip()) {
+                    return Err(format!(
+                        "Request to internal/private IP is blocked: {} -> {}",
+                        host, addr.ip()
+                    ));
+                }
+            }
+        }
+        Err(_) => {
+            // If DNS resolution fails, block the request to be safe
+            return Err(format!("Could not resolve host: {}", host));
+        }
+    }
+
+    Ok(parsed)
+}
+
 /// 打开URL请求结构体
 #[derive(Serialize, Deserialize)]
 struct OpenUrlRequest {
@@ -293,12 +331,20 @@ struct OpenUrlRequest {
 }
 
 /// 获取URL内容的API端点
+///
+/// Security note: danger_accept_invalid_certs is intentionally kept here
+/// because IPTV URLs often use self-signed or expired certificates.
+/// SSRF protection is applied above via validate_url_ssrf().
 #[get("/system/open-url")]
 async fn system_open_url(req: web::Query<OpenUrlRequest>) -> impl Responder {
-    let client = reqwest::Client::builder()
-        .danger_accept_invalid_certs(true)
-        .build()
-        .unwrap();
+    // SSRF validation: block private IPs and dangerous schemes
+    if let Err(msg) = validate_url_ssrf(&req.url).await {
+        log::warn!("SSRF blocked: {} for URL: {}", msg, req.url);
+        return HttpResponse::Forbidden()
+            .json(serde_json::json!({"msg": msg}));
+    }
+
+    let client = &crate::common::util::HTTP_CLIENT;
 
     match client.get(&req.url).send().await {
         Ok(resp) => {
@@ -460,6 +506,18 @@ async fn upload(MultipartForm(form): MultipartForm<UploadFormReq>) -> impl Respo
                 .json(serde_json::json!({"msg": "Missing file name", "url": ""}))
         }
     };
+
+    // Sanitize filename: strip any directory components to prevent path traversal
+    let safe_name = Path::new(&file_name)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| file_name.clone());
+    if safe_name != file_name {
+        log::warn!("Sanitized filename from '{}' to '{}'", file_name, safe_name);
+    }
+    let file_name = safe_name;
+
     let path = format!("{}{}", UPLOAD_FOLDER, file_name);
     log::info!("saving to {path}");
     if let Err(e) = form.file.file.persist(path.clone()) {
@@ -677,15 +735,35 @@ struct UpdateBaseConfigRequest {
     replace_string: bool,
     #[serde(default)]
     remote_url2local_images: bool,
+    #[serde(default)]
+    github_token: String,
 }
 
 /// 更新 base.json 配置的 API 端点
 #[post("/system/base-config")]
 async fn update_base_config(req: web::Json<UpdateBaseConfigRequest>) -> impl Responder {
+    // Extract owned fields from Json guard to avoid borrow issues
+    let inner = req.into_inner();
+
+    // Validate GitHub token if provided
+    if !inner.github_token.is_empty() {
+        match crate::config::base::validate_github_token(&inner.github_token).await {
+            Ok(()) => {
+                log::info!("GitHub token validated successfully");
+            }
+            Err(e) => {
+                log::warn!("GitHub token validation failed: {}", e);
+                return HttpResponse::BadRequest()
+                    .json(serde_json::json!({"msg": format!("GitHub token validation failed: {}", e)}));
+            }
+        }
+    }
+
     match crate::config::base::partial_update_base_config(
-        req.host.trim_end_matches('/').to_string(),
-        req.replace_string,
-        req.remote_url2local_images,
+        inner.host.trim_end_matches('/').to_string(),
+        inner.replace_string,
+        inner.remote_url2local_images,
+        inner.github_token,
     ) {
         Ok(_) => HttpResponse::Ok().json(serde_json::json!({"msg": "success"})),
         Err(e) => {
@@ -801,7 +879,15 @@ pub async fn get_task_detail(
     };
     // 获取处理后的M3U内容（type = "logo"）
     let logos_map = crate::config::logos::get_logos_map();
-    let host = crate::config::logos::get_logos_config().host;
+    // Read host from base.json first, fall back to logos.json for backward compatibility
+let host = {
+    let base_host = crate::config::base::get_base_config().host;
+    if !base_host.trim().is_empty() {
+        base_host
+    } else {
+        crate::config::logos::get_logos_config().host
+    }
+};
     let mut check_result = Vec::new();
     // 获取任务内容（复用 get_task_content 的逻辑）
     let file_name = format!(
@@ -929,7 +1015,15 @@ pub async fn get_task_content(
     let mut logo_content = String::new();
     let rename_channel_type = 0;
 
-    let host = crate::config::logos::get_logos_config().host;
+    // Read host from base.json first, fall back to logos.json for backward compatibility
+let host = {
+    let base_host = crate::config::base::get_base_config().host;
+    if !base_host.trim().is_empty() {
+        base_host
+    } else {
+        crate::config::logos::get_logos_config().host
+    }
+};
     if !host.is_empty() {
         // 解析 M3U 并替换 Logo
         let mut m3u_list = M3uObjectList::from(m3u_content);
@@ -1372,7 +1466,15 @@ async fn q_m3u(req: web::Query<QRequest>) -> impl Responder {
     let json_file = File::open(file_name.clone());
 
     let logos_map = crate::config::logos::get_logos_map();
-    let host = crate::config::logos::get_logos_config().host;
+    // Read host from base.json first, fall back to logos.json for backward compatibility
+let host = {
+    let base_host = crate::config::base::get_base_config().host;
+    if !base_host.trim().is_empty() {
+        base_host
+    } else {
+        crate::config::logos::get_logos_config().host
+    }
+};
     let mut qualities: Vec<QualityType> = Vec::new();
     if req.q.is_some() {
         qualities = get_str_to_quality(req.q.unwrap());
@@ -1385,7 +1487,10 @@ async fn q_m3u(req: web::Query<QRequest>) -> impl Responder {
             match ser_res {
                 Ok(mut m3u_obj) => {
                     let mut m3u_header: M3uExt = M3uExt::new();
-                    m3u_header.set_x_tv_url(vec![format!("{}/epg/info/{}", host, req.c)]);
+                    let host_trimmed = host.trim_end_matches('/');
+                    if !host_trimmed.is_empty() {
+                        m3u_header.set_x_tv_url(vec![format!("{}/epg/info/{}", host_trimmed, req.c)]);
+                    }
                     m3u_obj.set_header(m3u_header);
                     let all_content_m3u = &m3u_obj.clone().export(
                         req.i as i32,
@@ -1550,17 +1655,23 @@ pub async fn start_web(port: u16) {
     let scheduler: Arc<Mutex<Scheduler>> = Arc::new(Mutex::new(Scheduler::with_tz(chrono::Local)));
 
     // 创建定时任务执行线程
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let shutdown_flag = Arc::new(AtomicBool::new(false));
     let scheduler_thread = {
         let scheduler = Arc::clone(&scheduler);
-        thread::spawn(move || loop {
-            let run_result = panic::catch_unwind(AssertUnwindSafe(|| {
-                let mut scheduler = scheduler.lock().unwrap_or_else(|e| e.into_inner());
-                scheduler.run_pending();
-            }));
-            if let Err(e) = run_result {
-                error!("scheduler run_pending panicked: {:?}", e);
+        let shutdown = Arc::clone(&shutdown_flag);
+        thread::spawn(move || {
+            while !shutdown.load(Ordering::Relaxed) {
+                let run_result = panic::catch_unwind(AssertUnwindSafe(|| {
+                    let mut scheduler = scheduler.lock().unwrap_or_else(|e| e.into_inner());
+                    scheduler.run_pending();
+                }));
+                if let Err(e) = run_result {
+                    error!("scheduler run_pending panicked: {:?}", e);
+                }
+                thread::sleep(Duration::from_secs(30));
             }
-            thread::sleep(Duration::from_secs(30));
+            info!("scheduler thread stopped");
         })
     };
 
@@ -1588,14 +1699,14 @@ pub async fn start_web(port: u16) {
             });
         });
         scheduler.every(1.hour()).run(move || {
-            info!("start search task");
+            info!("start epg task");
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .unwrap();
 
             rt.block_on(async {
-                let _ = init_epg_data();
+                let _ = init_epg_data().await;
             });
         });
         // 检查任务
@@ -1683,6 +1794,17 @@ pub async fn start_web(port: u16) {
         _ = server_task => {}
     }
 
-    // Wait for scheduler thread to finish
-    scheduler_thread.join().unwrap();
+    // Signal scheduler thread to stop, then join with timeout
+    shutdown_flag.store(true, Ordering::Relaxed);
+    info!("Waiting for scheduler thread to stop...");
+    // Give the scheduler up to 35 seconds to notice the shutdown flag and exit
+    // (it sleeps for 30 seconds between ticks)
+    let scheduler_handle = scheduler_thread;
+    for _ in 0..7 {
+        if scheduler_handle.is_finished() {
+            break;
+        }
+        std::thread::sleep(Duration::from_secs(5));
+    }
+    info!("Server stopped");
 }

@@ -6,6 +6,7 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 use std::sync::RwLock;
+use log::{error, info, warn};
 
 /// EPG 配置结构体
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -116,12 +117,12 @@ fn read_epg_json<P: AsRef<Path>>(path: P) -> EpgConfig {
     match fs::read_to_string(&path) {
         Ok(s) => {
             if s.trim().is_empty() {
-                eprintln!("epg: file {:?} is empty", path.as_ref());
+                warn!("epg: file {:?} is empty", path.as_ref());
                 return EpgConfig::new();
             }
             match serde_json::from_str::<EpgConfig>(&s) {
                 Ok(m) => {
-                    eprintln!(
+                    error!(
                         "epg: successfully loaded {} URLs from {:?}",
                         m.source.list.len(),
                         path.as_ref()
@@ -129,18 +130,18 @@ fn read_epg_json<P: AsRef<Path>>(path: P) -> EpgConfig {
                     m
                 }
                 Err(e) => {
-                    eprintln!(
+                    error!(
                         "epg: failed to parse JSON from {:?}: {}",
                         path.as_ref(),
                         e
                     );
-                    eprintln!("epg: file content: {}", s);
+                    error!("epg: file content: {}", s);
                     EpgConfig::new()
                 }
             }
         }
         Err(e) => {
-            eprintln!("epg: failed to read {:?}: {}", path.as_ref(), e);
+            error!("epg: failed to read {:?}: {}", path.as_ref(), e);
             EpgConfig::new()
         }
     }

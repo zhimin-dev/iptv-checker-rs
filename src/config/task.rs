@@ -1,7 +1,7 @@
 use crate::common::task::Task;
 use crate::r#const::constant::{TASK_DATA, TASK_JSON};
 use crate::utils::file_exists;
-use log::{error, info};
+use log::{error, info, warn};
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -36,12 +36,12 @@ fn read_task_json<P: AsRef<Path>>(path: P) -> TaskConfig {
     match fs::read_to_string(&path) {
         Ok(s) => {
             if s.trim().is_empty() {
-                eprintln!("task: file {:?} is empty", path.as_ref());
+                warn!("task: file {:?} is empty", path.as_ref());
                 return TaskConfig::new();
             }
             match serde_json::from_str::<TaskConfig>(&s) {
                 Ok(m) => {
-                    eprintln!(
+                    error!(
                         "task: successfully loaded {} tasks from {:?}",
                         m.task.len(),
                         path.as_ref()
@@ -49,18 +49,18 @@ fn read_task_json<P: AsRef<Path>>(path: P) -> TaskConfig {
                     m
                 }
                 Err(e) => {
-                    eprintln!(
+                    error!(
                         "task: failed to parse JSON from {:?}: {}",
                         path.as_ref(),
                         e
                     );
-                    eprintln!("task: file content: {}", s);
+                    error!("task: file content: {}", s);
                     TaskConfig::new()
                 }
             }
         }
         Err(e) => {
-            eprintln!("task: failed to read {:?}: {}", path.as_ref(), e);
+            error!("task: failed to read {:?}: {}", path.as_ref(), e);
             TaskConfig::new()
         }
     }

@@ -18,7 +18,7 @@ use crate::r#const::constant::{
 use crate::search::{clear_search_folder, do_search, init_epg_data};
 use crate::utils::{create_folder, get_out_put_filename};
 use chrono::Local;
-use clap::{arg, Args as clapArgs, Parser, Subcommand};
+use clap::{Args as clapArgs, Parser, Subcommand};
 use log::{error, info, LevelFilter};
 use simplelog::{CombinedLogger, Config, WriteLogger};
 use std::env;

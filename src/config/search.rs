@@ -6,6 +6,7 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 use std::sync::RwLock;
+use log::{error, info, warn};
 
 /// 搜索配置结构体
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -92,12 +93,12 @@ fn read_search_json<P: AsRef<Path>>(path: P) -> SearchConfig {
     match fs::read_to_string(&path) {
         Ok(s) => {
             if s.trim().is_empty() {
-                eprintln!("search: file {:?} is empty", path.as_ref());
+                warn!("search: file {:?} is empty", path.as_ref());
                 return SearchConfig::new();
             }
             match serde_json::from_str::<SearchConfig>(&s) {
                 Ok(m) => {
-                    eprintln!(
+                    error!(
                         "search: successfully loaded {} sources from {:?}",
                         m.source.len(),
                         path.as_ref()
@@ -105,18 +106,18 @@ fn read_search_json<P: AsRef<Path>>(path: P) -> SearchConfig {
                     m
                 }
                 Err(e) => {
-                    eprintln!(
+                    error!(
                         "search: failed to parse JSON from {:?}: {}",
                         path.as_ref(),
                         e
                     );
-                    eprintln!("search: file content: {}", s);
+                    error!("search: file content: {}", s);
                     SearchConfig::new()
                 }
             }
         }
         Err(e) => {
-            eprintln!("search: failed to read {:?}: {}", path.as_ref(), e);
+            error!("search: failed to read {:?}: {}", path.as_ref(), e);
             SearchConfig::new()
         }
     }

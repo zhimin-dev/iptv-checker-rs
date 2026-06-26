@@ -8,13 +8,11 @@
 use crate::search::parse_epg_time_str;
 use crate::common::translate::trad_to_simp;
 use crate::epg_mapping::get_best_tvg_id;
-use log::error;
 use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, BytesText, Event};
 use quick_xml::Reader;
 use quick_xml::Writer;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fmt::format;
 use std::fs::File;
 use std::io::{Cursor, Error, ErrorKind, Write};
 use std::sync::{Arc, RwLock};

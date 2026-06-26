@@ -8,6 +8,7 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 use std::sync::RwLock;
+use log::{error, info, warn};
 
 /// Matches empty parentheses or parentheses containing only a single known quality-tag
 /// suffix letter (`p`, `k`, `i` and their uppercase equivalents), e.g. `()`, `( )`, `(p)`,
@@ -148,7 +149,7 @@ fn read_replace_json<P: AsRef<Path>>(path: P) -> ReplaceConfig {
         Ok(s) => match serde_json::from_str::<ReplaceConfig>(&s) {
             Ok(config) => config,
             Err(e) => {
-                eprintln!(
+                error!(
                     "replace: failed to parse JSON from {:?}: {}",
                     path.as_ref(),
                     e
@@ -157,7 +158,7 @@ fn read_replace_json<P: AsRef<Path>>(path: P) -> ReplaceConfig {
             }
         },
         Err(e) => {
-            eprintln!("replace: failed to read {:?}: {}", path.as_ref(), e);
+            error!("replace: failed to read {:?}: {}", path.as_ref(), e);
             ReplaceConfig::new()
         }
     }

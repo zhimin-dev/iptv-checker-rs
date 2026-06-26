@@ -6,6 +6,7 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 use std::sync::RwLock;
+use log::{error, info, warn};
 
 /// Base 配置结构体
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -13,6 +14,8 @@ pub struct BaseConfig {
     pub host: String,
     pub replace_string: bool,
     pub remote_url2local_images: bool,
+    #[serde(default)]
+    pub github_token: String,
 }
 
 impl BaseConfig {
@@ -21,6 +24,7 @@ impl BaseConfig {
             host: String::default(),
             replace_string: false,
             remote_url2local_images: false,
+            github_token: String::default(),
         }
     }
 }
@@ -54,17 +58,48 @@ pub fn read_base_json_string() -> Result<String, String> {
         .map_err(|e| format!("Failed to read base.json: {}", e))
 }
 
-/// 部分更新 Base 配置（host、replace_string、remote_url2local_images）
+/// 部分更新 Base 配置（host、replace_string、remote_url2local_images、github_token）
 pub fn partial_update_base_config(
     host: String,
     replace_string: bool,
     remote_url2local_images: bool,
+    github_token: String,
 ) -> Result<(), String> {
     let mut config = get_base_config();
     config.host = host;
     config.replace_string = replace_string;
     config.remote_url2local_images = remote_url2local_images;
+    config.github_token = github_token;
     update_base_config(config)
+}
+
+/// Validate a GitHub personal access token by making a test API call.
+/// Returns Ok(()) if the token is valid, Err(msg) otherwise.
+pub async fn validate_github_token(token: &str) -> Result<(), String> {
+    if token.is_empty() {
+        return Ok(()); // empty token is always "valid" (means no auth)
+    }
+
+    let client = reqwest::Client::builder()
+        .user_agent("iptv-checker-rs")
+        .build()
+        .map_err(|e| format!("Failed to build client: {}", e))?;
+
+    let resp = client
+        .get("https://api.github.com/rate_limit")
+        .header("Authorization", &format!("Bearer {}", token))
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+        .map_err(|e| format!("Failed to validate token: {}", e))?;
+
+    match resp.status().as_u16() {
+        200 => Ok(()),
+        401 => Err("GitHub token is invalid (401 Unauthorized). Please check your token.".to_string()),
+        403 => Err("GitHub token returned 403 Forbidden. The token may lack permissions.".to_string()),
+        s if s >= 400 => Err(format!("GitHub API returned HTTP {} while validating token", s)),
+        _ => Ok(()),
+    }
 }
 
 /// 重新加载 base.json 文件
@@ -80,30 +115,30 @@ fn read_base_json<P: AsRef<Path>>(path: P) -> BaseConfig {
     match fs::read_to_string(&path) {
         Ok(s) => {
             if s.trim().is_empty() {
-                eprintln!("base: file {:?} is empty", path.as_ref());
+                warn!("base: file {:?} is empty", path.as_ref());
                 return BaseConfig::new();
             }
             match serde_json::from_str::<BaseConfig>(&s) {
                 Ok(m) => {
-                    eprintln!(
+                    error!(
                         "base: successfully loaded from {:?}",
                         path.as_ref()
                     );
                     m
                 }
                 Err(e) => {
-                    eprintln!(
+                    error!(
                         "base: failed to parse JSON from {:?}: {}",
                         path.as_ref(),
                         e
                     );
-                    eprintln!("base: file content: {}", s);
+                    error!("base: file content: {}", s);
                     BaseConfig::new()
                 }
             }
         }
         Err(e) => {
-            eprintln!("base: failed to read {:?}: {}", path.as_ref(), e);
+            error!("base: failed to read {:?}: {}", path.as_ref(), e);
             BaseConfig::new()
         }
     }
@@ -160,9 +195,10 @@ pub fn sync_host_from_logos_if_needed() {
         logos_host,
         base_config.replace_string,
         base_config.remote_url2local_images,
+        base_config.github_token,
     ) {
-        eprintln!("sync_host_from_logos: failed to sync host to base.json: {}", e);
+        error!("sync_host_from_logos: failed to sync host to base.json: {}", e);
     } else {
-        eprintln!("sync_host_from_logos: synced host from logos.json to base.json");
+        info!("sync_host_from_logos: synced host from logos.json to base.json");
     }
 }

@@ -400,46 +400,37 @@ pub mod check {
                 return Err(Error::new(ErrorKind::Other, format!("error {}", e)));
             }
         }
-        let client_resp = reqwest::Client::builder()
+        let client = &crate::common::util::HTTP_CLIENT;
+        let curr_timestamp = Utc::now().timestamp_millis();
+        let http_res = client
+            .get(_url.to_owned())
             .timeout(time::Duration::from_millis(timeout))
-            .danger_accept_invalid_certs(true)
-            .build();
-        match client_resp {
-            Ok(client) => {
-                let curr_timestamp = Utc::now().timestamp_millis();
-                let http_res = client.get(_url.to_owned()).send().await;
-                match http_res {
-                    Ok(res) => {
-                        if res.status().is_success() {
-                            let delay = Utc::now().timestamp_millis() - curr_timestamp;
-                            let _body = res.text().await;
-                            match _body {
-                                Ok(body) => {
-                                    if check_body_is_m3u8_format(body.clone()) {
-                                        let mut body: CheckUrlIsAvailableResponse =
-                                            CheckUrlIsAvailableResponse::new();
-                                        body.set_delay(delay as i32);
-                                        Ok(body)
-                                    } else {
-                                        Err(Error::new(ErrorKind::Other, "not a m3u8 file"))
-                                    }
-                                }
-                                Err(e) => Err(Error::new(ErrorKind::Other, format!("{:?}", e))),
+            .send()
+            .await;
+        match http_res {
+            Ok(res) => {
+                if res.status().is_success() {
+                    let delay = Utc::now().timestamp_millis() - curr_timestamp;
+                    let _body = res.text().await;
+                    match _body {
+                        Ok(body) => {
+                            if check_body_is_m3u8_format(body.clone()) {
+                                let mut body: CheckUrlIsAvailableResponse =
+                                    CheckUrlIsAvailableResponse::new();
+                                body.set_delay(delay as i32);
+                                Ok(body)
+                            } else {
+                                Err(Error::new(ErrorKind::Other, "not a m3u8 file"))
                             }
-                        } else {
-                            Err(Error::new(ErrorKind::Other, "status is not 200"))
                         }
+                        Err(e) => Err(Error::new(ErrorKind::Other, format!("{:?}", e))),
                     }
-                    Err(e) => {
-                        return Err(Error::new(ErrorKind::Other, format!("error {}", e)));
-                    }
+                } else {
+                    Err(Error::new(ErrorKind::Other, "status is not 200"))
                 }
             }
             Err(e) => {
-                return Err(Error::new(
-                    ErrorKind::Other,
-                    format!("http client build error {}", e),
-                ));
+                return Err(Error::new(ErrorKind::Other, format!("error {}", e)));
             }
         }
     }

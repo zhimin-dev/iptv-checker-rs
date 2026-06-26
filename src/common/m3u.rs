@@ -388,7 +388,7 @@ impl M3uObjectList {
                         f.write_all(data.as_bytes()).unwrap();
                     }
                     Err(e) => {
-                        println!("write error: {}", e);
+                        error!("write error: {}", e);
                     }
                 }
             }
@@ -578,7 +578,7 @@ impl M3uObjectList {
         if quality_list.is_empty() {
             return;
         }
-        println!("-----quality_list len {}", quality_list.len());
+        debug!("-----quality_list len {}", quality_list.len());
 
         let mut filtered_list = vec![];
         let mut quality_map: HashMap<QualityType, i32> = HashMap::new();
@@ -801,20 +801,20 @@ impl M3uObjectList {
             }
             info!("文件中源总数： {}", total);
         }
-        // 统计success list
-        let mut succ_count = 0;
-        for i in self.list.clone() {
-            if i.status == Success {
-                succ_count += 1;
-            }
-        }
-        self.counter.set_success_count(succ_count);
         if opt.same_save_num > 0 {
             self.do_same_save(opt.same_save_num);
         }
         if opt.sort {
             self.do_name_sort();
         }
+        // 统计 success list（放在去重和排序之后，确保计数准确）
+        let mut succ_count = 0;
+        for i in &self.list {
+            if i.status == Success {
+                succ_count += 1;
+            }
+        }
+        self.counter.set_success_count(succ_count);
     }
 
     pub fn get_list_len(&self) -> usize {
@@ -1197,7 +1197,7 @@ pub mod m3u {
     use crate::common::SourceType::{Normal, Quota};
     use crate::common::{M3uObjectList, SourceType};
     use core::option::Option;
-    use log::{error, info};
+    use log::{debug, error, info};
     use std::fs::File;
     use std::io::Read;
 
@@ -1319,7 +1319,7 @@ pub mod m3u {
                         }
                     }
                 }
-                println!("----fetch_url is: {}", fetch_url.clone());
+                debug!("----fetch_url is: {}", fetch_url.clone());
                 match get_url_body(fetch_url.clone(), _timeout).await {
                     Ok(data) => body_arr.push(data),
                     Err(e) => {
