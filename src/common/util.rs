@@ -6,19 +6,88 @@ use crate::common::{M3uExt, M3uExtend, M3uObject, M3uObjectList, QualityType};
 use crate::utils::translator_t2s;
 use once_cell::sync::Lazy;
 use reqwest::Error;
+use std::sync::RwLock;
 use url::Url;
 
 /// Default timeout for HTTP requests (20 seconds)
 pub const DEFAULT_HTTP_TIMEOUT: u64 = 20000;
 
-/// Shared reqwest Client for general IPTV/stream URL requests.
-/// Uses danger_accept_invalid_certs because many IPTV sources use self-signed certificates.
-pub static HTTP_CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
-    reqwest::Client::builder()
-        .danger_accept_invalid_certs(true)
-        .build()
-        .expect("Failed to build shared HTTP client")
+/// Version string for constructing the default User-Agent header
+pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Get the effective User-Agent string (custom if configured, otherwise default)
+pub fn get_user_agent() -> String {
+    let config = crate::config::network::get_network_config();
+    if !config.user_agent.trim().is_empty() {
+        config.user_agent.clone()
+    } else {
+        format!("iptv-checker/v{}", APP_VERSION)
+    }
+}
+
+/// Rebuildable HTTP client stored behind a RwLock so proxy/header settings
+/// can be changed at runtime without restarting the server.
+static HTTP_CLIENT_INNER: Lazy<RwLock<reqwest::Client>> = Lazy::new(|| {
+    RwLock::new(build_http_client())
 });
+
+/// Build a reqwest::Client from the current NetworkConfig settings.
+fn build_http_client() -> reqwest::Client {
+    let config = crate::config::network::get_network_config();
+    let mut builder = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true);
+
+    if config.use_system_proxy {
+        // Follow system proxy (env vars like HTTP_PROXY from Clash, etc.)
+        log::info!("HTTP client using system proxy (if configured)");
+    } else {
+        // Disable system proxy detection
+        builder = builder.no_proxy();
+        // Apply user-specified proxy if configured
+        if !config.proxy_url.trim().is_empty() {
+            match reqwest::Proxy::all(&config.proxy_url) {
+                Ok(proxy) => {
+                    builder = builder.proxy(proxy);
+                    log::info!("HTTP client using custom proxy: {}", config.proxy_url);
+                }
+                Err(e) => {
+                    log::error!("Invalid proxy URL '{}': {}", config.proxy_url, e);
+                }
+            }
+        }
+    }
+
+    // Build default headers: User-Agent first, then custom headers
+    let mut headers = reqwest::header::HeaderMap::new();
+    let ua = get_user_agent();
+    if let Ok(hv) = reqwest::header::HeaderValue::from_str(&ua) {
+        headers.insert(reqwest::header::USER_AGENT, hv);
+    }
+    for (key, value) in &config.custom_headers {
+        if let (Ok(hk), Ok(hv)) = (
+            reqwest::header::HeaderName::from_bytes(key.as_bytes()),
+            reqwest::header::HeaderValue::from_str(value),
+        ) {
+            headers.insert(hk, hv);
+        }
+    }
+    builder = builder.default_headers(headers);
+
+    builder.build().expect("Failed to build shared HTTP client")
+}
+
+/// Rebuild the shared HTTP client from current config (call after config changes).
+pub fn rebuild_http_client() {
+    let new_client = build_http_client();
+    let mut client = HTTP_CLIENT_INNER.write().unwrap();
+    *client = new_client;
+    log::info!("HTTP client rebuilt with current proxy/header settings");
+}
+
+/// Convenience accessor — clones the current client for use in requests.
+pub fn get_http_client() -> reqwest::Client {
+    HTTP_CLIENT_INNER.read().unwrap().clone()
+}
 
 /// Shared reqwest Client for GitHub API requests (unauthenticated).
 /// Does NOT disable certificate verification — GitHub always has valid TLS.
@@ -58,11 +127,36 @@ pub fn get_github_token() -> Option<String> {
 /// # 返回值
 /// * `Result<String, Error>` - 成功返回URL内容，失败返回错误
 pub async fn get_url_body(_url: String, timeout: u64) -> Result<String, Error> {
-    let client = reqwest::Client::builder()
+    let mut builder = reqwest::Client::builder()
         .timeout(std::time::Duration::from_millis(timeout))
-        .danger_accept_invalid_certs(true)
-        .build()
-        .unwrap();
+        .danger_accept_invalid_certs(true);
+
+    // Apply proxy and headers from config
+    let config = crate::config::network::get_network_config();
+    if !config.use_system_proxy {
+        builder = builder.no_proxy();
+        if !config.proxy_url.trim().is_empty() {
+            if let Ok(proxy) = reqwest::Proxy::all(&config.proxy_url) {
+                builder = builder.proxy(proxy);
+            }
+        }
+    }
+    let mut headers = reqwest::header::HeaderMap::new();
+    let ua = get_user_agent();
+    if let Ok(hv) = reqwest::header::HeaderValue::from_str(&ua) {
+        headers.insert(reqwest::header::USER_AGENT, hv);
+    }
+    for (key, value) in &config.custom_headers {
+        if let (Ok(hk), Ok(hv)) = (
+            reqwest::header::HeaderName::from_bytes(key.as_bytes()),
+            reqwest::header::HeaderValue::from_str(value),
+        ) {
+            headers.insert(hk, hv);
+        }
+    }
+    builder = builder.default_headers(headers);
+
+    let client = builder.build().unwrap();
     client.get(_url.to_owned()).send().await?.text().await
 }
 
@@ -235,12 +329,35 @@ fn parse_one_m3u(_arr: Vec<&str>, index: i32) -> Option<M3uObject> {
         // 创建M3U对象并设置属性
         let mut m3u_obj = M3uObject::new();
         let simple_name = translator_t2s(&name.to_string());
+        // Always try EPG matching. Use tv_name if set from M3U tags (more specific),
+        // otherwise fall back to display name.
+        let match_target = if !extend.tv_name.is_empty() {
+            extend.tv_name.clone()
+        } else {
+            name.to_string()
+        };
         m3u_obj.set_extend(extend);
         m3u_obj.set_index(index);
         m3u_obj.set_url(url.to_string());
         m3u_obj.set_name(name.to_string());
         m3u_obj.set_search_name(simple_name);
         m3u_obj.set_raw(_arr.join("\n").to_string());
+        if let Some((epg_name, epg_id)) = crate::epg_mapping::match_epg_channel(&match_target) {
+            if let Some(ext) = m3u_obj.get_extend_mut() {
+                ext.set_tv_name(epg_name);
+                ext.set_tv_id(epg_id);
+            }
+        }
+        // Apply local group mapping: tvg-name → group-title
+        if let Some(ref ext) = m3u_obj.get_extend_ref() {
+            if !ext.tv_name.is_empty() {
+                if let Some(mapped_group) = crate::config::group::get_group_for_channel(&ext.tv_name) {
+                    if let Some(ext_mut) = m3u_obj.get_extend_mut() {
+                        ext_mut.set_group_title(mapped_group);
+                    }
+                }
+            }
+        }
         return Some(m3u_obj);
     }
     return None;
@@ -296,6 +413,25 @@ pub fn parse_quota_str(_body: String) -> M3uObjectList {
                 m3u_obj.set_name(name.to_string());
                 m3u_obj.set_search_name(simple_name.to_string());
                 m3u_obj.set_raw(x.replace('\r', "").to_owned());
+                // EPG matching: try to find tvg-name and tvg-id from EPG mapping
+                if let Some((epg_name, epg_id)) = crate::epg_mapping::match_epg_channel(&name) {
+                    if let Some(ext) = m3u_obj.get_extend_mut() {
+                        ext.set_tv_name(epg_name);
+                        ext.set_tv_id(epg_id);
+                    }
+                }
+                // Apply local group mapping: tvg-name → group-title
+                {
+                    let tv_name = m3u_obj.get_extend_ref()
+                        .and_then(|e| if e.tv_name.is_empty() { None } else { Some(e.tv_name.clone()) });
+                    if let Some(tvn) = tv_name {
+                        if let Some(mapped_group) = crate::config::group::get_group_for_channel(&tvn) {
+                            if let Some(ext) = m3u_obj.get_extend_mut() {
+                                ext.set_group_title(mapped_group);
+                            }
+                        }
+                    }
+                }
                 index += 1;
                 list.push(m3u_obj)
             }

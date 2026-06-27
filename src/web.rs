@@ -144,7 +144,7 @@ struct FetchM3uBodyRequest {
 /// 获取M3U文件内容的API端点
 #[get("/fetch/m3u-body")]
 async fn fetch_m3u_body(req: web::Query<FetchM3uBodyRequest>) -> impl Responder {
-    let client = &crate::common::util::HTTP_CLIENT;
+    let client = crate::common::util::get_http_client();
     let resp = client.get(req.url.to_owned()).send().await;
     match resp {
         Ok(res) => {
@@ -344,7 +344,7 @@ async fn system_open_url(req: web::Query<OpenUrlRequest>) -> impl Responder {
             .json(serde_json::json!({"msg": msg}));
     }
 
-    let client = &crate::common::util::HTTP_CLIENT;
+    let client = crate::common::util::get_http_client();
 
     match client.get(&req.url).send().await {
         Ok(resp) => {
@@ -446,11 +446,23 @@ async fn system_get_favourite() -> impl Responder {
     let like = fav_map.like.clone();
     let equal = fav_map.equal.clone();
 
+    let host = crate::config::base::get_effective_host();
+    let all_channel_url = if host.is_empty() {
+        "/system/get-favourite-channel?channel_type=all".to_string()
+    } else {
+        format!("{}/system/get-favourite-channel?channel_type=all", host)
+    };
+    let liked_channel_url = if host.is_empty() {
+        "/system/get-favourite-channel?channel_type=like".to_string()
+    } else {
+        format!("{}/system/get-favourite-channel?channel_type=like", host)
+    };
+
     let resp = FavouriteListResponse {
         like,
         equal,
-        all_channel_url: "/system/get-favourite-channel?channel_type=all".to_string(),
-        liked_channel_url: "/system/get-favourite-channel?channel_type=like".to_string(),
+        all_channel_url,
+        liked_channel_url,
         checked_liked_channel_url: "".to_string(),
     };
 
@@ -737,6 +749,8 @@ struct UpdateBaseConfigRequest {
     remote_url2local_images: bool,
     #[serde(default)]
     github_token: String,
+    #[serde(default)]
+    rename_channel_type: i8,
 }
 
 /// 更新 base.json 配置的 API 端点
@@ -764,10 +778,44 @@ async fn update_base_config(req: web::Json<UpdateBaseConfigRequest>) -> impl Res
         inner.replace_string,
         inner.remote_url2local_images,
         inner.github_token,
+        inner.rename_channel_type,
     ) {
         Ok(_) => HttpResponse::Ok().json(serde_json::json!({"msg": "success"})),
         Err(e) => {
             log::error!("Failed to update base config: {}", e);
+            HttpResponse::InternalServerError()
+                .json(serde_json::json!({"msg": format!("Failed to save configuration: {}", e)}))
+        }
+    }
+}
+
+// ============== 网络配置 API ==============
+
+/// 获取 network.json 配置
+#[get("/system/network-config")]
+async fn get_network_config() -> impl Responder {
+    match crate::config::network::get_network_json() {
+        Ok(json) => HttpResponse::Ok()
+            .append_header(("Content-Type", "application/json"))
+            .body(json),
+        Err(e) => {
+            log::error!("Failed to get network config: {}", e);
+            HttpResponse::InternalServerError().body("{\"msg\":\"Failed to get configuration\"}")
+        }
+    }
+}
+
+/// 更新 network.json 配置
+#[post("/system/network-config")]
+async fn update_network_config(req: web::Json<crate::config::network::NetworkConfig>) -> impl Responder {
+    match crate::config::network::update_network_config(req.into_inner()) {
+        Ok(_) => {
+            // Rebuild HTTP client so proxy/header changes take effect immediately
+            crate::common::util::rebuild_http_client();
+            HttpResponse::Ok().json(serde_json::json!({"msg": "success"}))
+        }
+        Err(e) => {
+            log::error!("Failed to update network config: {}", e);
             HttpResponse::InternalServerError()
                 .json(serde_json::json!({"msg": format!("Failed to save configuration: {}", e)}))
         }
@@ -879,15 +927,7 @@ pub async fn get_task_detail(
     };
     // 获取处理后的M3U内容（type = "logo"）
     let logos_map = crate::config::logos::get_logos_map();
-    // Read host from base.json first, fall back to logos.json for backward compatibility
-let host = {
-    let base_host = crate::config::base::get_base_config().host;
-    if !base_host.trim().is_empty() {
-        base_host
-    } else {
-        crate::config::logos::get_logos_config().host
-    }
-};
+let host = crate::config::base::get_effective_host();
     let mut check_result = Vec::new();
     // 获取任务内容（复用 get_task_content 的逻辑）
     let file_name = format!(
@@ -1015,15 +1055,7 @@ pub async fn get_task_content(
     let mut logo_content = String::new();
     let rename_channel_type = 0;
 
-    // Read host from base.json first, fall back to logos.json for backward compatibility
-let host = {
-    let base_host = crate::config::base::get_base_config().host;
-    if !base_host.trim().is_empty() {
-        base_host
-    } else {
-        crate::config::logos::get_logos_config().host
-    }
-};
+let host = crate::config::base::get_effective_host();
     if !host.is_empty() {
         // 解析 M3U 并替换 Logo
         let mut m3u_list = M3uObjectList::from(m3u_content);
@@ -1174,6 +1206,10 @@ async fn system_import_config(
         "replace.json",
         "favourite.json",
         "logos.json",
+        "base.json",
+        "epg.json",
+        "network.json",
+        "group_mapping.json",
     ];
 
     let mut found_json_files: HashMap<String, bool> = HashMap::new();
@@ -1354,6 +1390,10 @@ async fn system_import_config(
     let _ = crate::config::replace::reload_replace_config();
     let _ = crate::config::favourite::reload_favourite_map();
     let _ = crate::config::logos::reload_logos_map();
+    let _ = crate::config::base::reload_base_map();
+    let _ = crate::config::epg::reload_epg_map();
+    let _ = crate::config::network::reload_network_map();
+    let _ = crate::config::group::reload_group_mapping();
 
     info!("Configuration imported successfully");
 
@@ -1466,15 +1506,7 @@ async fn q_m3u(req: web::Query<QRequest>) -> impl Responder {
     let json_file = File::open(file_name.clone());
 
     let logos_map = crate::config::logos::get_logos_map();
-    // Read host from base.json first, fall back to logos.json for backward compatibility
-let host = {
-    let base_host = crate::config::base::get_base_config().host;
-    if !base_host.trim().is_empty() {
-        base_host
-    } else {
-        crate::config::logos::get_logos_config().host
-    }
-};
+let host = crate::config::base::get_effective_host();
     let mut qualities: Vec<QualityType> = Vec::new();
     if req.q.is_some() {
         qualities = get_str_to_quality(req.q.unwrap());
@@ -1648,6 +1680,53 @@ async fn delete_epg_cache_api() -> impl Responder {
 
 /// 启动Web服务器
 pub async fn start_web(port: u16) {
+// ============== 分组映射 API ==============
+
+#[derive(Serialize, Deserialize)]
+struct GroupMappingResponse {
+    groups: Vec<String>,
+    mapping: HashMap<String, String>,
+}
+
+#[get("/system/group-mapping")]
+async fn get_group_mapping() -> impl Responder {
+    let groups = crate::config::group::get_groups();
+    let mapping = crate::config::group::get_group_mapping_map();
+    HttpResponse::Ok().json(GroupMappingResponse { groups, mapping })
+}
+
+#[derive(Serialize, Deserialize)]
+struct UpdateGroupMappingRequest {
+    groups: Vec<String>,
+    mapping: HashMap<String, String>,
+}
+
+#[post("/system/group-mapping")]
+async fn update_group_mapping(req: web::Json<UpdateGroupMappingRequest>) -> impl Responder {
+    match crate::config::group::save_full_config(req.groups.clone(), req.mapping.clone()) {
+        Ok(_) => HttpResponse::Ok().json(serde_json::json!({"msg": "success"})),
+        Err(e) => {
+            error!("Failed to update group mapping: {}", e);
+            HttpResponse::InternalServerError()
+                .json(serde_json::json!({"msg": format!("Failed to save: {}", e)}))
+        }
+    }
+}
+
+/// Get EPG channels that don't have a group mapping yet
+#[get("/system/group-mapping/unmapped")]
+async fn get_unmapped_epg_channels() -> impl Responder {
+    let epg_channels = crate::epg_xml::get_all_epg_channels();
+    let group_map = crate::config::group::get_group_mapping_map();
+
+    let unmapped: Vec<crate::epg_xml::EpgChannelItem> = epg_channels
+        .into_iter()
+        .filter(|c| !group_map.contains_key(&c.name))
+        .collect();
+
+    HttpResponse::Ok().json(serde_json::json!({ "list": unmapped }))
+}
+
     // 初始化任务管理器
     let task_manager = Arc::new(TaskManager {});
 
@@ -1737,6 +1816,9 @@ pub async fn start_web(port: u16) {
             .service(update_epg_sources_api)
             .service(sync_epg_api)
             .service(delete_epg_cache_api)
+            .service(get_group_mapping)
+            .service(update_group_mapping)
+            .service(get_unmapped_epg_channels)
             .service(check_url_is_available)
             .service(fetch_m3u_body)
             .service(system_status)
@@ -1760,6 +1842,8 @@ pub async fn start_web(port: u16) {
             .service(update_logo_config)
             .service(get_base_config)
             .service(update_base_config)
+            .service(get_network_config)
+            .service(update_network_config)
             .service(get_epg_config)
             .service(update_epg_config)
             .service(q_m3u)

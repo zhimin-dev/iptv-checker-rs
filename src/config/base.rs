@@ -16,6 +16,10 @@ pub struct BaseConfig {
     pub remote_url2local_images: bool,
     #[serde(default)]
     pub github_token: String,
+    #[serde(default)]
+    pub rename_channel_type: i8,
+    // Note: network-related fields (proxy_url, custom_headers, user_agent)
+    // have been moved to config::network::NetworkConfig (network.json)
 }
 
 impl BaseConfig {
@@ -25,6 +29,7 @@ impl BaseConfig {
             replace_string: false,
             remote_url2local_images: false,
             github_token: String::default(),
+            rename_channel_type: 0,
         }
     }
 }
@@ -58,18 +63,43 @@ pub fn read_base_json_string() -> Result<String, String> {
         .map_err(|e| format!("Failed to read base.json: {}", e))
 }
 
+/// 获取有效的 host，优先 base.json，回退 logos.json，自动补 http://
+pub fn get_effective_host() -> String {
+    let raw = {
+        let base_host = get_base_config().host;
+        if !base_host.trim().is_empty() {
+            base_host.trim_end_matches('/').to_string()
+        } else {
+            let logos_host = crate::config::logos::get_logos_config().host;
+            if !logos_host.trim().is_empty() {
+                logos_host.trim_end_matches('/').to_string()
+            } else {
+                String::new()
+            }
+        }
+    };
+    if raw.is_empty() || raw.starts_with("http://") || raw.starts_with("https://") {
+        raw
+    } else {
+        format!("http://{}", raw)
+    }
+}
+
 /// 部分更新 Base 配置（host、replace_string、remote_url2local_images、github_token）
+/// Also normalizes host to include http:// if protocol is missing.
 pub fn partial_update_base_config(
     host: String,
     replace_string: bool,
     remote_url2local_images: bool,
     github_token: String,
+    rename_channel_type: i8,
 ) -> Result<(), String> {
     let mut config = get_base_config();
     config.host = host;
     config.replace_string = replace_string;
     config.remote_url2local_images = remote_url2local_images;
     config.github_token = github_token;
+    config.rename_channel_type = rename_channel_type;
     update_base_config(config)
 }
 
@@ -196,6 +226,7 @@ pub fn sync_host_from_logos_if_needed() {
         base_config.replace_string,
         base_config.remote_url2local_images,
         base_config.github_token,
+        base_config.rename_channel_type,
     ) {
         error!("sync_host_from_logos: failed to sync host to base.json: {}", e);
     } else {

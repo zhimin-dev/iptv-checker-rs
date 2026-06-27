@@ -5,6 +5,8 @@ pub static SEARCH_JSON: &str = "static/core/search.json";
 pub static FAVOURITE_JSON: &str = "static/core/favourite.json";
 pub static BASE_JSON: &str = "static/core/base.json";
 pub static EPG_JSON: &str = "static/core/epg.json";
+pub static NETWORK_JSON: &str = "static/core/network.json";
+pub static GROUP_MAPPING_JSON: &str = "static/core/group_mapping.json";
 pub static TRANSLATE_FILE: &str = "./src/assets/translate.txt";
 
 pub static STATIC_FOLDER: &str = "./static/";
@@ -85,8 +87,6 @@ pub static SEARCH_CONFIG_JSON_CONTENT: &str = r#"{
 }"#;
 
 pub static LOGOS_CONFIG_JSON_CONTENT: &str = r#"{
-  "host": "",
-  "remote_url2local_images": false,
   "logos": []
 }"#;
 
@@ -102,5 +102,79 @@ pub static EPG_CONFIG_JSON_CONTENT: &str = r#"{
     "list": [
       "http://epg.51zmt.top:8000/e.xml.gz"
     ]
+  }
+}"#;
+
+pub static NETWORK_CONFIG_JSON_CONTENT: &str = r#"{
+  "proxy_url": "",
+  "use_system_proxy": true,
+  "custom_headers": {},
+  "user_agent": ""
+}"#;
+
+pub static GROUP_MAPPING_CONFIG_JSON_CONTENT: &str = r#"{
+  "groups": [
+    "卫视",
+    "央视"
+  ],
+  "mapping": {
+    "CCTV5": "央视",
+    "深圳卫视": "卫视",
+    "CCTV1": "央视",
+    "天津卫视": "卫视",
+    "旅游卫视": "卫视",
+    "湖北卫视": "卫视",
+    "CCTV11": "央视",
+    "CCTV3": "央视",
+    "CCTV6": "央视",
+    "甘肃卫视": "卫视",
+    "浙江卫视": "卫视",
+    "CCTV4": "央视",
+    "湖南卫视": "卫视",
+    "宁夏卫视": "卫视",
+    "广西卫视": "卫视",
+    "陕西卫视": "卫视",
+    "东方卫视": "卫视",
+    "云南卫视": "卫视",
+    "山东卫视": "卫视",
+    "吉林卫视": "卫视",
+    "江苏卫视": "卫视",
+    "黑龙江卫视": "卫视",
+    "安徽卫视": "卫视",
+    "CCTV16": "央视",
+    "CCTV13": "央视",
+    "CCTV15": "央视",
+    "黄河卫视": "卫视",
+    "CCTV14": "央视",
+    "CCTV5+": "央视",
+    "叁沙卫视": "卫视",
+    "山西卫视": "卫视",
+    "CCTV12": "央视",
+    "CCTV8": "央视",
+    "CCTV17": "央视",
+    "河南卫视": "卫视",
+    "康巴卫视": "卫视",
+    "CCTV4K": "央视",
+    "西藏卫视": "卫视",
+    "CCTV10": "央视",
+    "四川卫视": "卫视",
+    "重庆卫视": "卫视",
+    "海峡卫视": "卫视",
+    "CCTV7": "央视",
+    "CCTV4EUO": "央视",
+    "广东卫视": "卫视",
+    "辽宁卫视": "卫视",
+    "江西卫视": "卫视",
+    "CCTV4AME": "央视",
+    "厦门卫视": "卫视",
+    "CCTV2": "央视",
+    "兵团卫视": "卫视",
+    "青海卫视": "卫视",
+    "河北卫视": "卫视",
+    "贵州卫视": "卫视",
+    "CCTV9": "央视",
+    "延边卫视": "卫视",
+    "东南卫视": "卫视",
+    "北京卫视": "卫视"
   }
 }"#;

@@ -21,6 +21,12 @@ pub mod base;
 // EPG配置模块
 pub mod epg;
 
+// 网络配置模块
+pub mod network;
+
+// 分组映射配置模块
+pub mod group;
+
 // 导出file_config模块中的所有内容
 pub use task::file_config::*;
 
@@ -34,6 +40,7 @@ pub use task::file_config::*;
 /// - core/logos.json - Logo配置
 /// - core/base.json - Base配置
 /// - core/epg.json - EPG配置
+/// - core/network.json - 网络配置
 pub fn init_all_config_files() {
     task::init_task_config();
     search::create_search_file();
@@ -42,6 +49,8 @@ pub fn init_all_config_files() {
     logos::create_logos_file();
     base::create_base_file();
     epg::create_epg_file();
+    network::create_network_file();
+    group::create_group_mapping_file();
     // 兼容：若 logos.json 有 host 且 base.json 为空，则同步到 base.json
     base::sync_host_from_logos_if_needed();
 }

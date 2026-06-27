@@ -1,4 +1,5 @@
 use once_cell::sync::Lazy;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -31,6 +32,80 @@ pub static EPG_MAPPINGS: Lazy<HashMap<String, Vec<EpgMapping>>> = Lazy::new(|| {
     
     map
 });
+
+static QUALITY_SUFFIX_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r"(?i)[\s_]*([\[\(]?(?:4K|8K|2K|1080P|720P|480P|360P|240P|HD|FHD|UHD|SD|HEVC|HDR)[\]\)]?|_\d+M\d*)$",
+    )
+    .unwrap()
+});
+
+/// Match a channel name against the EPG mapping, handling quality suffixes.
+/// Returns `Some((epg_name, epg_channel_id))` on match, `None` otherwise.
+///
+/// Three-tier matching:
+/// 1. Exact match against EPG keys
+/// 2. Strip known quality suffixes from end, then exact match
+/// 3. Longest-prefix match (EPG key is prefix of channel name)
+///
+/// Within each tier, source priority is zh > cn > hk > tw.
+pub fn match_epg_channel(raw_name: &str) -> Option<(String, String)> {
+    if raw_name.is_empty() {
+        return None;
+    }
+
+    let priorities = ["zh", "cn", "hk", "tw"];
+
+    let lookup = |name: &str| -> Option<(String, String)> {
+        if let Some(mappings) = EPG_MAPPINGS.get(name) {
+            for priority in priorities.iter() {
+                if let Some(m) = mappings.iter().find(|m| m.source == *priority) {
+                    return Some((m.name.clone(), m.channel.clone()));
+                }
+            }
+            if let Some(m) = mappings.first() {
+                return Some((m.name.clone(), m.channel.clone()));
+            }
+        }
+        None
+    };
+
+    // Tier 1: exact match
+    if let Some(result) = lookup(raw_name) {
+        return Some(result);
+    }
+
+    // Tier 2: strip quality suffix, exact match
+    let stripped = QUALITY_SUFFIX_RE.replace(raw_name, "");
+    if stripped != raw_name {
+        if let Some(result) = lookup(&stripped) {
+            return Some(result);
+        }
+    }
+
+    // Tier 3: longest-prefix fallback
+    let mut best: Option<(String, String)> = None;
+    let mut best_len = 0usize;
+    for (epg_name, mappings) in EPG_MAPPINGS.iter() {
+        let epg_len = epg_name.chars().count();
+        if epg_len > best_len && epg_len < raw_name.chars().count() && raw_name.starts_with(epg_name.as_str()) {
+            for priority in priorities.iter() {
+                if let Some(m) = mappings.iter().find(|m| m.source == *priority) {
+                    best = Some((m.name.clone(), m.channel.clone()));
+                    best_len = epg_len;
+                    break;
+                }
+            }
+            if best_len != epg_len {
+                if let Some(m) = mappings.first() {
+                    best = Some((m.name.clone(), m.channel.clone()));
+                    best_len = epg_len;
+                }
+            }
+        }
+    }
+    best
+}
 
 pub fn get_best_tvg_id(tv_name: Option<&str>, display_name: &str) -> String {
     // Priority order: zh/cn -> hk -> tw
