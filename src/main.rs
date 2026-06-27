@@ -155,10 +155,6 @@ pub struct CheckArgs {
     #[arg(long = "no-check", default_value_t = false)]
     no_check: bool,
 
-    /// 是否重命名无用字段
-    #[arg(long = "rename", default_value_t = false)]
-    rename: bool,
-
     /// 是否使用ffmpeg进行检查
     #[arg(long = "ffmpeg-check", default_value_t = false)]
     ffmpeg_check: bool,
@@ -297,6 +293,8 @@ fn init_translate() {
 pub async fn main() {
     let args = Args::parse();
     init_all_config_files();
+    // Rebuild HTTP client to pick up saved proxy/header settings
+    common::util::rebuild_http_client();
     init_folder();
     init_translate();
     // 初始化 EPG 数据并启动后台同步任务
@@ -387,13 +385,13 @@ pub async fn main() {
                     args.keyword_dislike.to_owned(),
                     args.sort,
                     args.no_check,
-                    args.rename,
                     args.ffmpeg_check,
                     args.same_save_num,
                     args.not_http_skip,
                     args.video_quality,
                     args.export_file,
                     args.rename_channel_type,
+                    false, // fast_sort
                 )
                 .await
                 .unwrap();

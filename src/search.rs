@@ -757,7 +757,7 @@ fn filename_from_epg_url(url_str: &str) -> String {
 
 /// 下载 URL 返回字节
 async fn get_url_bytes(url: &str) -> Result<Vec<u8>, Error> {
-    let bytes = crate::common::util::HTTP_CLIENT
+    let bytes = crate::common::util::get_http_client()
         .get(url)
         .timeout(std::time::Duration::from_secs(60))
         .send()

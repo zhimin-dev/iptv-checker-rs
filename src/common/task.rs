@@ -87,9 +87,6 @@ pub struct TaskContent {
     #[serde(default)]
     no_check: bool,
     #[serde(default)]
-    rename: bool,
-
-    #[serde(default)]
     ffmpeg_check: bool,
     #[serde(default)]
     same_save_num: i32,
@@ -100,6 +97,10 @@ pub struct TaskContent {
     // 视频质量
     #[serde(default)]
     video_quality: Vec<String>,
+
+    /// 是否启用网速最快筛选（配合 same_save_num 使用）
+    #[serde(default)]
+    fast_sort: bool,
 }
 
 const DEFAULT_TIMEOUT: i32 = 30000;
@@ -125,11 +126,11 @@ impl TaskContent {
             sort: false,
             concurrent: 1,
             no_check: false,
-            rename: false,
             ffmpeg_check: false,
             same_save_num: 0,
             not_http_skip: false,
             video_quality: vec![],
+            fast_sort: false,
         }
     }
 
@@ -173,11 +174,11 @@ impl TaskContent {
         if self.ffmpeg_check {
             ori.set_ffmpeg_check(self.ffmpeg_check);
         }
-        if self.rename {
-            ori.set_rename(self.rename);
-        }
         if self.not_http_skip {
             ori.set_not_http_skip(self.not_http_skip);
+        }
+        if self.fast_sort {
+            ori.set_fast_sort(self.fast_sort);
         }
         ori.set_video_quality(self.video_quality.clone());
         ori.set_same_save_num(self.same_save_num);
@@ -237,8 +238,8 @@ impl TaskContent {
         self.video_quality = qualities
     }
 
-    pub fn set_rename(&mut self, rename: bool) {
-        self.rename = rename
+    pub fn set_fast_sort(&mut self, fast_sort: bool) {
+        self.fast_sort = fast_sort
     }
 
     pub fn set_not_http_skip(&mut self, not_http_skip: bool) {
@@ -388,12 +389,12 @@ impl Task {
         let concurrent = self.original.get_current();
         let no_check = self.original.no_check;
         let check_timeout = self.original.get_check_timeout();
-        let rename = self.original.rename;
         let ffmpeg_check = self.original.ffmpeg_check;
         let same_save_num = self.original.same_save_num;
         let not_http_skip = self.original.not_http_skip;
         let video_quality = self.original.video_quality.clone();
-        let rename_channel_name = 0;
+        let fast_sort = self.original.fast_sort;
+        let rename_channel_name = crate::config::base::get_base_config().rename_channel_type;
         let export_file = false;
 
         // Use catch_unwind to ensure is_running is always reset, even on panic
@@ -415,13 +416,13 @@ impl Task {
                     keyword_dislike.clone(),
                     sort,
                     no_check,
-                    rename,
                     ffmpeg_check,
                     same_save_num,
                     not_http_skip,
                     video_quality,
                     export_file,
                     rename_channel_name,
+                    fast_sort,
                 )
                 .await
                 {

@@ -249,14 +249,14 @@ impl M3uObject {
             if !extend.tv_name.is_empty() {
                 header.push_str(&format!(" tvg-name=\"{}\"", extend.tv_name));
             }
-            
+
             // Generate tvg-id using the matching algorithm
             let tvg_id = crate::epg_mapping::get_best_tvg_id(
                 if extend.tv_name.is_empty() { None } else { Some(&extend.tv_name) },
                 &self.name
             );
             header.push_str(&format!(" tvg-id=\"{}\"", tvg_id));
-            
+
             if !extend.tv_logo.is_empty() {
                 header.push_str(&format!(" tvg-logo=\"{}\"", extend.tv_logo));
             }
@@ -275,6 +275,10 @@ impl M3uObject {
             header.push_str(&format!(" tvg-id=\"{}\"", tvg_id));
         }
         self.raw = format!("{},{}\n{}", header, self.name, self.url);
+    }
+
+    pub fn get_display_name(&self) -> &str {
+        &self.name
     }
 
     pub fn set_extend(&mut self, extend: M3uExtend) {
@@ -366,6 +370,8 @@ pub struct CheckOptions {
     pub ffmpeg_check: bool,
     pub same_save_num: i32,
     pub not_http_skip: bool,
+    /// 是否按网速最快筛选（配合 same_save_num 使用）
+    pub fast_sort: bool,
 }
 
 impl M3uObjectList {
@@ -518,7 +524,7 @@ impl M3uObjectList {
         if !replace_logo_host.is_empty() && !replace_logo_host.is_empty() {
             new_obj.replace_logos(replace_logo_host, &replace_logo_map);
         }
-        let rename_channel_type= 0;
+        let rename_channel_type = crate::config::base::get_base_config().rename_channel_type;
         if export_type == 0 {
             // let _ = new_obj.generate_m3u_file(format!("{}{}.m3u", OUTPUT_FOLDER, custom_id), true);
             new_obj.get_m3u_content_str(rename_channel_type, only_success)
@@ -541,11 +547,17 @@ impl M3uObjectList {
         }
         let mut save_list = vec![];
         for i in self.list.clone() {
+            let search_target = i
+                .extend
+                .as_ref()
+                .map(|e| e.tv_name.to_lowercase())
+                .unwrap_or_default();
             let mut save = false;
             if keyword_like.len() > 0 {
                 save = false;
                 for lk in keyword_like.to_owned() {
-                    if i.search_name.contains(&lk.to_lowercase()) {
+                    let kw = trad_to_simp(&lk).to_lowercase();
+                    if search_target.contains(&kw) {
                         save = true;
                     }
                 }
@@ -553,7 +565,8 @@ impl M3uObjectList {
                 if keyword_dislike.len() > 0 {
                     save = true;
                     for dk in keyword_dislike.to_owned() {
-                        if i.search_name.contains(&dk.to_lowercase()) {
+                        let kw = trad_to_simp(&dk).to_lowercase();
+                        if search_target.contains(&kw) {
                             save = false
                         }
                     }
@@ -562,7 +575,8 @@ impl M3uObjectList {
             if full_name_search.len() > 0 && !save {
                 save = false;
                 for fk in full_name_search.to_owned() {
-                    if i.search_name.eq(&fk.to_lowercase()) {
+                    let kw = trad_to_simp(&fk).to_lowercase();
+                    if search_target.eq(&kw) {
                         save = true
                     }
                 }
@@ -807,6 +821,10 @@ impl M3uObjectList {
         if opt.sort {
             self.do_name_sort();
         }
+        // 网速最快前N个筛选：按频道名分组，每组只保留delay最小的N个（N = same_save_num）
+        if opt.fast_sort && opt.same_save_num > 0 {
+            self.do_fast_sort(opt.same_save_num);
+        }
         // 统计 success list（放在去重和排序之后，确保计数准确）
         let mut succ_count = 0;
         for i in &self.list {
@@ -856,13 +874,18 @@ impl M3uObjectList {
         let mut hash_list: HashMap<String, Vec<M3uObject>> = HashMap::new();
         for item in self.list.clone() {
             if item.status == Success {
+                let key = item
+                    .extend
+                    .as_ref()
+                    .map(|e| e.tv_name.to_lowercase())
+                    .unwrap_or_default();
                 let mut list = vec![];
-                let list_op = hash_list.get(&item.search_name.clone());
+                let list_op = hash_list.get(&key);
                 if list_op.is_some() {
                     list = list_op.unwrap().to_vec();
                 }
                 list.push(item.clone());
-                hash_list.insert(item.search_name.clone(), list);
+                hash_list.insert(key, list);
             }
         }
         let mut save_list = vec![];
@@ -895,6 +918,45 @@ impl M3uObjectList {
             // 如果前缀相同，再比较数字
             a_num.cmp(&b_num)
         });
+    }
+
+    /// 按网速最快前N个筛选：按 tvg-name 分组，
+    /// 每组只保留 delay 最小的前 fast_sort_num 个成功项。
+    pub fn do_fast_sort(&mut self, fast_sort_num: i32) {
+        if fast_sort_num <= 0 {
+            return;
+        }
+        let n = fast_sort_num as usize;
+        // 按 tvg-name 分组，仅保留成功的项
+        let mut groups: HashMap<String, Vec<M3uObject>> = HashMap::new();
+        for item in self.list.clone() {
+            if item.status == Success {
+                let key = item
+                    .extend
+                    .as_ref()
+                    .map(|e| e.tv_name.to_lowercase())
+                    .unwrap_or_default();
+                groups.entry(key).or_default().push(item);
+            }
+        }
+        let mut keep_list: Vec<M3uObject> = Vec::new();
+        // 保留所有非成功项（未检查/失败项不参与速度排序但保留在列表中）
+        for item in &self.list {
+            if item.status != Success {
+                keep_list.push(item.clone());
+            }
+        }
+        // 对每组按 delay 升序，保留前 N 个
+        for (_name, mut items) in groups {
+            items.sort_by_key(|a| a.other_status.delay);
+            items.truncate(n);
+            keep_list.append(&mut items);
+        }
+        self.set_list(keep_list);
+        info!(
+            "fast_sort: kept top {} fastest sources per channel name",
+            n
+        );
     }
 
     pub fn replace_logos(&mut self, host: String, logo_map: &HashMap<String, String>) {
@@ -941,8 +1003,8 @@ impl M3uObjectList {
         }
     }
 
-    pub fn get_m3u_content_str(&mut self,rename_channel_type:i8, only_succ: bool) -> String {
-        let res_arr = self.get_m3u_content(only_succ);
+    pub fn get_m3u_content_str(&mut self, rename_channel_type: i8, only_succ: bool) -> String {
+        let res_arr = self.get_m3u_content(rename_channel_type, only_succ);
         if res_arr.len() == 0 {
             String::default()
         } else {
@@ -950,7 +1012,7 @@ impl M3uObjectList {
         }
     }
 
-    pub fn get_m3u_content(&mut self, only_succ: bool) -> Vec<String> {
+    pub fn get_m3u_content(&mut self, rename_channel_type: i8, only_succ: bool) -> Vec<String> {
         let mut result_m3u_content = vec![];
         if self.header.x_tv_url.len() > 0 {
             let exp = self.header.x_tv_url.join(",");
@@ -960,6 +1022,12 @@ impl M3uObjectList {
             result_m3u_content.push(String::from("#EXTM3U"))
         }
         for mut x in self.list.clone() {
+            if rename_channel_type > 0 {
+                let base_name = x.extend.as_ref()
+                    .and_then(|e| if e.tv_name.is_empty() { None } else { Some(e.tv_name.as_str()) })
+                    .unwrap_or(&x.name);
+                x.name = rename_channel_name(base_name, &x.other_status, rename_channel_type);
+            }
             x.generate_raw();
             if only_succ {
                 if x.status == Success {
@@ -978,7 +1046,7 @@ impl M3uObjectList {
         rename_channel_type: i8,
         only_succ: bool,
     ) -> io::Result<()> {
-        let result_m3u_content = self.get_m3u_content(only_succ);
+        let result_m3u_content = self.get_m3u_content(rename_channel_type, only_succ);
         if result_m3u_content.len() > 0 {
             let mut fd = File::create(output_file.to_owned())?;
             for x in result_m3u_content {
@@ -1001,14 +1069,22 @@ impl M3uObjectList {
 
             // 逐行读取文件 a 的内容
             for line in &self.list {
+                let display_name = if rename_channel_type > 0 {
+                    let base_name = line.extend.as_ref()
+                        .and_then(|e| if e.tv_name.is_empty() { None } else { Some(e.tv_name.as_str()) })
+                        .unwrap_or(&line.name);
+                    rename_channel_name(base_name, &line.other_status, rename_channel_type)
+                } else {
+                    line.name.clone()
+                };
                 if only_succ {
                     if line.status == Success {
-                        let txt = format!("{},{}", line.name, line.url);
+                        let txt = format!("{},{}", display_name, line.url);
                         // 将每一行写入文件 b
                         text_arr.push(txt);
                     }
                 } else {
-                    let txt = format!("{},{}", line.name, line.url);
+                    let txt = format!("{},{}", display_name, line.url);
                     // 将每一行写入文件 b
                     text_arr.push(txt);
                 }
@@ -1113,6 +1189,76 @@ pub enum QualityType {
     Quality2K,
     Quality4K,
     Quality8K,
+}
+
+fn quality_order(q: &QualityType) -> u8 {
+    match q {
+        QualityType::QualityUnknown => 0,
+        QualityType::Quality240P => 1,
+        QualityType::Quality360P => 2,
+        QualityType::Quality480P => 3,
+        QualityType::Quality720P => 4,
+        QualityType::Quality1080P => 5,
+        QualityType::Quality2K => 6,
+        QualityType::Quality4K => 7,
+        QualityType::Quality8K => 8,
+    }
+}
+
+fn quality_text_label(q: &QualityType) -> &str {
+    match q {
+        QualityType::Quality240P | QualityType::Quality360P => "SD",
+        QualityType::Quality480P | QualityType::Quality720P => "HD",
+        QualityType::Quality1080P => "FHD",
+        QualityType::Quality2K => "2K",
+        QualityType::Quality4K => "UHD",
+        QualityType::Quality8K => "FUHD",
+        QualityType::QualityUnknown => "",
+    }
+}
+
+fn quality_numeric_label(q: &QualityType) -> &str {
+    match q {
+        QualityType::Quality240P => "240p",
+        QualityType::Quality360P => "360p",
+        QualityType::Quality480P => "480p",
+        QualityType::Quality720P => "720p",
+        QualityType::Quality1080P => "1080p",
+        QualityType::Quality2K => "1440p",
+        QualityType::Quality4K => "2160p",
+        QualityType::Quality8K => "4320p",
+        QualityType::QualityUnknown => "",
+    }
+}
+
+pub fn rename_channel_name(name: &str, other_status: &OtherStatus, rename_type: i8) -> String {
+    if rename_type <= 0 {
+        return name.to_string();
+    }
+    let info = match &other_status.ffmpeg_info {
+        Some(i) => i,
+        None => return name.to_string(),
+    };
+    if info.video.is_empty() {
+        return name.to_string();
+    }
+    let max_q = info.video.iter()
+        .map(|v| &v.quality_type)
+        .max_by(|a, b| quality_order(a).cmp(&quality_order(b)));
+
+    let suffix = match max_q {
+        Some(q) if rename_type == 1 => quality_text_label(q),
+        Some(q) => quality_numeric_label(q),
+        None => "",
+    };
+    if suffix.is_empty() {
+        return name.to_string();
+    }
+    if info.video.len() > 1 {
+        format!("{} {}*", name, suffix)
+    } else {
+        format!("{} {}", name, suffix)
+    }
 }
 
 // fn video_type_string(vt: VideoType) -> *const str {

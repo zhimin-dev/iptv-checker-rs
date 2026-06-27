@@ -400,7 +400,7 @@ pub mod check {
                 return Err(Error::new(ErrorKind::Other, format!("error {}", e)));
             }
         }
-        let client = &crate::common::util::HTTP_CLIENT;
+        let client = crate::common::util::get_http_client();
         let curr_timestamp = Utc::now().timestamp_millis();
         let http_res = client
             .get(_url.to_owned())
@@ -520,7 +520,19 @@ pub async fn get_favourite_channel(channel_type: String) -> Result<String, Error
         quality: vec![],
     })
     .await;
-    let rename_channel_type = 0;
+    let rename_channel_type = crate::config::base::get_base_config().rename_channel_type;
+    let host = {
+        let base_host = crate::config::base::get_base_config().host;
+        if !base_host.trim().is_empty() {
+            base_host
+        } else {
+            crate::config::logos::get_logos_config().host
+        }
+    };
+    if !host.is_empty() {
+        let logos_map = crate::config::logos::get_logos_map();
+        data.replace_logos(host, &logos_map);
+    }
     return Ok(data.get_m3u_content_str(rename_channel_type,false));
 }
 
@@ -535,13 +547,13 @@ pub async fn do_check(
     keyword_dislike: Vec<String>,
     sort: bool,
     no_check: bool,
-    rename: bool,
     ffmpeg_check: bool,
     same_save_num: i32,
     not_http_skip: bool,
     video_quality: Vec<String>,
     export_file: bool,
     rename_channel_type: i8,
+    fast_sort: bool,
 ) -> Result<bool, Error> {
     // 将文件转换为数组
     let list = common::m3u::m3u::from_arr(input_files.to_owned(), timeout as u64).await;
@@ -551,10 +563,8 @@ pub async fn do_check(
     data.to_ip_address();
     // 将频道名繁体转简体
     data.t2s();
-    if rename {
-        // 去除name中无效的字符
-        data.remove_useless_char();
-    }
+    // 去除name中无效的字符
+    data.remove_useless_char();
     // 搜索关键字
     data.search(SearchOptions {
         keyword_full_match: vec![],
@@ -576,6 +586,7 @@ pub async fn do_check(
         ffmpeg_check,
         same_save_num,
         not_http_skip,
+        fast_sort,
     })
     .await;
     println!("entry video quality {:?}", video_quality.clone());
