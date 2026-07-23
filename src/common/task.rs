@@ -36,6 +36,12 @@ pub enum RunTime {
     EveryHour,
 }
 
+impl Default for RunTime {
+    fn default() -> Self {
+        Self::EveryDay
+    }
+}
+
 impl TaskInfo {
     pub fn new() -> TaskInfo {
         return TaskInfo {
@@ -63,22 +69,31 @@ impl TaskInfo {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct TaskContent {
     // 订阅源
+    #[serde(default)]
     urls: Vec<String>,
     // 结果文件名，最后可以通过这个文件来获取结果
+    #[serde(default)]
     result_name: String,
     // 最终的md5
+    #[serde(default)]
     md5: String,
     // 运行类型
+    #[serde(default)]
     run_type: RunTime,
     // 喜欢关键词
+    #[serde(default)]
     keyword_like: Vec<String>,
     // 不喜欢关键词
+    #[serde(default)]
     keyword_dislike: Vec<String>,
     // 下载远端文件
+    #[serde(default)]
     http_timeout: i32,
     // 检查时的超时配置
+    #[serde(default)]
     check_timeout: i32,
     // 并发数
+    #[serde(default)]
     concurrent: i32,
     // 是否支持排序
     #[serde(default)]
@@ -141,11 +156,11 @@ impl TaskContent {
     pub fn valid(&self) -> Result<TaskContent> {
         let mut ori = TaskContent::new();
         if self.urls.is_empty() {
-            return Err(Error::new(ErrorKind::Other, "参数错误"));
+            return Err(Error::new(ErrorKind::InvalidInput, "参数错误"));
         }
         ori.set_urls(self.urls.clone());
         if self.result_name.is_empty() {
-            return Err(Error::new(ErrorKind::Other, "参数错误"));
+            return Err(Error::new(ErrorKind::InvalidInput, "参数错误"));
         }
         if !self.result_name.is_empty() {
             ori.set_result_file_name(self.result_name.clone())
@@ -463,7 +478,7 @@ pub struct TaskManager {}
 
 impl TaskManager {
     pub fn add_task(&self, task: TaskContent) -> Result<String> {
-        let ori = task.valid().unwrap();
+        let ori = task.valid()?;
         let mut task = Task::new();
         task.set_original(ori);
         let id = task.get_uuid();
@@ -634,8 +649,12 @@ pub async fn add_task(
             HttpResponse::Ok().json(resp)
         }
         Err(err) => {
-            resp.insert("code", String::from("500"));
-            resp.insert("msg", String::from(err.to_string()));
+            if err.kind() == ErrorKind::InvalidInput {
+                resp.insert("code", String::from("400"));
+            } else {
+                resp.insert("code", String::from("500"));
+            }
+            resp.insert("msg", err.to_string());
             HttpResponse::Ok().json(resp)
         }
     }
