@@ -158,9 +158,7 @@ impl TaskContent {
         if self.result_name.is_empty() {
             return Err(Error::new(ErrorKind::Other, "参数错误"));
         }
-        if !self.result_name.is_empty() {
-            ori.set_result_file_name(self.result_name.clone())
-        }
+        ori.set_result_file_name(self.result_name.clone());
         if self.http_timeout > 0 {
             ori.set_http_timeout(self.http_timeout);
         }

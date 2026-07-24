@@ -517,7 +517,6 @@ pub async fn get_favourite_channel(channel_type: String) -> Result<String, Error
         ipv6: false,
         exclude_url: vec![],
         exclude_host: vec![],
-        quality: vec![],
     })
     .await;
     let rename_channel_type = crate::config::base::get_base_config().rename_channel_type;
@@ -574,7 +573,6 @@ pub async fn do_check(
         ipv6: false,
         exclude_url: vec![],
         exclude_host: vec![],
-        quality: vec![],
     })
     .await;
     // 检查数据
@@ -591,7 +589,20 @@ pub async fn do_check(
     .await;
     println!("entry video quality {:?}", video_quality.clone());
     if ffmpeg_check {
-        data.search_video_quality(from_video_resolution(video_quality));
+        if no_check {
+            log::warn!(
+                "video_quality filter skipped: no_check=true, ffmpeg info not collected. \
+                 Set no_check=false to enable quality filtering."
+            );
+        } else {
+            data.search_video_quality(from_video_resolution(video_quality));
+        }
+    } else if !video_quality.is_empty() {
+        log::warn!(
+            "video_quality is set to {:?} but ffmpeg_check=false, quality filter will not apply. \
+             Set ffmpeg_check=true to enable quality filtering.",
+            video_quality
+        );
     }
     let output_file = format!("{}{}.json", OUTPUT_FOLDER, output_id);
     if print_result {

@@ -119,6 +119,21 @@ make build
 
 ## 更新日志
 
+- 4.7.1
+  - **Bug 修复**:
+    - 修复 bool 字段接收字符串 `"true"`/`"false"` 导致 400 错误（`fast_sort`、`sort`、`no_check` 等 10 个字段）
+    - 修复创建任务时 URL 前导/后置空格未过滤的问题
+    - 修复 `/tasks/detail` 返回的 M3U 内容缺少 `x-tvg-url` header
+    - 修复 `no_check=true` + `ffmpeg_check=true` + `video_quality` 组合导致频道全部被清空
+    - 修复 `video_quality` 在 `ffmpeg_check=false` 时静默忽略且无提示
+    - 清理 `valid()` 冗余代码和 `SearchOptions.quality` 未使用字段
+  - **安全加固**: 所有 bool 字段统一使用灵活反序列化（`deserialize_bool_flexible`）
+- 4.7.0
+  - **网络配置独立**: proxy、headers、user_agent 从 base.json 拆分到 network.json
+  - **EPG 管理**: 新增 EPG 源配置/同步/缓存 API、频道列表查询、自定义 XML 生成
+  - **分组映射**: 新增频道分组映射及未映射频道查询 API
+  - **配置导入导出**: 支持 ZIP 格式的系统配置备份和恢复
+  - **安全**: SSRF 防护（内网 IP + 危险协议拦截）、URL 合法性校验
 - 4.6.0
   - **GitHub 抓取迁移至 REST API**: 将 GitHub 仓库文件获取从 HTML 页面解析改为 GitHub REST API (`api.github.com`)
     - `github_token` 配置在 base.json 中，保存时自动验证有效性
