@@ -3,12 +3,40 @@ use lazy_static::lazy_static;
 use rand::distr::Alphanumeric;
 use rand::Rng;
 use regex::Regex;
+use serde::Deserializer;
 use std::fs;
 use std::fs::File;
 use std::io::{Error, ErrorKind, Read};
 use std::net::{IpAddr, Ipv4Addr, ToSocketAddrs};
 use std::process::Command;
 use url::Url;
+
+/// Helper to deserialize bool from either boolean or string "true"/"false"/"1"/"0"
+/// Prevents 400 errors when clients send string booleans instead of JSON booleans.
+pub fn deserialize_bool_flexible<'de, D>(deserializer: D) -> std::result::Result<bool, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de;
+    struct BoolOrString;
+    impl<'de> de::Visitor<'de> for BoolOrString {
+        type Value = bool;
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a boolean or string 'true'/'false'")
+        }
+        fn visit_bool<E: de::Error>(self, v: bool) -> std::result::Result<bool, E> {
+            Ok(v)
+        }
+        fn visit_str<E: de::Error>(self, v: &str) -> std::result::Result<bool, E> {
+            match v.trim().to_lowercase().as_str() {
+                "true" | "1" => Ok(true),
+                "false" | "0" | "" => Ok(false),
+                _ => Err(de::Error::invalid_value(de::Unexpected::Str(v), &self)),
+            }
+        }
+    }
+    deserializer.deserialize_any(BoolOrString)
+}
 
 /// 获取输出文件名，如果未指定则生成随机文件名
 pub fn get_out_put_filename(folder: &str, output_file: String) -> String {

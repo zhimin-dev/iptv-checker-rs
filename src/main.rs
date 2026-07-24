@@ -421,7 +421,6 @@ pub async fn main() {
                         ipv6: false,
                         exclude_url: vec![],
                         exclude_host: vec![],
-                        quality: vec![],
                     },
                 })
                 .await;

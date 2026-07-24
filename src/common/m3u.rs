@@ -358,7 +358,6 @@ pub struct SearchOptions {
     pub ipv6: bool,
     pub exclude_url: Vec<String>,
     pub exclude_host: Vec<String>,
-    pub quality: Vec<QualityType>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

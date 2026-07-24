@@ -2,6 +2,7 @@ use crate::common::{check, QualityType};
 use crate::common::task::{
     add_task, delete_task, get_file_contents, list_task, run_task, update_task, TaskManager,
 };
+use crate::utils::deserialize_bool_flexible;
 use crate::common::M3uObjectList;
 use crate::common::M3uExt;
 use crate::config::favourite::FavouriteConfig;
@@ -110,6 +111,7 @@ async fn get_replace_config() -> impl Responder {
 /// Replace配置请求结构体
 #[derive(Debug, Serialize, Deserialize)]
 struct UpdateReplaceConfigRequest {
+    #[serde(deserialize_with = "deserialize_bool_flexible")]
     replace_string: bool,
     replace_map: HashMap<String, String>,
 }
@@ -705,6 +707,7 @@ async fn get_logos_list() -> impl Responder {
 #[derive(Debug, Serialize, Deserialize)]
 struct UpdateLogosConfigRequest {
     host: String,
+    #[serde(deserialize_with = "deserialize_bool_flexible")]
     remote_url2local_images: bool,
 }
 
@@ -743,9 +746,9 @@ async fn get_base_config() -> impl Responder {
 #[derive(Debug, Serialize, Deserialize)]
 struct UpdateBaseConfigRequest {
     host: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_bool_flexible")]
     replace_string: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_bool_flexible")]
     remote_url2local_images: bool,
     #[serde(default)]
     github_token: String,
@@ -946,6 +949,19 @@ let host = crate::config::base::get_effective_host();
             let ser_res = serde_json::from_str::<M3uObjectList>(&json_content);
             match ser_res {
                 Ok(m3u_obj) => {
+                    // Set EPG x-tvg-url header, same as /q endpoint
+                    let mut m3u_header: M3uExt = M3uExt::new();
+                    let host_trimmed = host.trim_end_matches('/');
+                    if !host_trimmed.is_empty() {
+                        m3u_header.set_x_tv_url(vec![format!(
+                            "{}/epg/info/{}",
+                            host_trimmed,
+                            task_info.original.get_result_name()
+                        )]);
+                    }
+                    let mut m3u_obj = m3u_obj;
+                    m3u_obj.set_header(m3u_header);
+
                     let all_content_m3u = &m3u_obj.clone().export(
                         0,
                         host.clone(),

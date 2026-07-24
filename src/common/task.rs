@@ -1,6 +1,7 @@
 use crate::common::do_check;
 use crate::config::task::file_config;
 use crate::config::{get_now_check_task_id, save_task, save_task_config, set_now_check_id};
+use crate::utils::deserialize_bool_flexible;
 use actix_web::{web, HttpResponse, Responder};
 use log::{debug, error, info};
 use md5;
@@ -81,17 +82,17 @@ pub struct TaskContent {
     // 并发数
     concurrent: i32,
     // 是否支持排序
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_bool_flexible")]
     sort: bool,
     // 是否不检查
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_bool_flexible")]
     no_check: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_bool_flexible")]
     ffmpeg_check: bool,
     #[serde(default)]
     same_save_num: i32,
 
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_bool_flexible")]
     not_http_skip: bool,
 
     // 视频质量
@@ -99,7 +100,7 @@ pub struct TaskContent {
     video_quality: Vec<String>,
 
     /// 是否启用网速最快筛选（配合 same_save_num 使用）
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_bool_flexible")]
     fast_sort: bool,
 }
 
@@ -143,13 +144,21 @@ impl TaskContent {
         if self.urls.is_empty() {
             return Err(Error::new(ErrorKind::Other, "参数错误"));
         }
-        ori.set_urls(self.urls.clone());
+        // Trim whitespace from URLs and filter out empty ones
+        let trimmed_urls: Vec<String> = self
+            .urls
+            .iter()
+            .map(|u| u.trim().to_string())
+            .filter(|u| !u.is_empty())
+            .collect();
+        if trimmed_urls.is_empty() {
+            return Err(Error::new(ErrorKind::Other, "参数错误"));
+        }
+        ori.set_urls(trimmed_urls);
         if self.result_name.is_empty() {
             return Err(Error::new(ErrorKind::Other, "参数错误"));
         }
-        if !self.result_name.is_empty() {
-            ori.set_result_file_name(self.result_name.clone())
-        }
+        ori.set_result_file_name(self.result_name.clone());
         if self.http_timeout > 0 {
             ori.set_http_timeout(self.http_timeout);
         }

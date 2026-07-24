@@ -1,5 +1,6 @@
 use crate::r#const::constant::{NETWORK_CONFIG_JSON_CONTENT, NETWORK_JSON};
 use crate::utils::file_exists;
+use crate::utils::deserialize_bool_flexible;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -17,7 +18,7 @@ pub struct NetworkConfig {
     pub proxy_url: String,
     /// Whether to follow system proxy (env vars like HTTP_PROXY).
     /// Default true — when enabled, system proxy takes precedence over proxy_url.
-    #[serde(default = "default_true")]
+    #[serde(default = "default_true", deserialize_with = "deserialize_bool_flexible")]
     pub use_system_proxy: bool,
     /// Custom HTTP headers as key-value pairs
     #[serde(default)]
