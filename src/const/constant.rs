@@ -100,7 +100,7 @@ pub static BASE_CONFIG_JSON_CONTENT: &str = r#"{
 pub static EPG_CONFIG_JSON_CONTENT: &str = r#"{
   "source": {
     "list": [
-      "http://epg.51zmt.top:8000/e.xml.gz"
+      "http://epg.mb6.top/heiptv.xml"
     ]
   }
 }"#;
