@@ -12,6 +12,12 @@ use log::{error, info, warn};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchConfig {
     pub source: Vec<SearchSource>,
+    /// 爬取时自动下载频道 logo（下载后在封面配置页整理绑定）
+    #[serde(default)]
+    pub auto_download_logos: bool,
+    /// GitHub 源文件最后更新时间限制（天）：超过该天数的文件不爬取；0=不限制
+    #[serde(default)]
+    pub github_file_max_age_days: u32,
 }
 
 /// 搜索源配置结构体
@@ -27,6 +33,8 @@ impl SearchConfig {
     pub fn new() -> Self {
         SearchConfig {
             source: Vec::new(),
+            auto_download_logos: false,
+            github_file_max_age_days: 0,
         }
     }
 }

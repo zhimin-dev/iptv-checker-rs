@@ -15,6 +15,7 @@ pub static INPUT_FOLDER: &str = "./static/input/";
 pub static INPUT_SEARCH_FOLDER: &str = "./static/search/";
 pub static INPUT_EPG_FOLDER: &str = "./static/epg/";
 pub static INPUT_LIVE_FOLDER: &str = "./static/live/";
+pub static PLAYER_FOLDER: &str = "./static/player/";
 pub static OUTPUT_FOLDER: &str = "./static/output/";
 pub static OUTPUT_THUMBNAIL_FOLDER: &str = "./static/thumbnail/";
 pub static LOGS_FOLDER: &str = "./static/logs/";
@@ -94,7 +95,8 @@ pub static BASE_CONFIG_JSON_CONTENT: &str = r#"{
   "host": "",
   "replace_string": false,
   "remote_url2local_images": false,
-  "github_token": ""
+  "github_token": "",
+  "player_cache_ttl_hours": 24
 }"#;
 
 pub static EPG_CONFIG_JSON_CONTENT: &str = r#"{

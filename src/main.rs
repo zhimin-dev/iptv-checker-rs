@@ -1,9 +1,12 @@
+mod check_blacklist;
 mod common;
 mod config;
+mod logo_crawl;
 mod r#const;
 mod epg_xml;
 mod epg_mapping;
 mod live;
+mod player;
 mod search;
 mod utils;
 mod web;

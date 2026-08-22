@@ -40,6 +40,16 @@ fn build_http_client() -> reqwest::Client {
     if config.use_system_proxy {
         // Follow system proxy (env vars like HTTP_PROXY from Clash, etc.)
         log::info!("HTTP client using system proxy (if configured)");
+        // Windows 全局代理（系统代理开关）不体现在环境变量里，需从注册表读取
+        #[cfg(target_os = "windows")]
+        {
+            if let Some(url) = get_windows_system_proxy() {
+                if let Ok(proxy) = reqwest::Proxy::all(&url) {
+                    builder = builder.proxy(proxy);
+                    log::info!("HTTP client using Windows system proxy: {}", url);
+                }
+            }
+        }
     } else {
         // Disable system proxy detection
         builder = builder.no_proxy();
@@ -89,6 +99,131 @@ pub fn get_http_client() -> reqwest::Client {
     HTTP_CLIENT_INNER.read().unwrap().clone()
 }
 
+/// 读取 Windows 系统代理（WinINET，即“全局代理”开关，Clash/浏览器等开启系统代理时写入此处）。
+/// 返回形如 http://127.0.0.1:7890 的代理地址；未开启或读取失败返回 None。
+#[cfg(target_os = "windows")]
+pub fn get_windows_system_proxy() -> Option<String> {
+    use std::os::windows::process::CommandExt;
+    let query = |value: &str| -> Option<String> {
+        let out = std::process::Command::new("reg")
+            .args([
+                "query",
+                r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+                "/v",
+                value,
+            ])
+            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+            .output()
+            .ok()?;
+        String::from_utf8(out.stdout).ok()
+    };
+    // ProxyEnable=0x1 表示系统代理已开启
+    if !query("ProxyEnable")?.contains("0x1") {
+        return None;
+    }
+    let server_raw = query("ProxyServer")?;
+    let line = server_raw
+        .lines()
+        .find(|l| l.contains("REG_SZ") || l.contains("REG_EXPAND_SZ"))?;
+    let raw = line.split_whitespace().next_back()?.trim().to_string();
+    // 形如 http=127.0.0.1:7890;https=...;socks=... 或直接是 127.0.0.1:7890
+    let mut server = raw.clone();
+    for proto in ["http=", "socks=", "https="] {
+        if raw.contains(proto) {
+            server = raw
+                .split(proto)
+                .nth(1)
+                .unwrap_or("")
+                .split(';')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            break;
+        }
+    }
+    if server.is_empty() {
+        return None;
+    }
+    Some(if server.contains("://") {
+        server
+    } else {
+        format!("http://{}", server)
+    })
+}
+
+/// 给子进程（ffmpeg/ffprobe 等）注入代理环境变量，使 ffmpeg 任务遵循网络代理配置。
+/// - use_system_proxy=true：继承进程环境（ffmpeg 自带读取 http_proxy/https_proxy），
+///   Windows 下另把系统代理（WinINET 全局代理）写入子进程环境；
+/// - use_system_proxy=false 且配置了 proxy_url：子进程强制走该代理；
+/// - use_system_proxy=false 且未配置：清除子进程的代理环境变量，强制直连。
+pub fn apply_proxy_to_command<C: ProxyEnv>(cmd: &mut C) {
+    let config = crate::config::network::get_network_config();
+    if config.use_system_proxy {
+        // 继承环境变量代理；Windows 系统代理不体现在环境变量里，需显式注入
+        #[cfg(target_os = "windows")]
+        if let Some(url) = get_windows_system_proxy() {
+            for key in [
+                "http_proxy",
+                "https_proxy",
+                "HTTP_PROXY",
+                "HTTPS_PROXY",
+                "all_proxy",
+                "ALL_PROXY",
+            ] {
+                cmd.proxy_env(key, &url);
+            }
+        }
+    } else if !config.proxy_url.trim().is_empty() {
+        let url = config.proxy_url.trim().to_string();
+        for key in [
+            "http_proxy",
+            "https_proxy",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "all_proxy",
+            "ALL_PROXY",
+        ] {
+            cmd.proxy_env(key, &url);
+        }
+    } else {
+        for key in [
+            "http_proxy",
+            "https_proxy",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "all_proxy",
+            "ALL_PROXY",
+        ] {
+            cmd.proxy_env_remove(key);
+        }
+    }
+}
+
+/// std::process::Command 与 tokio::process::Command 的统一环境变量注入接口
+pub trait ProxyEnv {
+    fn proxy_env(&mut self, key: &str, val: &str) -> &mut Self;
+    fn proxy_env_remove(&mut self, key: &str) -> &mut Self;
+}
+
+impl ProxyEnv for std::process::Command {
+    fn proxy_env(&mut self, key: &str, val: &str) -> &mut Self {
+        self.env(key, val)
+    }
+    fn proxy_env_remove(&mut self, key: &str) -> &mut Self {
+        self.env_remove(key)
+    }
+}
+
+impl ProxyEnv for tokio::process::Command {
+    fn proxy_env(&mut self, key: &str, val: &str) -> &mut Self {
+        self.env(key, val)
+    }
+    fn proxy_env_remove(&mut self, key: &str) -> &mut Self {
+        self.env_remove(key)
+    }
+}
+
 /// Shared reqwest Client for GitHub API requests (unauthenticated).
 /// Does NOT disable certificate verification — GitHub always has valid TLS.
 /// For authenticated requests, callers should add `.bearer_auth(token)` on each request.
@@ -133,7 +268,15 @@ pub async fn get_url_body(_url: String, timeout: u64) -> Result<String, Error> {
 
     // Apply proxy and headers from config
     let config = crate::config::network::get_network_config();
-    if !config.use_system_proxy {
+    if config.use_system_proxy {
+        // Windows 全局代理（系统代理开关）不体现在环境变量里，需从注册表读取
+        #[cfg(target_os = "windows")]
+        if let Some(url) = get_windows_system_proxy() {
+            if let Ok(proxy) = reqwest::Proxy::all(&url) {
+                builder = builder.proxy(proxy);
+            }
+        }
+    } else {
         builder = builder.no_proxy();
         if !config.proxy_url.trim().is_empty() {
             if let Ok(proxy) = reqwest::Proxy::all(&config.proxy_url) {

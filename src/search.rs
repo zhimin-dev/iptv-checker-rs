@@ -22,6 +22,8 @@ use zip::read::ZipArchive;
 #[derive(Debug, Deserialize)]
 struct GithubRepoInfo {
     default_branch: String,
+    #[serde(default)]
+    pushed_at: Option<String>,
 }
 
 /// GET /repos/{owner}/{repo}/git/trees/{branch}?recursive=1
@@ -274,6 +276,69 @@ fn parse_github_url(url_str: &str) -> Option<(String, String, Option<String>, Op
     }
 }
 
+// === GitHub 文件最后更新时间过滤 ===
+
+/// GET /repos/{owner}/{repo}/commits?path=...&per_page=1
+#[derive(Debug, Deserialize)]
+struct GithubCommitListEntry {
+    commit: GithubCommitInfo,
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubCommitInfo {
+    committer: GithubCommitter,
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubCommitter {
+    date: String,
+}
+
+/// 配置的 GitHub 文件最后更新时间限制（天），0=不限制
+fn github_max_age_days() -> u32 {
+    crate::config::search::get_search_config().github_file_max_age_days
+}
+
+/// 解析 ISO8601 时间为距今多少天（失败返回 None）
+fn days_since_iso8601(s: &str) -> Option<i64> {
+    let dt = chrono::DateTime::parse_from_rfc3339(s.trim()).ok()?;
+    Some(
+        chrono::Utc::now()
+            .signed_duration_since(dt.with_timezone(&chrono::Utc))
+            .num_days(),
+    )
+}
+
+/// 文件最后更新时间是否超过限制（超期返回 true，应跳过）
+async fn github_file_is_stale(
+    client: &reqwest::Client,
+    owner: &str,
+    repo: &str,
+    path: &str,
+    max_days: u32,
+) -> bool {
+    if max_days == 0 {
+        return false;
+    }
+    let url = format!(
+        "https://api.github.com/repos/{}/{}/commits?path={}&per_page=1",
+        owner, repo, path
+    );
+    match client.get(&url).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            if let Ok(commits) = resp.json::<Vec<GithubCommitListEntry>>().await {
+                if let Some(first) = commits.first() {
+                    if let Some(days) = days_since_iso8601(&first.commit.committer.date) {
+                        return days > max_days as i64;
+                    }
+                }
+            }
+            false
+        }
+        _ => false, // 查询失败时宽容处理，不过滤
+    }
+}
+
 /// Build a reqwest Client for GitHub API requests.
 /// Includes Authorization header if a token is configured in base.json.
 fn github_api_client() -> reqwest::Client {
@@ -368,6 +433,22 @@ async fn fetch_github_home_page(
     };
     let default_branch = repo_info.default_branch;
 
+    // 仓库级时间过滤：整个仓库很久没更新则直接跳过
+    let max_age = github_max_age_days();
+    if max_age > 0 {
+        if let Some(pushed) = repo_info.pushed_at.as_deref() {
+            if let Some(days) = days_since_iso8601(pushed) {
+                if days > max_age as i64 {
+                    info!(
+                        "GitHub repo {}/{} last pushed {} days ago, skipped (limit {} days)",
+                        owner, repo, days, max_age
+                    );
+                    return vec![];
+                }
+            }
+        }
+    }
+
     // Step 2: Get recursive file tree
     let tree_api_url = format!(
         "https://api.github.com/repos/{}/{}/git/trees/{}?recursive=1",
@@ -423,6 +504,14 @@ async fn fetch_github_home_page(
 
         for ext in &valid_extensions {
             if item.path.ends_with(ext) {
+                // 文件级时间过滤：文件最后更新时间超过限制则跳过
+                if github_file_is_stale(&client, &owner, &repo, &item.path, max_age).await {
+                    info!(
+                        "GitHub file {}/{} is stale, skipped (limit {} days)",
+                        repo, item.path, max_age
+                    );
+                    break;
+                }
                 let download_url = format!(
                     "https://raw.githubusercontent.com/{}/{}/refs/heads/{}/{}",
                     owner, repo, default_branch, item.path
@@ -549,6 +638,17 @@ async fn fetch_github_sub_page(
             if !include_files.iter().any(|f| f == &item.name) {
                 continue;
             }
+        }
+
+        // 文件级时间过滤
+        let max_age = github_max_age_days();
+        let file_path = format!("{}/{}", path, item.name);
+        if github_file_is_stale(&client, &owner, &repo, &file_path, max_age).await {
+            info!(
+                "GitHub file {}/{} is stale, skipped (limit {} days)",
+                repo, file_path, max_age
+            );
+            continue;
         }
 
         if !valid_extensions.is_empty() {
@@ -1009,6 +1109,12 @@ pub async fn init_search_data() -> Result<(), Error> {
         Error::new(ErrorKind::Other, format!("Failed to check search data: {}", e))
     })?;
     if exists {
+        // 数据已存在时也按配置执行 logo 爬取（补齐之前未下载的台标）
+        if crate::config::search::get_search_config().auto_download_logos {
+            if let Ok(m3u_data) = load_m3u_data() {
+                crate::logo_crawl::crawl_logos(&m3u_data).await;
+            }
+        }
         return Ok(());
     }
     // 初始化search文件夹
@@ -1095,6 +1201,12 @@ pub async fn init_search_data() -> Result<(), Error> {
                     .await;
                 }
             }
+        }
+    }
+    // 自动下载频道 logo（配置开启时）
+    if crate::config::search::get_search_config().auto_download_logos {
+        if let Ok(m3u_data) = load_m3u_data() {
+            crate::logo_crawl::crawl_logos(&m3u_data).await;
         }
     }
     Ok(())
@@ -1238,6 +1350,10 @@ pub async fn do_search(search_params: SearchParams) -> Result<(), Error> {
             let mut m3u_data = load_m3u_data()?;
             m3u_data.t2s();
             m3u_data.search(search_params.search_options).await;
+            // 自动下载频道 logo（配置开启时）
+            if crate::config::search::get_search_config().auto_download_logos {
+                crate::logo_crawl::crawl_logos(&m3u_data).await;
+            }
             if search_params.thumbnail {
                 m3u_data
                     .generate_thumbnail(search_params.concurrent, search_params.timeout)

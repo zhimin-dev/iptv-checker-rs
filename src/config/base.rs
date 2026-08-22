@@ -18,8 +18,46 @@ pub struct BaseConfig {
     pub github_token: String,
     #[serde(default)]
     pub rename_channel_type: i8,
+    /// 播放器频道列表缓存有效期（小时），0 表示不缓存
+    #[serde(default = "default_player_cache_ttl_hours")]
+    pub player_cache_ttl_hours: u32,
+    /// 检查黑名单失败阈值：连续失败 N 次加入黑名单
+    #[serde(default = "default_blacklist_fail_times")]
+    pub check_blacklist_fail_times: u32,
+    /// 检查黑名单自动清理天数
+    #[serde(default = "default_blacklist_auto_clean_days")]
+    pub check_blacklist_auto_clean_days: u32,
+    /// 是否展示频道实时画面快照（后台开关，桌面端读取）
+    #[serde(default)]
+    pub player_show_snapshots: bool,
+    /// 流畅模式默认分片时长（秒），后台配置
+    #[serde(default = "default_relay_hls_time")]
+    pub relay_hls_time: u32,
+    /// 流畅模式默认保留分片数（缓冲窗口），后台配置
+    #[serde(default = "default_relay_keep_segments")]
+    pub relay_keep_segments: u32,
     // Note: network-related fields (proxy_url, custom_headers, user_agent)
     // have been moved to config::network::NetworkConfig (network.json)
+}
+
+fn default_player_cache_ttl_hours() -> u32 {
+    24
+}
+
+fn default_blacklist_fail_times() -> u32 {
+    5
+}
+
+fn default_blacklist_auto_clean_days() -> u32 {
+    7
+}
+
+fn default_relay_hls_time() -> u32 {
+    4
+}
+
+fn default_relay_keep_segments() -> u32 {
+    30
 }
 
 impl BaseConfig {
@@ -30,6 +68,12 @@ impl BaseConfig {
             remote_url2local_images: false,
             github_token: String::default(),
             rename_channel_type: 0,
+            player_cache_ttl_hours: default_player_cache_ttl_hours(),
+            check_blacklist_fail_times: default_blacklist_fail_times(),
+            check_blacklist_auto_clean_days: default_blacklist_auto_clean_days(),
+            player_show_snapshots: false,
+            relay_hls_time: default_relay_hls_time(),
+            relay_keep_segments: default_relay_keep_segments(),
         }
     }
 }

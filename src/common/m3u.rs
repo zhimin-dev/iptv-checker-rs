@@ -289,6 +289,10 @@ impl M3uObject {
         self.other_status = other_status
     }
 
+    pub fn get_status(&self) -> CheckDataStatus {
+        self.status.clone()
+    }
+
     pub fn set_status(&mut self, status: CheckDataStatus) {
         self.status = status;
     }
@@ -409,6 +413,17 @@ impl M3uObjectList {
 
     pub fn set_list(&mut self, list: Vec<M3uObject>) {
         self.list = list
+    }
+
+    pub fn get_list_ref(&self) -> &Vec<M3uObject> {
+        &self.list
+    }
+
+    /// 过滤黑名单 URL（检查前调用），返回被过滤数量
+    pub fn filter_urls(&mut self, blacklist: &std::collections::HashSet<String>) -> usize {
+        let before = self.list.len();
+        self.list.retain(|x| !blacklist.contains(&x.url));
+        before - self.list.len()
     }
 
     pub fn get_list(self) -> Vec<M3uObject> {

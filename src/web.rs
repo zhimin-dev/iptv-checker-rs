@@ -1696,6 +1696,8 @@ async fn delete_epg_cache_api() -> impl Responder {
 
 /// 启动Web服务器
 pub async fn start_web(port: u16) {
+    // 启动播放器中继会话的后台清理任务
+    crate::player::spawn_cleanup_task();
 // ============== 分组映射 API ==============
 
 #[derive(Serialize, Deserialize)]
@@ -1825,6 +1827,8 @@ async fn get_unmapped_epg_channels() -> impl Responder {
 
     let server = HttpServer::new(move || {
         App::new()
+            // 播放器路由必须注册在 Files("/") 兜底服务之前，否则会被其前缀匹配遮蔽
+            .configure(crate::player::configure_player_routes)
             .service(get_epg)
             .service(get_epg_channel_list)
             .service(get_epg_info)
@@ -1874,6 +1878,7 @@ async fn get_unmapped_epg_channels() -> impl Responder {
             .route("/tasks/add", web::post().to(add_task))
             .route("/tasks/delete/{id}", web::delete().to(delete_task))
             .service(actix_fs::Files::new("/", "./web/"))
+            .wrap(actix_cors::Cors::permissive())
             .wrap(Logger::default())
     })
     .workers(16) // 增加工作线程数到 16，避免本地请求死锁

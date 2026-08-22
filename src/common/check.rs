@@ -162,6 +162,8 @@ pub mod check {
 
         // 1. 配置FFprobe命令
         let mut cmd = Command::new("ffprobe");
+        // ffprobe 探测遵循网络代理配置
+        crate::common::util::apply_proxy_to_command(&mut cmd);
         cmd.args(vec![
             "-v",
             "quiet",
@@ -575,6 +577,14 @@ pub async fn do_check(
         exclude_host: vec![],
     })
     .await;
+    // 过滤黑名单源（连续失败达到阈值的源直接跳过，提升检查速度）
+    let blacklisted = crate::check_blacklist::get_blacklisted_urls();
+    if !blacklisted.is_empty() {
+        let filtered = data.filter_urls(&blacklisted);
+        if filtered > 0 {
+            info!("check blacklist filtered {} sources before checking", filtered);
+        }
+    }
     // 检查数据
     data.check_data_new(CheckOptions {
         request_time: request_timeout,
@@ -624,6 +634,35 @@ pub async fn do_check(
             info!("\n{}", status_string);
         }
         info!("解析完成----")
+    }
+    // 更新检查黑名单统计：成功移出、失败累计（达到阈值即拉黑）
+    if !no_check {
+        let list = data.get_list();
+        let mut success_count = 0;
+        let mut failed_count = 0;
+        for obj in list {
+            let url = obj.get_url();
+            if !url.starts_with("http://") && !url.starts_with("https://") {
+                continue;
+            }
+            match obj.get_status() {
+                crate::common::CheckDataStatus::Success => {
+                    crate::check_blacklist::mark_success(&url);
+                    success_count += 1;
+                }
+                crate::common::CheckDataStatus::Failed => {
+                    crate::check_blacklist::mark_failed(&url);
+                    failed_count += 1;
+                }
+                _ => {}
+            }
+        }
+        if failed_count > 0 {
+            info!(
+                "check blacklist updated: {} success, {} failed",
+                success_count, failed_count
+            );
+        }
     }
     Ok(true)
 }
