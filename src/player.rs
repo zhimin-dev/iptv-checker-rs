@@ -28,7 +28,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::Path;
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use futures::StreamExt;
@@ -343,7 +343,8 @@ struct RelaySession {
     sid: String,
     url: String,
     folder: std::path::PathBuf,
-    child: Arc<Mutex<tokio::process::Child>>,
+    /// ffmpeg 引擎的子进程（http 引擎为 None）
+    child: Option<Arc<Mutex<tokio::process::Child>>>,
     started_at: u64,
     last_active: Arc<AtomicU64>,
     /// 最后一次收到播放心跳的时间（仅桌面端会话需要，手动会话不受限）
@@ -353,6 +354,10 @@ struct RelaySession {
     /// true = 后台手动添加的 m3u8 会话（永不自动停止，需手动停止）；
     /// false = 桌面端启动的会话（60 秒无心跳自动停止）
     manual: bool,
+    /// 引擎类型："http"（直传下载 TS）或 "ffmpeg"（转码切片）
+    engine: String,
+    /// http 引擎的取消标记（ffmpeg 引擎不使用）
+    cancelled: Arc<AtomicBool>,
 }
 
 lazy_static! {
@@ -376,6 +381,14 @@ pub struct RelayStartReq {
     /// 手动添加（后台）的会话标记：true 时不自动停止
     #[serde(default)]
     pub manual: bool,
+    /// 引擎："http"（直传下载 TS，默认）或 "ffmpeg"（转码切片）；
+    /// http 引擎探测失败时自动回退到 ffmpeg
+    #[serde(default = "default_relay_engine")]
+    pub mode: String,
+}
+
+fn default_relay_engine() -> String {
+    "http".to_string()
 }
 
 fn default_hls_time() -> u32 {
@@ -403,6 +416,7 @@ pub struct RelayStartResp {
     pub hls_time: u32,
     pub keep_segments: u32,
     pub manual: bool,
+    pub engine: String,
     pub msg: String,
 }
 
@@ -413,6 +427,7 @@ pub async fn start_relay(
     hls_time: u32,
     keep_segments: u32,
     manual: bool,
+    mode: String,
 ) -> Result<RelayStartResp, String> {
     if !(url.starts_with("http://")
         || url.starts_with("https://")
@@ -438,6 +453,92 @@ pub async fn start_relay(
     // 标记“启动中”，防止后台清理任务误删刚创建、尚未注册的会话目录
     RELAY_STARTING.lock().unwrap().insert(sid.clone());
 
+    let cancelled = Arc::new(AtomicBool::new(false));
+    // 引擎选择：优先 http 直传（纯 HTTP 下载 TS 片段，不经 ffmpeg，避免转码/切片卡顿），
+    // 探测失败（非 HLS / byterange / fMP4 等）时自动回退 ffmpeg
+    let mut engine: String = "ffmpeg".to_string();
+    let mut child: Option<Arc<Mutex<tokio::process::Child>>> = None;
+    if mode != "ffmpeg" {
+        match spawn_http_engine(&url, &headers, &folder, &sid, keep_segments, cancelled.clone()).await {
+            Ok(()) => {
+                engine = "http".to_string();
+                info!("relay {}: using http passthrough engine", sid);
+            }
+            Err(e) => {
+                info!("relay {}: http engine unavailable ({}), falling back to ffmpeg", sid, e);
+            }
+        }
+    }
+    if engine == "ffmpeg" {
+        child = Some(Arc::new(Mutex::new(
+            spawn_ffmpeg_engine(&url, &headers, hls_time, keep_segments, &folder)
+                .await
+                .map_err(|e| {
+                    let _ = std::fs::remove_dir_all(&folder);
+                    RELAY_STARTING.lock().unwrap().remove(&sid);
+                    e
+                })?,
+        )));
+    }
+
+    // 会话数达到上限时，淘汰最久没有心跳的桌面端会话（手动添加的会话永不淘汰）
+    let evict = {
+        let map = RELAY_SESSIONS.lock().unwrap();
+        if map.len() >= MAX_SESSIONS {
+            map.values()
+                .filter(|s| !s.manual)
+                .min_by_key(|s| s.last_heartbeat.load(Ordering::Relaxed))
+                .map(|s| s.sid.clone())
+        } else {
+            None
+        }
+    };
+    if let Some(old_sid) = evict {
+        warn!("relay session limit reached, evict oldest session {}", old_sid);
+        stop_relay(&old_sid).await;
+    } else if RELAY_SESSIONS.lock().unwrap().len() >= MAX_SESSIONS {
+        let _ = std::fs::remove_dir_all(&folder);
+        RELAY_STARTING.lock().unwrap().remove(&sid);
+        return Err("relay session limit reached".to_string());
+    }
+
+    let session = Arc::new(RelaySession {
+        sid: sid.clone(),
+        url: url.clone(),
+        folder: folder.clone(),
+        child,
+        started_at: now_secs(),
+        last_active: Arc::new(AtomicU64::new(now_secs())),
+        last_heartbeat: Arc::new(AtomicU64::new(now_secs())),
+        hls_time,
+        keep_segments,
+        manual,
+        engine: engine.clone(),
+        cancelled: cancelled.clone(),
+    });
+    RELAY_SESSIONS.lock().unwrap().insert(sid.clone(), session);
+    RELAY_STARTING.lock().unwrap().remove(&sid);
+    info!("relay session {} started for {}", sid, url);
+
+    Ok(RelayStartResp {
+        playlist_url: format!("/api/player/relay/{}/index.m3u8", sid),
+        sid,
+        hls_time,
+        keep_segments,
+        manual,
+        engine,
+        msg: "relay session started".to_string(),
+    })
+}
+
+/// 启动 ffmpeg 切片引擎，返回子进程
+async fn spawn_ffmpeg_engine(
+    url: &str,
+    headers: &HashMap<String, String>,
+    hls_time: u32,
+    keep_segments: u32,
+    folder: &std::path::Path,
+) -> Result<tokio::process::Child, String> {
     // 优先使用项目自带的 ffmpeg（tools/ffmpeg/ffmpeg.exe），
     // 部分 IPTV 源与系统新版 ffmpeg 存在兼容问题（如 mp2/mp3 流变化）
     let ffmpeg_bin = if std::path::Path::new("./tools/ffmpeg/ffmpeg.exe").exists() {
@@ -472,7 +573,7 @@ pub async fn start_relay(
         cmd.arg("-headers").arg(header_str);
     }
     cmd.arg("-i")
-        .arg(&url)
+        .arg(url)
         // 只保留首条视频/音频流（音频可选），避免多音轨导致播放器异常
         .arg("-map")
         .arg("0:v:0")
@@ -487,7 +588,7 @@ pub async fn start_relay(
     // 避免出现「只有声音没有画面」的问题
     let mut need_transcode = false;
     if url.starts_with("http") {
-        let codec = probe_video_codec(&url).await;
+        let codec = probe_video_codec(url).await;
         if let Some(c) = codec.as_deref() {
             need_transcode = c != "h264";
             if need_transcode {
@@ -507,11 +608,9 @@ pub async fn start_relay(
             .arg("-bufsize")
             .arg("6000k");
     } else {
-        cmd.arg("-c:v")
-            .arg("copy");
+        cmd.arg("-c:v").arg("copy");
     }
-    cmd
-        .arg("-f")
+    cmd.arg("-f")
         .arg("hls")
         .arg("-hls_time")
         .arg(hls_time.to_string())
@@ -527,96 +626,437 @@ pub async fn start_relay(
             std::fs::File::create(folder.join("ffmpeg.log"))
                 .map_err(|e| format!("create log file failed: {}", e))?,
         ));
-
-    let child = match cmd.spawn() {
-        Ok(c) => c,
-        Err(e) => {
-            let _ = std::fs::remove_dir_all(&folder);
-            RELAY_STARTING.lock().unwrap().remove(&sid);
-            if e.kind() == std::io::ErrorKind::NotFound {
-                return Err(
-                    "ffmpeg not found on server, install ffmpeg to enable relay mode".to_string(),
-                );
-            }
-            return Err(format!("spawn ffmpeg failed: {}", e));
-        }
-    };
-
-    // 会话数达到上限时，淘汰最久没有心跳的桌面端会话（手动添加的会话永不淘汰）
-    let evict = {
-        let map = RELAY_SESSIONS.lock().unwrap();
-        if map.len() >= MAX_SESSIONS {
-            map.values()
-                .filter(|s| !s.manual)
-                .min_by_key(|s| s.last_heartbeat.load(Ordering::Relaxed))
-                .map(|s| s.sid.clone())
+    cmd.spawn().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            "ffmpeg not found on server, install ffmpeg to enable relay mode".to_string()
         } else {
-            None
+            format!("spawn ffmpeg failed: {}", e)
         }
-    };
-    if let Some(old_sid) = evict {
-        warn!("relay session limit reached, evict oldest session {}", old_sid);
-        stop_relay(&old_sid).await;
-    } else if RELAY_SESSIONS.lock().unwrap().len() >= MAX_SESSIONS {
-        let _ = std::fs::remove_dir_all(&folder);
-        RELAY_STARTING.lock().unwrap().remove(&sid);
-        return Err("relay session limit reached".to_string());
-    }
-
-    let session = Arc::new(RelaySession {
-        sid: sid.clone(),
-        url: url.clone(),
-        folder: folder.clone(),
-        child: Arc::new(Mutex::new(child)),
-        started_at: now_secs(),
-        last_active: Arc::new(AtomicU64::new(now_secs())),
-        last_heartbeat: Arc::new(AtomicU64::new(now_secs())),
-        hls_time,
-        keep_segments,
-        manual,
-    });
-    RELAY_SESSIONS.lock().unwrap().insert(sid.clone(), session);
-    RELAY_STARTING.lock().unwrap().remove(&sid);
-    info!("relay session {} started for {}", sid, url);
-
-    Ok(RelayStartResp {
-        playlist_url: format!("/api/player/relay/{}/index.m3u8", sid),
-        sid,
-        hls_time,
-        keep_segments,
-        manual,
-        msg: "relay session started".to_string(),
     })
 }
 
-/// 停止并清理一个中继会话
+// ============================== HTTP 直传引擎（纯 HTTP 下载 TS） ==============================
+
+/// 取片段文件后缀（忽略查询参数，只按路径推断）
+fn segment_ext(uri: &str) -> &'static str {
+    let path = uri.split('?').next().unwrap_or(uri);
+    match path.rsplit('.').next().unwrap_or("ts") {
+        "m4s" => "m4s",
+        "aac" => "aac",
+        _ => "ts",
+    }
+}
+
+/// 解析 HLS playlist：返回 (头部行, (EXTINF, uri) 列表, target_duration, media_sequence, 不支持特性)
+fn parse_hls_playlist(text: &str) -> (Vec<String>, Vec<(String, String)>, u64, u64, bool) {
+    let mut header: Vec<String> = Vec::new();
+    let mut entries: Vec<(String, String)> = Vec::new();
+    let mut td: u64 = 6;
+    let mut seq: u64 = 0;
+    let mut pending_extinf: Option<String> = None;
+    let mut unsupported = false;
+    for line in text.lines() {
+        let t = line.trim();
+        if t.is_empty() {
+            continue;
+        }
+        if t.starts_with("#EXTINF") {
+            pending_extinf = Some(t.to_string());
+        } else if t.starts_with('#') {
+            if t.starts_with("#EXT-X-TARGETDURATION:") {
+                td = t
+                    .trim_start_matches("#EXT-X-TARGETDURATION:")
+                    .parse()
+                    .unwrap_or(6);
+            } else if t.starts_with("#EXT-X-MEDIA-SEQUENCE:") {
+                seq = t
+                    .trim_start_matches("#EXT-X-MEDIA-SEQUENCE:")
+                    .parse()
+                    .unwrap_or(0);
+            } else if t.starts_with("#EXT-X-BYTERANGE") || t.starts_with("#EXT-X-MAP") {
+                unsupported = true;
+            }
+            header.push(t.to_string());
+        } else if let Some(extinf) = pending_extinf.take() {
+            entries.push((extinf, t.to_string()));
+        }
+    }
+    (header, entries, td, seq, unsupported)
+}
+
+/// GET 文本（带 UA 等自定义头），15s 超时
+async fn http_get_text(
+    client: &reqwest::Client,
+    url: &str,
+    headers: &HashMap<String, String>,
+) -> Result<String, String> {
+    let mut req = client.get(url).timeout(std::time::Duration::from_secs(20));
+    for (k, v) in headers {
+        req = req.header(k.as_str(), v.as_str());
+    }
+    let resp = req.send().await.map_err(|e| format!("GET {}: {}", url, e))?;
+    if !resp.status().is_success() {
+        return Err(format!("GET {} -> {}", url, resp.status()));
+    }
+    resp.text().await.map_err(|e| format!("read {}: {}", url, e))
+}
+
+/// GET 二进制（下载 TS 片段/密钥），20s 超时
+async fn http_get_bytes(
+    client: &reqwest::Client,
+    url: &str,
+    headers: &HashMap<String, String>,
+) -> Result<Vec<u8>, String> {
+    // 慢源一个 2~3MB 分片可能要 25~30s，放宽到 60s，避免慢速源永远下不完分片
+    let mut req = client.get(url).timeout(std::time::Duration::from_secs(60));
+    for (k, v) in headers {
+        req = req.header(k.as_str(), v.as_str());
+    }
+    let resp = req.send().await.map_err(|e| format!("GET {}: {}", url, e))?;
+    if !resp.status().is_success() {
+        return Err(format!("GET {} -> {}", url, resp.status()));
+    }
+    resp.bytes()
+        .await
+        .map(|b| b.to_vec())
+        .map_err(|e| format!("read {}: {}", url, e))
+}
+
+/// 拉取源 playlist；若是 master（多码率）自动选择最高带宽变体，返回 (最终 playlist URL, 文本)
+async fn fetch_playlist_resolved(
+    client: &reqwest::Client,
+    mut url: String,
+    headers: &HashMap<String, String>,
+) -> Result<(String, String), String> {
+    for _ in 0..4 {
+        let text = http_get_text(client, &url, headers).await?;
+        if !text.contains("#EXT-X-STREAM-INF") {
+            return Ok((url, text));
+        }
+        // master playlist：挑 BANDWIDTH 最高的变体
+        let mut best_bw: u64 = 0;
+        let mut best_uri: Option<String> = None;
+        let mut last_bw: Option<u64> = None;
+        for line in text.lines() {
+            let t = line.trim();
+            if t.starts_with("#EXT-X-STREAM-INF") {
+                last_bw = t
+                    .split("BANDWIDTH=")
+                    .nth(1)
+                    .and_then(|s| s.split(|c: char| c == ',' || c.is_whitespace()).next())
+                    .and_then(|s| s.parse::<u64>().ok());
+            } else if !t.starts_with('#') && !t.is_empty() {
+                let bw = last_bw.take().unwrap_or(0);
+                if best_uri.is_none() || bw >= best_bw {
+                    best_bw = bw;
+                    best_uri = Some(t.to_string());
+                }
+            }
+        }
+        let Some(uri) = best_uri else {
+            return Err("master playlist has no variants".to_string());
+        };
+        let base = url::Url::parse(&url).map_err(|e| format!("bad url: {}", e))?;
+        url = resolve_uri(&base, &uri).ok_or_else(|| "bad variant uri".to_string())?;
+    }
+    Err("too many playlist redirects".to_string())
+}
+
+/// 探测并启动 http 直传引擎（后台任务），成功返回 Ok
+async fn spawn_http_engine(
+    url: &str,
+    headers: &HashMap<String, String>,
+    folder: &std::path::Path,
+    sid: &str,
+    keep_segments: u32,
+    cancelled: Arc<AtomicBool>,
+) -> Result<(), String> {
+    let client = crate::common::util::get_http_client();
+    let (resolved, text) = fetch_playlist_resolved(&client, url.to_string(), headers).await?;
+    let (_h, entries, _td, _seq, unsupported) = parse_hls_playlist(&text);
+    if unsupported {
+        return Err("playlist uses byterange/fmp4, not supported by http engine".to_string());
+    }
+    if entries.is_empty() {
+        return Err("no segments found in playlist".to_string());
+    }
+    let folder = folder.to_path_buf();
+    let sid = sid.to_string();
+    let headers = headers.clone();
+    tokio::spawn(async move {
+        run_http_relay_loop(resolved, headers, folder, sid, keep_segments, cancelled).await;
+    });
+    Ok(())
+}
+
+/// http 直传引擎主循环：
+/// - 每 1~2 秒轮询源 playlist，先用「已完整下载」的分片重写本地 playlist（不受下载速度阻塞）；
+/// - 下载以独立后台任务并发执行（4 并发、带超时、失败重试），完成一个就进 playlist；
+/// - 最新分片优先下载，保证本地 playlist 紧跟源站时间轴。
+async fn run_http_relay_loop(
+    playlist_url: String,
+    headers: HashMap<String, String>,
+    folder: std::path::PathBuf,
+    sid: String,
+    keep_segments: u32,
+    cancelled: Arc<AtomicBool>,
+) {
+    let client = crate::common::util::get_http_client();
+    let base = match url::Url::parse(&playlist_url) {
+        Ok(u) => u,
+        Err(_) => return,
+    };
+    // seq -> (extinf, uri)
+    let mut known: std::collections::BTreeMap<u64, (String, String)> = std::collections::BTreeMap::new();
+    // 已完整下载的分片 seq（后台任务写、主循环读）
+    let downloaded: Arc<Mutex<HashSet<u64>>> = Arc::new(Mutex::new(HashSet::new()));
+    // 正在下载的分片 seq（防止重复派发）
+    let in_flight: Arc<Mutex<HashSet<u64>>> = Arc::new(Mutex::new(HashSet::new()));
+    // 下载并发上限
+    let sem = Arc::new(tokio::sync::Semaphore::new(4));
+    let mut target_duration: u64 = 4;
+    // 源 key uri -> 本地文件名
+    let mut key_cache: HashMap<String, String> = HashMap::new();
+
+    loop {
+        if cancelled.load(Ordering::Relaxed) {
+            break;
+        }
+        // 1. 拉取最新源 playlist
+        let text = match http_get_text(&client, &playlist_url, &headers).await {
+            Ok(t) => t,
+            Err(e) => {
+                let _ = std::fs::write(folder.join("http.log"), format!("playlist: {}", e));
+                tokio::time::sleep(Duration::from_millis(1500)).await;
+                continue;
+            }
+        };
+        let (header_lines, entries, td, media_seq, unsupported) = parse_hls_playlist(&text);
+        if unsupported || entries.is_empty() {
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+            continue;
+        }
+        target_duration = td;
+        for (i, (extinf, uri)) in entries.iter().enumerate() {
+            known.insert(media_seq + i as u64, (extinf.clone(), uri.clone()));
+        }
+        // 裁剪过老的记录，防止内存无限增长
+        if known.len() > keep_segments as usize * 4 + 20 {
+            let drop_n = known.len() - (keep_segments as usize * 4 + 20);
+            for _ in 0..drop_n {
+                let first = known.keys().next().cloned();
+                if let Some(k) = first {
+                    known.remove(&k);
+                }
+            }
+        }
+
+        // 2. 先重写本地 playlist（只依赖已完成的分片，快路径）
+        let window = keep_segments.max(5) as usize;
+        let mut include: Vec<u64> = Vec::new();
+        {
+            let dls = downloaded.lock().unwrap();
+            for s in known.keys().rev() {
+                if include.len() >= window {
+                    break;
+                }
+                if dls.contains(s) {
+                    include.push(*s);
+                }
+            }
+        }
+        include.reverse();
+        if !include.is_empty() {
+            let mut out = String::new();
+            out.push_str("#EXTM3U\n");
+            for line in &header_lines {
+                if line.starts_with("#EXT-X-KEY") {
+                    if let Some(uri) = line.split("URI=\"").nth(1).and_then(|s| s.split('"').next()) {
+                        if !uri.starts_with("http") {
+                            continue;
+                        }
+                        let key_file = match key_cache.get(uri) {
+                            Some(f) => f.clone(),
+                            None => {
+                                let abs = resolve_uri(&base, uri).unwrap_or_else(|| uri.to_string());
+                                let fname = format!("key_{:02}.bin", key_cache.len());
+                                let mut ok = false;
+                                for _attempt in 0..2 {
+                                    if let Ok(bytes) = http_get_bytes(&client, &abs, &headers).await {
+                                        if std::fs::write(folder.join(&fname), &bytes).is_ok() {
+                                            ok = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                                if ok {
+                                    key_cache.insert(uri.to_string(), fname.clone());
+                                    fname
+                                } else {
+                                    continue;
+                                }
+                            }
+                        };
+                        let rewritten = line.replace(
+                            &format!("\"{}\"", uri),
+                            &format!("\"/api/player/relay/{}/{}\"", sid, key_file),
+                        );
+                        out.push_str(&rewritten);
+                        out.push('\n');
+                    }
+                    continue;
+                }
+                if line.starts_with("#EXT-X-STREAM-INF")
+                    || line.starts_with("#EXT-X-MEDIA-SEQUENCE")
+                    || line.starts_with("#EXTM3U")
+                {
+                    continue; // 这些行由本地 playlist 重新生成
+                }
+                out.push_str(line);
+                out.push('\n');
+            }
+            out.push_str(&format!("#EXT-X-MEDIA-SEQUENCE:{}\n", include[0]));
+            for s in &include {
+                let (extinf, uri) = known.get(s).unwrap();
+                out.push_str(extinf);
+                out.push('\n');
+                let ext = segment_ext(uri);
+                out.push_str(&format!("seg_{:05}.{}\n", s, ext));
+            }
+            let _ = std::fs::write(folder.join("index.m3u8"), &out);
+        }
+
+        // 3. 派发缺失分片的下载（最新优先；跳过最后一段——源站可能还在写）
+        let last_idx = entries.len().saturating_sub(1);
+        for (i, (_extinf, uri)) in entries.iter().enumerate().rev() {
+            if i >= last_idx {
+                continue;
+            }
+            let seq = media_seq + i as u64;
+            {
+                let dls = downloaded.lock().unwrap();
+                let inf = in_flight.lock().unwrap();
+                if dls.contains(&seq) || inf.contains(&seq) || inf.len() >= 12 {
+                    continue;
+                }
+            }
+            let Ok(permit) = sem.clone().try_acquire_owned() else {
+                break; // 并发已满，下一轮再派发
+            };
+            in_flight.lock().unwrap().insert(seq);
+            let client = client.clone();
+            let headers = headers.clone();
+            let base = base.clone();
+            let folder = folder.clone();
+            let downloaded = downloaded.clone();
+            let in_flight = in_flight.clone();
+            let cancelled = cancelled.clone();
+            let uri = uri.clone();
+            tokio::spawn(async move {
+                let _permit = permit;
+                let abs = resolve_uri(&base, &uri).unwrap_or_else(|| uri.clone());
+                let mut ok = false;
+                for attempt in 0..2 {
+                    if cancelled.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    match http_get_bytes(&client, &abs, &headers).await {
+                        Ok(bytes) if !bytes.is_empty() => {
+                            let ext = segment_ext(&abs);
+                            let fname = format!("seg_{:05}.{}", seq, ext);
+                            ok = std::fs::write(folder.join(&fname), &bytes).is_ok();
+                            break;
+                        }
+                        _ => {
+                            if attempt == 0 {
+                                tokio::time::sleep(Duration::from_millis(300)).await;
+                            }
+                        }
+                    }
+                }
+                if ok {
+                    downloaded.lock().unwrap().insert(seq);
+                }
+                in_flight.lock().unwrap().remove(&seq);
+            });
+        }
+
+        // 4. 清理窗口外的旧段文件与陈旧记录
+        if let Ok(rd) = std::fs::read_dir(&folder) {
+            let keep: HashSet<String> = include.iter().map(|s| format!("seg_{:05}", s)).collect();
+            for e in rd.flatten() {
+                let name = e.file_name().to_string_lossy().to_string();
+                if name.starts_with("seg_")
+                    && !keep.iter().any(|k| name.starts_with(k.as_str()))
+                {
+                    let _ = std::fs::remove_file(folder.join(&name));
+                }
+            }
+        }
+        let _ = std::fs::write(
+            folder.join("http.log"),
+            format!("ok, window {} segments", include.len()),
+        );
+        // 5. 轮询周期：目标时长 1/3，限制 0.8~2s，保证紧跟源站
+        let wait_ms = (target_duration * 300).clamp(800, 2000);
+        tokio::time::sleep(Duration::from_millis(wait_ms)).await;
+    }
+    info!("http relay loop for session {} stopped", sid);
+}
+
+/// 停止并清理一个中继会话（含删除已缓存的 TS 文件）
 pub async fn stop_relay(sid: &str) -> bool {
     let session = RELAY_SESSIONS.lock().unwrap().remove(sid);
     let Some(session) = session else {
         return false;
     };
+    // 先取消 http 引擎的后台任务（若引擎是 ffmpeg 则无影响）
+    session.cancelled.store(true, Ordering::SeqCst);
     // 解开外层 Arc，取得会话所有权
     let session = match Arc::try_unwrap(session) {
         Ok(s) => s,
         Err(_) => return false,
     };
-    // 取出子进程所有权，避免在 await 期间持有互斥锁（保证 future 可 Send）
-    let mut child = match Arc::try_unwrap(session.child) {
-        Ok(mutex) => mutex.into_inner().unwrap_or_else(|e| e.into_inner()),
-        Err(arc) => {
-            // 极少数情况下仍有其它请求持有该 Arc：直接发送终止信号，
-            // 目录清理交给后台孤儿目录扫描任务
-            let mut guard = arc.lock().unwrap();
-            let _ = guard.start_kill();
-            drop(guard);
-            info!("relay session {} stop signal sent", sid);
-            return true;
+    // 取出 ffmpeg 子进程所有权，避免在 await 期间持有互斥锁（保证 future 可 Send）
+    if let Some(child_arc) = session.child {
+        let mut child = match Arc::try_unwrap(child_arc) {
+            Ok(mutex) => mutex.into_inner().unwrap_or_else(|e| e.into_inner()),
+            Err(arc) => {
+                // 极少数情况下仍有其它请求持有该 Arc：直接发送终止信号，
+                // 目录清理交给后台孤儿目录扫描任务
+                let mut guard = arc.lock().unwrap();
+                let _ = guard.start_kill();
+                drop(guard);
+                info!("relay session {} stop signal sent", sid);
+                return true;
+            }
+        };
+        let _ = child.start_kill();
+        let _ = child.wait().await;
+    }
+    // 删除缓存目录；播放器可能仍持有文件句柄（正在拉取片段），重试若干次
+    let mut removed = false;
+    for attempt in 0..5 {
+        match std::fs::remove_dir_all(&session.folder) {
+            Ok(()) => {
+                removed = true;
+                break;
+            }
+            Err(e) => {
+                if attempt == 4 {
+                    warn!("remove relay folder {} failed: {}", session.folder.display(), e);
+                } else {
+                    tokio::time::sleep(Duration::from_millis(400)).await;
+                }
+            }
         }
-    };
-    let _ = child.start_kill();
-    let _ = child.wait().await;
-    let _ = std::fs::remove_dir_all(&session.folder);
-    info!("relay session {} stopped", sid);
+    }
+    if !removed {
+        // 删除失败的文件留给后台孤儿目录扫描任务后续清理
+        info!("relay session {} stopped (folder cleanup deferred)", sid);
+    } else {
+        info!("relay session {} stopped", sid);
+    }
     true
 }
 
@@ -637,6 +1077,8 @@ pub struct RelayStatusResp {
     pub manual: bool,
     /// 距上次心跳的秒数（仅桌面端会话有自动停止要求）
     pub heartbeat_secs: u64,
+    /// 引擎类型：http / ffmpeg
+    pub engine: String,
 }
 
 /// 读取文件尾部若干字节（用于展示 ffmpeg 报错）
@@ -664,15 +1106,20 @@ fn tail_file(path: &Path, max_bytes: usize) -> String {
 pub fn relay_status(sid: &str) -> Option<RelayStatusResp> {
     let map = RELAY_SESSIONS.lock().unwrap();
     let session = map.get(sid)?;
-    let alive = match session.child.lock().unwrap().try_wait() {
-        Ok(None) => true,
-        _ => false,
+    let alive = match session.child.as_ref() {
+        Some(c) => matches!(c.lock().unwrap().try_wait(), Ok(None)),
+        None => !session.cancelled.load(Ordering::Relaxed),
     };
     let playlist_ready = session.folder.join("index.m3u8").is_file();
     let segment_count = std::fs::read_dir(&session.folder)
         .map(|d| {
             d.flatten()
-                .filter(|e| e.path().extension().map(|x| x == "ts").unwrap_or(false))
+                .filter(|e| {
+                    e.path()
+                        .extension()
+                        .map(|x| matches!(x.to_str(), Some("ts") | Some("m4s") | Some("aac")))
+                        .unwrap_or(false)
+                })
                 .count()
         })
         .unwrap_or(0);
@@ -689,9 +1136,14 @@ pub fn relay_status(sid: &str) -> Option<RelayStatusResp> {
         hls_time: session.hls_time,
         keep_segments: session.keep_segments,
         segment_count,
-        last_error: tail_file(&session.folder.join("ffmpeg.log"), 4000),
+        last_error: if session.engine == "http" {
+            tail_file(&session.folder.join("http.log"), 4000)
+        } else {
+            tail_file(&session.folder.join("ffmpeg.log"), 4000)
+        },
         manual: session.manual,
         heartbeat_secs: now.saturating_sub(session.last_heartbeat.load(Ordering::Relaxed)),
+        engine: session.engine.clone(),
     })
 }
 
@@ -706,7 +1158,10 @@ pub fn spawn_cleanup_task() {
                 let map = RELAY_SESSIONS.lock().unwrap();
                 map.values()
                     .filter(|s| {
-                        let dead = matches!(s.child.lock().unwrap().try_wait(), Ok(Some(_)) | Err(_));
+                        let dead = match s.child.as_ref() {
+                            Some(c) => matches!(c.lock().unwrap().try_wait(), Ok(Some(_)) | Err(_)),
+                            None => s.cancelled.load(Ordering::Relaxed),
+                        };
                         if s.manual {
                             // 手动添加的 m3u8 会话：永不自动停止，由用户手动停止
                             false
@@ -750,6 +1205,7 @@ async fn relay_start(req: web::Json<RelayStartReq>) -> impl Responder {
         req.hls_time,
         req.keep_segments,
         req.manual,
+        req.mode.clone(),
     )
     .await
     {
@@ -804,7 +1260,10 @@ async fn relay_heartbeat(path: web::Path<String>) -> impl Responder {
         return HttpResponse::NotFound().json(serde_json::json!({ "msg": "session not found" }));
     };
     session.last_heartbeat.store(now_secs(), Ordering::Relaxed);
-    let alive = matches!(session.child.lock().unwrap().try_wait(), Ok(None));
+    let alive = match session.child.as_ref() {
+        Some(c) => matches!(c.lock().unwrap().try_wait(), Ok(None)),
+        None => !session.cancelled.load(Ordering::Relaxed),
+    };
     HttpResponse::Ok().json(serde_json::json!({ "sid": sid, "alive": alive }))
 }
 
@@ -881,7 +1340,8 @@ async fn relay_file(path: web::Path<(String, String)>, req: HttpRequest) -> impl
     // 记录活动时间与心跳（播放器持续拉流等价于“仍在播放”的心跳）
     session.last_active.store(now_secs(), Ordering::Relaxed);
     session.last_heartbeat.store(now_secs(), Ordering::Relaxed);
-    // playlist 特殊处理：隐藏 live edge（最新 1 个正在写入的分片），避免卡顿
+    // playlist 特殊处理：ffmpeg 引擎隐藏 live edge（最新 1 个正在写入的分片）；
+    // http 引擎生成的 playlist 只含完整片段，且下载时已跳过源站的 live edge，无需再隐藏
     if file.ends_with(".m3u8") {
         let content = match std::fs::read_to_string(&full) {
             Ok(c) => c,
@@ -890,7 +1350,8 @@ async fn relay_file(path: web::Path<(String, String)>, req: HttpRequest) -> impl
                 return HttpResponse::InternalServerError().body("read playlist failed");
             }
         };
-        let rewritten = hide_live_edge(&content, 1);
+        let hide = if session.engine == "http" { 0 } else { 1 };
+        let rewritten = hide_live_edge(&content, hide);
         return HttpResponse::Ok()
             .insert_header(("Content-Type", "application/vnd.apple.mpegurl"))
             .insert_header(("Cache-Control", "no-store"))

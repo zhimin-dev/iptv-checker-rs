@@ -4,9 +4,115 @@ use crate::common::util::from_video_resolution;
 use crate::common::{AudioInfo, CheckOptions, SearchOptions, VideoInfo};
 use crate::config::favourite::get_favourite_list;
 use crate::r#const::constant::{INPUT_SEARCH_FOLDER, OUTPUT_FOLDER};
+use lazy_static::lazy_static;
 use log::info;
 use serde::{Deserialize, Serialize};
 use std::fmt::Error;
+use std::sync::Mutex;
+
+lazy_static! {
+    /// 本次检测被 body 校验直接丢弃的无效 m3u8 数量（检测报告统计用，每次检测开始前清零）
+    pub static ref CHECK_REPORT_INVALID_M3U8: Mutex<u64> = Mutex::new(0);
+}
+
+/// 取 URL 的 path 部分（去掉查询参数/锚点）并转小写
+fn url_path_lower(url: &str) -> String {
+    let path = url.split(|c: char| c == '?' || c == '#').next().unwrap_or(url);
+    path.to_ascii_lowercase()
+}
+
+/// 判断 URL 是否为 m3u8 后缀（忽略大小写与查询参数/锚点）
+pub fn url_is_m3u8(url: &str) -> bool {
+    url_path_lower(url).ends_with(".m3u8")
+}
+
+/// m3u8 链接预校验：HTTP 拉取 body（最多读前 4KB），检查是否为正规 m3u8
+async fn http_body_is_m3u8(url: &str, timeout_ms: u64) -> Result<bool, std::io::Error> {
+    let client = crate::common::util::get_http_client();
+    // 预校验用较短超时（最多 10s），死链快速失败
+    let t = timeout_ms.min(10_000);
+    let resp = client
+        .get(url)
+        .timeout(std::time::Duration::from_millis(t))
+        .send()
+        .await
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("GET failed: {}", e)))?;
+    if !resp.status().is_success() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("status {}", resp.status()),
+        ));
+    }
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("read failed: {}", e)))?;
+    let head = String::from_utf8_lossy(&bytes[..bytes.len().min(4096)]).to_string();
+    Ok(crate::common::util::check_body_is_m3u8_format(head))
+}
+
+/// 检测报告：按格式统计一次检查的结果
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CheckReport {
+    pub output_id: String,
+    pub generated_at: u64,
+    pub total: usize,
+    pub m3u8_total: usize,
+    pub m3u8_invalid: usize,
+    pub rtmp: usize,
+    pub rtsp: usize,
+    pub flv: usize,
+    pub ts: usize,
+    pub mp4: usize,
+    pub other: usize,
+    pub success: usize,
+    pub failed: usize,
+}
+
+fn build_check_report(data: &crate::common::M3uObjectList, output_id: &str) -> CheckReport {
+    let mut r = CheckReport {
+        output_id: output_id.to_string(),
+        generated_at: chrono::Utc::now().timestamp() as u64,
+        total: 0,
+        m3u8_total: 0,
+        m3u8_invalid: 0,
+        rtmp: 0,
+        rtsp: 0,
+        flv: 0,
+        ts: 0,
+        mp4: 0,
+        other: 0,
+        success: 0,
+        failed: 0,
+    };
+    for obj in data.get_list_ref() {
+        r.total += 1;
+        let url = obj.get_url();
+        let path = url_path_lower(&url);
+        if path.ends_with(".m3u8") {
+            r.m3u8_total += 1;
+        } else if url.starts_with("rtmp://") {
+            r.rtmp += 1;
+        } else if url.starts_with("rtsp://") {
+            r.rtsp += 1;
+        } else if path.ends_with(".flv") {
+            r.flv += 1;
+        } else if path.ends_with(".ts") {
+            r.ts += 1;
+        } else if path.ends_with(".mp4") {
+            r.mp4 += 1;
+        } else {
+            r.other += 1;
+        }
+        match obj.get_status() {
+            crate::common::CheckDataStatus::Success => r.success += 1,
+            crate::common::CheckDataStatus::Failed => r.failed += 1,
+            _ => {}
+        }
+    }
+    r.m3u8_invalid = *CHECK_REPORT_INVALID_M3U8.lock().unwrap() as usize;
+    r
+}
 
 /// URL检查响应结构体
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -374,6 +480,24 @@ pub mod check {
         ffmpeg_check: bool,
         not_http_skip: bool,
     ) -> Result<CheckUrlIsAvailableResponse, Error> {
+        // m3u8 后缀的链接先做 HTTP body 预校验：
+        // 不是正规 m3u8（或拉不到 body）的直接丢弃，不再浪费 ffprobe 检测时间，
+        // 保证交给 ffprobe 的都是合法链接
+        if super::url_is_m3u8(&_url) {
+            match super::http_body_is_m3u8(&_url, timeout).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    *super::CHECK_REPORT_INVALID_M3U8.lock().unwrap() += 1;
+                    return Err(Error::new(ErrorKind::Other, "not a valid m3u8 playlist"));
+                }
+                Err(e) => {
+                    return Err(Error::new(
+                        ErrorKind::Other,
+                        format!("m3u8 body check failed: {}", e),
+                    ));
+                }
+            }
+        }
         if ffmpeg_check {
             let res = run_command_with_timeout_new(_url.to_owned(), timeout).await;
             return match res {
@@ -531,7 +655,11 @@ pub async fn get_favourite_channel(channel_type: String) -> Result<String, Error
         }
     };
     if !host.is_empty() {
-        let logos_map = crate::config::logos::get_logos_map();
+        // 统一频道图标配置优先，旧 logos.json 作为兜底
+        let mut logos_map = crate::config::channel_icons::get_logo_map();
+        for (k, v) in crate::config::logos::get_logos_map() {
+            logos_map.entry(k).or_insert(v);
+        }
         data.replace_logos(host, &logos_map);
     }
     return Ok(data.get_m3u_content_str(rename_channel_type,false));
@@ -577,6 +705,8 @@ pub async fn do_check(
         exclude_host: vec![],
     })
     .await;
+    // 重置本次检测的无效 m3u8 计数
+    *CHECK_REPORT_INVALID_M3U8.lock().unwrap() = 0;
     // 过滤黑名单源（连续失败达到阈值的源直接跳过，提升检查速度）
     let blacklisted = crate::check_blacklist::get_blacklisted_urls();
     if !blacklisted.is_empty() {
@@ -619,6 +749,27 @@ pub async fn do_check(
         info!("输出文件: {}", output_file);
     }
     data.save_raw_data(output_file);
+    // 生成并保存检测报告（按格式统计，方便后期人工查看）
+    let report = build_check_report(&data, &output_id);
+    let report_path = format!("{}{}_report.json", OUTPUT_FOLDER, output_id);
+    if let Ok(json) = serde_json::to_string_pretty(&report) {
+        let _ = std::fs::write(&report_path, json);
+    }
+    info!(
+        "检测报告[{}]: 总数 {} | m3u8 {} (无效 {}) | rtmp {} | rtsp {} | flv {} | ts {} | mp4 {} | 其他 {} | 成功 {} | 失败 {}",
+        output_id,
+        report.total,
+        report.m3u8_total,
+        report.m3u8_invalid,
+        report.rtmp,
+        report.rtsp,
+        report.flv,
+        report.ts,
+        report.mp4,
+        report.other,
+        report.success,
+        report.failed,
+    );
     // 导出数据
     if export_file {
         data.output_file(

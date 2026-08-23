@@ -20,7 +20,7 @@ use actix_files as actix_fs;
 use actix_files::NamedFile;
 use actix_multipart::form::{tempfile::TempFile, MultipartForm};
 use actix_web::middleware::Logger;
-use actix_web::{get, post, web, App, HttpResponse, HttpServer, Responder};
+use actix_web::{delete, get, post, web, App, HttpResponse, HttpServer, Responder};
 use chrono::Local;
 use clokwerk::{Scheduler, TimeUnits};
 use log::{debug, error, info};
@@ -199,6 +199,53 @@ async fn system_clear_search_folder() -> impl Responder {
                 .json(serde_json::json!({"msg": "internal error, clear search folder failed"}))
         }
     }
+}
+
+/// 列出最近的检测报告（按格式统计，方便后期人工查看）；可选 output_id 过滤某个任务的报告
+#[get("/system/check-reports")]
+async fn system_check_reports(q: web::Query<CheckReportsQuery>) -> impl Responder {
+    let mut reports: Vec<(u64, String)> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(crate::r#const::constant::OUTPUT_FOLDER) {
+        for entry in rd.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !name.ends_with("_report.json") {
+                continue;
+            }
+            if let Some(oid) = &q.output_id {
+                if !oid.is_empty() && name != format!("{}_report.json", oid) {
+                    continue;
+                }
+            }
+            let modified = entry
+                .metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            reports.push((modified, name));
+        }
+    }
+    reports.sort_by(|a, b| b.0.cmp(&a.0));
+    let list: Vec<serde_json::Value> = reports
+        .into_iter()
+        .take(20)
+        .filter_map(|(modified, name)| {
+            let path = format!("{}{}", crate::r#const::constant::OUTPUT_FOLDER, name);
+            let content = std::fs::read_to_string(&path).ok()?;
+            let mut v: serde_json::Value = serde_json::from_str(&content).ok()?;
+            v["file"] = serde_json::json!(name);
+            v["modified"] = serde_json::json!(modified);
+            Some(v)
+        })
+        .collect();
+    HttpResponse::Ok().json(serde_json::json!({ "list": list }))
+}
+
+/// 检测报告查询参数
+#[derive(serde::Deserialize)]
+pub struct CheckReportsQuery {
+    pub output_id: Option<String>,
 }
 
 /// 初始化今日搜索数据的API端点
@@ -680,8 +727,57 @@ async fn upload_logos(MultipartForm(form): MultipartForm<UploadLogosReq>) -> imp
     if let Err(e) = update_logos_json_file() {
         log::error!("Failed to update logos json: {}", e);
     }
+    // 同步创建统一频道图标配置条目（tvg-id / 分组留空，后续在「频道图标」页编辑）
+    for name in &uploaded_files {
+        let stem = std::path::Path::new(name)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(name)
+            .to_string();
+        crate::config::channel_icons::upsert_item(crate::config::channel_icons::ChannelIconItem {
+            name: stem,
+            aliases: vec![],
+            tvg_id: String::new(),
+            group: String::new(),
+            logo: format!("{}{}", LOGOS_FOLDER, name),
+        });
+    }
 
     HttpResponse::Ok().json(serde_json::json!({"msg": "success", "uploaded": uploaded_files}))
+}
+
+/// 保存统一频道图标配置的请求体
+#[derive(serde::Deserialize)]
+pub struct ChannelIconsSaveReq {
+    #[serde(default)]
+    pub items: Vec<crate::config::channel_icons::ChannelIconItem>,
+}
+
+/// 统一频道图标配置（频道图标 + 分组 + tvg-id 合并配置）
+async fn get_channel_icons_api() -> impl Responder {
+    let config = crate::config::channel_icons::get_channel_icons();
+    HttpResponse::Ok().json(serde_json::json!({
+        "items": config.items,
+        "total": config.items.len(),
+    }))
+}
+
+/// 全量保存统一频道图标配置
+async fn save_channel_icons_api(req: web::Json<ChannelIconsSaveReq>) -> impl Responder {
+    match crate::config::channel_icons::save_channel_icons(req.into_inner().items) {
+        Ok(()) => HttpResponse::Ok().json(serde_json::json!({ "msg": "success" })),
+        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({ "msg": e })),
+    }
+}
+
+/// 删除单个统一频道图标配置
+async fn delete_channel_icon_api(path: web::Path<String>) -> impl Responder {
+    let name = path.into_inner();
+    if crate::config::channel_icons::remove_item(&name) {
+        HttpResponse::Ok().json(serde_json::json!({ "msg": "deleted", "name": name }))
+    } else {
+        HttpResponse::NotFound().json(serde_json::json!({ "msg": "not found" }))
+    }
 }
 
 /// 获取Logo列表API端点
@@ -929,7 +1025,10 @@ pub async fn get_task_detail(
         }
     };
     // 获取处理后的M3U内容（type = "logo"）
-    let logos_map = crate::config::logos::get_logos_map();
+    let mut logos_map = crate::config::channel_icons::get_logo_map();
+    for (k, v) in crate::config::logos::get_logos_map() {
+        logos_map.entry(k).or_insert(v);
+    }
 let host = crate::config::base::get_effective_host();
     let mut check_result = Vec::new();
     // 获取任务内容（复用 get_task_content 的逻辑）
@@ -1056,7 +1155,10 @@ pub async fn get_task_content(
 
     // 4. 获取处理后的M3U内容（type = "logo"）
     // 使用 config 模块获取 logos 映射
-    let logos_map = crate::config::logos::get_logos_map();
+    let mut logos_map = crate::config::channel_icons::get_logo_map();
+    for (k, v) in crate::config::logos::get_logos_map() {
+        logos_map.entry(k).or_insert(v);
+    }
 
     // 读取 M3U 文件
     let m3u_content = match fs::read_to_string(&file_path) {
@@ -1410,6 +1512,7 @@ async fn system_import_config(
     let _ = crate::config::epg::reload_epg_map();
     let _ = crate::config::network::reload_network_map();
     let _ = crate::config::group::reload_group_mapping();
+    crate::config::channel_icons::reload();
 
     info!("Configuration imported successfully");
 
@@ -1521,7 +1624,10 @@ async fn q_m3u(req: web::Query<QRequest>) -> impl Responder {
     let file_name = format!("{}{}.json", OUTPUT_FOLDER, &req.c);
     let json_file = File::open(file_name.clone());
 
-    let logos_map = crate::config::logos::get_logos_map();
+    let mut logos_map = crate::config::channel_icons::get_logo_map();
+    for (k, v) in crate::config::logos::get_logos_map() {
+        logos_map.entry(k).or_insert(v);
+    }
 let host = crate::config::base::get_effective_host();
     let mut qualities: Vec<QualityType> = Vec::new();
     if req.q.is_some() {
@@ -1845,6 +1951,7 @@ async fn get_unmapped_epg_channels() -> impl Responder {
             .service(system_list_today_files)
             .service(system_clear_search_folder)
             .service(system_init_search_data)
+            .service(system_check_reports)
             .service(system_open_url)
             .service(system_get_favourite_channel)
             .service(system_save_favourite)
@@ -1874,6 +1981,9 @@ async fn get_unmapped_epg_channels() -> impl Responder {
             .app_data(web::Data::new(Arc::clone(&task_manager)))
             .route("/tasks/list", web::get().to(list_task))
             .route("/tasks/run", web::get().to(run_task))
+            .route("/media/channel-icons", web::get().to(get_channel_icons_api))
+            .route("/media/channel-icons", web::post().to(save_channel_icons_api))
+            .route("/media/channel-icons/{name}", web::delete().to(delete_channel_icon_api))
             .route("/tasks/update", web::post().to(update_task))
             .route("/tasks/add", web::post().to(add_task))
             .route("/tasks/delete/{id}", web::delete().to(delete_task))

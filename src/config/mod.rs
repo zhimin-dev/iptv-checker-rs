@@ -27,6 +27,9 @@ pub mod network;
 // 分组映射配置模块
 pub mod group;
 
+// 统一频道图标配置（频道图标 + 分组 + tvg-id 合并配置）
+pub mod channel_icons;
+
 // 导出file_config模块中的所有内容
 pub use task::file_config::*;
 

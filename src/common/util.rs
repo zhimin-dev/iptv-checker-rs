@@ -491,12 +491,29 @@ fn parse_one_m3u(_arr: Vec<&str>, index: i32) -> Option<M3uObject> {
                 ext.set_tv_id(epg_id);
             }
         }
-        // Apply local group mapping: tvg-name → group-title
-        if let Some(ref ext) = m3u_obj.get_extend_ref() {
-            if !ext.tv_name.is_empty() {
-                if let Some(mapped_group) = crate::config::group::get_group_for_channel(&ext.tv_name) {
-                    if let Some(ext_mut) = m3u_obj.get_extend_mut() {
-                        ext_mut.set_group_title(mapped_group);
+        // 统一频道图标配置：分组 + tvg-id（按 tvg-name / 频道名匹配，配置了才覆盖）
+        let icon_name = m3u_obj
+            .get_extend_ref()
+            .and_then(|e| if e.tv_name.is_empty() { None } else { Some(e.tv_name.clone()) })
+            .unwrap_or_else(|| name.to_string());
+        let icon_item = crate::config::channel_icons::find_for_channel(&icon_name);
+        if let Some(item) = icon_item {
+            if let Some(ext_mut) = m3u_obj.get_extend_mut() {
+                if !item.group.is_empty() {
+                    ext_mut.set_group_title(item.group.clone());
+                }
+                if !item.tvg_id.is_empty() {
+                    ext_mut.set_tv_id(item.tvg_id.clone());
+                }
+            }
+        } else {
+            // 回退：旧的 group.json 映射（tvg-name → group-title）
+            if let Some(ref ext) = m3u_obj.get_extend_ref() {
+                if !ext.tv_name.is_empty() {
+                    if let Some(mapped_group) = crate::config::group::get_group_for_channel(&ext.tv_name) {
+                        if let Some(ext_mut) = m3u_obj.get_extend_mut() {
+                            ext_mut.set_group_title(mapped_group);
+                        }
                     }
                 }
             }
@@ -563,14 +580,31 @@ pub fn parse_quota_str(_body: String) -> M3uObjectList {
                         ext.set_tv_id(epg_id);
                     }
                 }
-                // Apply local group mapping: tvg-name → group-title
+                // 统一频道图标配置：分组 + tvg-id（按 tvg-name / 频道名匹配，配置了才覆盖）
                 {
-                    let tv_name = m3u_obj.get_extend_ref()
-                        .and_then(|e| if e.tv_name.is_empty() { None } else { Some(e.tv_name.clone()) });
-                    if let Some(tvn) = tv_name {
-                        if let Some(mapped_group) = crate::config::group::get_group_for_channel(&tvn) {
-                            if let Some(ext) = m3u_obj.get_extend_mut() {
-                                ext.set_group_title(mapped_group);
+                    let icon_name = m3u_obj
+                        .get_extend_ref()
+                        .and_then(|e| if e.tv_name.is_empty() { None } else { Some(e.tv_name.clone()) })
+                        .unwrap_or_else(|| name.clone());
+                    let icon_item = crate::config::channel_icons::find_for_channel(&icon_name);
+                    if let Some(item) = icon_item {
+                        if let Some(ext) = m3u_obj.get_extend_mut() {
+                            if !item.group.is_empty() {
+                                ext.set_group_title(item.group.clone());
+                            }
+                            if !item.tvg_id.is_empty() {
+                                ext.set_tv_id(item.tvg_id.clone());
+                            }
+                        }
+                    } else {
+                        // 回退：旧的 group.json 映射（tvg-name → group-title）
+                        let tv_name = m3u_obj.get_extend_ref()
+                            .and_then(|e| if e.tv_name.is_empty() { None } else { Some(e.tv_name.clone()) });
+                        if let Some(tvn) = tv_name {
+                            if let Some(mapped_group) = crate::config::group::get_group_for_channel(&tvn) {
+                                if let Some(ext) = m3u_obj.get_extend_mut() {
+                                    ext.set_group_title(mapped_group);
+                                }
                             }
                         }
                     }

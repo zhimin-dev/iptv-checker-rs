@@ -1109,12 +1109,7 @@ pub async fn init_search_data() -> Result<(), Error> {
         Error::new(ErrorKind::Other, format!("Failed to check search data: {}", e))
     })?;
     if exists {
-        // 数据已存在时也按配置执行 logo 爬取（补齐之前未下载的台标）
-        if crate::config::search::get_search_config().auto_download_logos {
-            if let Ok(m3u_data) = load_m3u_data() {
-                crate::logo_crawl::crawl_logos(&m3u_data).await;
-            }
-        }
+        // 台标爬取已改为手动触发（「设置 → 爬取频道图标」页的「立即爬取台标」按钮）
         return Ok(());
     }
     // 初始化search文件夹
@@ -1203,12 +1198,7 @@ pub async fn init_search_data() -> Result<(), Error> {
             }
         }
     }
-    // 自动下载频道 logo（配置开启时）
-    if crate::config::search::get_search_config().auto_download_logos {
-        if let Ok(m3u_data) = load_m3u_data() {
-            crate::logo_crawl::crawl_logos(&m3u_data).await;
-        }
-    }
+    // 台标爬取已改为手动触发（「设置 → 爬取频道图标」页的「立即爬取台标」按钮）
     Ok(())
 }
 
@@ -1350,10 +1340,7 @@ pub async fn do_search(search_params: SearchParams) -> Result<(), Error> {
             let mut m3u_data = load_m3u_data()?;
             m3u_data.t2s();
             m3u_data.search(search_params.search_options).await;
-            // 自动下载频道 logo（配置开启时）
-            if crate::config::search::get_search_config().auto_download_logos {
-                crate::logo_crawl::crawl_logos(&m3u_data).await;
-            }
+            // 台标爬取已改为手动触发（「设置 → 爬取频道图标」页的「立即爬取台标」按钮）
             if search_params.thumbnail {
                 m3u_data
                     .generate_thumbnail(search_params.concurrent, search_params.timeout)
@@ -1380,7 +1367,7 @@ pub fn clear_search_folder() -> std::io::Result<()> {
     Ok(())
 }
 
-fn load_m3u_data() -> std::io::Result<M3uObjectList> {
+pub fn load_m3u_data() -> std::io::Result<M3uObjectList> {
     let p = get_search_folder();
     let path = std::path::Path::new(&p);
     let mut file_names = vec![];
