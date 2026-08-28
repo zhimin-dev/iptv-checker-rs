@@ -21,12 +21,34 @@ pub struct ChannelIconItem {
     /// 映射到 tvg-id（EPG 节目单匹配），可为空
     #[serde(default)]
     pub tvg_id: String,
-    /// 分组（group-title）
+    /// 一级分组（如：中国），可为空
+    #[serde(default)]
+    pub group1: String,
+    /// 二级分组（如：央视），可为空
+    #[serde(default)]
+    pub group2: String,
+    /// 旧版单级分组（兼容历史数据）
     #[serde(default)]
     pub group: String,
     /// 图标地址
     #[serde(default)]
     pub logo: String,
+}
+
+impl ChannelIconItem {
+    /// 最终生效的分组名：两级分组拼接为「分组1-分组2」
+    pub fn effective_group(&self) -> String {
+        let g1 = self.group1.trim();
+        let g2 = self.group2.trim();
+        if g1.is_empty() && g2.is_empty() {
+            return self.group.trim().to_string();
+        }
+        match (g1.is_empty(), g2.is_empty()) {
+            (true, false) => g2.to_string(),
+            (false, true) => g1.to_string(),
+            _ => format!("{}-{}", g1, g2),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -58,6 +80,8 @@ fn migrate_from_logos() -> ChannelIconsConfig {
             name: l.name[0].clone(),
             aliases: l.name.iter().skip(1).cloned().collect(),
             tvg_id: String::new(),
+            group1: String::new(),
+            group2: String::new(),
             group: String::new(),
             logo: l.url.clone(),
         });
@@ -97,8 +121,11 @@ pub fn upsert_item(item: ChannelIconItem) {
         if !item.tvg_id.is_empty() {
             existing.tvg_id = item.tvg_id;
         }
-        if !item.group.is_empty() {
-            existing.group = item.group;
+        if !item.group1.is_empty() {
+            existing.group1 = item.group1;
+        }
+        if !item.group2.is_empty() {
+            existing.group2 = item.group2;
         }
     } else {
         config.items.push(item);
@@ -150,25 +177,44 @@ fn item_name_keys(item: &ChannelIconItem) -> Vec<String> {
     keys
 }
 
-/// 按频道名（tvg-name / 展示名）查找统一配置项
+/// 按频道名（tvg-name / 展示名）查找统一配置项。
+/// 先精确匹配；匹配不上时用规范化模糊匹配（去横线/空格/【台】等后缀），
+/// 解决「CCTV-1 综合」与「CCTV1综合」、「东方卫视【台】」与「东方卫视」这类差异。
 pub fn find_for_channel(channel_name: &str) -> Option<ChannelIconItem> {
     let target = channel_name.trim().to_lowercase();
     if target.is_empty() {
         return None;
     }
-    get_channel_icons()
+    let config = get_channel_icons();
+    if let Some(item) = config
         .items
-        .into_iter()
+        .iter()
         .find(|i| item_name_keys(i).iter().any(|k| k == &target))
+    {
+        return Some(item.clone());
+    }
+    // 规范化模糊匹配
+    let norm = crate::epg_mapping::normalize_epg_name(channel_name);
+    if !norm.is_empty() {
+        if let Some(item) = config.items.iter().find(|i| {
+            item_name_keys(i).iter().any(|k| {
+                !k.trim().is_empty() && crate::epg_mapping::normalize_epg_name(k) == norm
+            })
+        }) {
+            return Some(item.clone());
+        }
+    }
+    None
 }
 
-/// 统一配置中的分组映射（按频道名匹配）
+/// 统一配置中的分组映射（按频道名匹配），返回「分组1-分组2」拼接后的 group-title
 pub fn get_group_for_channel(channel_name: &str) -> Option<String> {
     let item = find_for_channel(channel_name)?;
-    if item.group.trim().is_empty() {
+    let g = item.effective_group();
+    if g.is_empty() {
         None
     } else {
-        Some(item.group.trim().to_string())
+        Some(g)
     }
 }
 

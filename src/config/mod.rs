@@ -30,6 +30,12 @@ pub mod group;
 // 统一频道图标配置（频道图标 + 分组 + tvg-id 合并配置）
 pub mod channel_icons;
 
+// 两级分组定义（分组编辑页）
+pub mod groups;
+
+// DeepSeek AI 整理配置
+pub mod ai;
+
 // 导出file_config模块中的所有内容
 pub use task::file_config::*;
 

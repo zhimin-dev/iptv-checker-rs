@@ -285,6 +285,10 @@ impl M3uObject {
         self.extend = Some(extend)
     }
 
+    pub fn get_other_status(&self) -> &OtherStatus {
+        &self.other_status
+    }
+
     pub fn set_other_status(&mut self, other_status: OtherStatus) {
         self.other_status = other_status
     }
@@ -1242,6 +1246,26 @@ fn quality_numeric_label(q: &QualityType) -> &str {
         QualityType::Quality4K => "2160p",
         QualityType::Quality8K => "4320p",
         QualityType::QualityUnknown => "",
+    }
+}
+
+/// 最大清晰度数值标签（如 720p / 1080p / 2160p）；无 ffmpeg 信息时返回空字符串
+pub fn max_quality_numeric_label(other_status: &OtherStatus) -> String {
+    let info = match &other_status.ffmpeg_info {
+        Some(i) => i,
+        None => return String::new(),
+    };
+    if info.video.is_empty() {
+        return String::new();
+    }
+    let max_q = info
+        .video
+        .iter()
+        .map(|v| &v.quality_type)
+        .max_by(|a, b| quality_order(a).cmp(&quality_order(b)));
+    match max_q {
+        Some(q) => quality_numeric_label(q).to_string(),
+        None => String::new(),
     }
 }
 

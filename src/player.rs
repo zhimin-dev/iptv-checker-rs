@@ -169,7 +169,8 @@ pub async fn build_checked_channels() -> Result<Vec<PlayerChannel>, String> {
         );
     }
     let mut seen = HashSet::new();
-    let mut channels = Vec::new();
+    // (频道, 最大清晰度标签)，后续同名不同源时把清晰度后缀加进名字方便区分
+    let mut items: Vec<(PlayerChannel, String)> = Vec::new();
     for f in files {
         let content =
             std::fs::read_to_string(&f).map_err(|e| format!("read {} failed: {}", f, e))?;
@@ -187,6 +188,7 @@ pub async fn build_checked_channels() -> Result<Vec<PlayerChannel>, String> {
                 continue;
             }
             let name = obj.get_display_name().to_string();
+            let q_label = crate::common::m3u::max_quality_numeric_label(obj.get_other_status());
             let ext = obj.get_extend();
             let (group, logo, tv_name, tv_id, user_agent) = match ext {
                 Some(e) => (e.group_title, e.tv_logo, e.tv_name, e.tv_id, e.user_agent),
@@ -205,16 +207,33 @@ pub async fn build_checked_channels() -> Result<Vec<PlayerChannel>, String> {
                 get_best_tvg_id(if tv_name.is_empty() { None } else { Some(&tv_name) }, &name)
             };
             let id = format!("{:x}", md5::compute(url.as_bytes()));
-            channels.push(PlayerChannel {
-                id,
-                name,
-                group,
-                logo,
-                url,
-                epg_id,
-                user_agent,
-            });
+            items.push((
+                PlayerChannel {
+                    id,
+                    name,
+                    group,
+                    logo,
+                    url,
+                    epg_id,
+                    user_agent,
+                },
+                q_label,
+            ));
         }
+    }
+    // 同名不同源的频道：名字追加清晰度后缀（如「东方卫视 720p」/「东方卫视 1080p」），
+    // 便于在播放器里区分不同清晰度的源
+    let mut name_counts: HashMap<String, usize> = HashMap::new();
+    for (c, _) in &items {
+        *name_counts.entry(c.name.clone()).or_insert(0) += 1;
+    }
+    let mut channels = Vec::with_capacity(items.len());
+    for (mut c, q_label) in items {
+        let dup = name_counts.get(&c.name).copied().unwrap_or(0) > 1;
+        if dup && !q_label.is_empty() {
+            c.name = format!("{} {}", c.name, q_label);
+        }
+        channels.push(c);
     }
     channels.sort_by(|a, b| a.group.cmp(&b.group).then_with(|| a.name.cmp(&b.name)));
     Ok(channels)
@@ -684,35 +703,35 @@ fn parse_hls_playlist(text: &str) -> (Vec<String>, Vec<(String, String)>, u64, u
     (header, entries, td, seq, unsupported)
 }
 
-/// GET 文本（带 UA 等自定义头），15s 超时
+/// GET 文本（带 UA 等自定义头），20s 超时；先直连、失败走代理（双路径）
 async fn http_get_text(
     client: &reqwest::Client,
     url: &str,
     headers: &HashMap<String, String>,
 ) -> Result<String, String> {
-    let mut req = client.get(url).timeout(std::time::Duration::from_secs(20));
-    for (k, v) in headers {
-        req = req.header(k.as_str(), v.as_str());
-    }
-    let resp = req.send().await.map_err(|e| format!("GET {}: {}", url, e))?;
+    let _ = client; // 统一走双路径 helper，保留参数以少改调用点
+    let hdrs: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let resp = crate::common::util::request_with_fallback(url, &hdrs, 20)
+        .await
+        .map_err(|e| format!("GET {}: {}", url, e))?;
     if !resp.status().is_success() {
         return Err(format!("GET {} -> {}", url, resp.status()));
     }
     resp.text().await.map_err(|e| format!("read {}: {}", url, e))
 }
 
-/// GET 二进制（下载 TS 片段/密钥），20s 超时
+/// GET 二进制（下载 TS 片段/密钥），60s 超时；先直连、失败走代理（双路径）
 async fn http_get_bytes(
     client: &reqwest::Client,
     url: &str,
     headers: &HashMap<String, String>,
 ) -> Result<Vec<u8>, String> {
     // 慢源一个 2~3MB 分片可能要 25~30s，放宽到 60s，避免慢速源永远下不完分片
-    let mut req = client.get(url).timeout(std::time::Duration::from_secs(60));
-    for (k, v) in headers {
-        req = req.header(k.as_str(), v.as_str());
-    }
-    let resp = req.send().await.map_err(|e| format!("GET {}: {}", url, e))?;
+    let _ = client;
+    let hdrs: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let resp = crate::common::util::request_with_fallback(url, &hdrs, 60)
+        .await
+        .map_err(|e| format!("GET {}: {}", url, e))?;
     if !resp.status().is_success() {
         return Err(format!("GET {} -> {}", url, resp.status()));
     }
@@ -1455,17 +1474,11 @@ async fn fetch_and_rewrite_playlist(url: &str, ua: Option<&str>) -> Result<Strin
         return Err("invalid playlist url".to_string());
     }
     let base = url::Url::parse(url).map_err(|e| format!("invalid playlist url: {}", e))?;
-    let client = crate::common::util::get_http_client();
-    let mut builder = client
-        .get(url)
-        // 死源快速失败，避免播放器长时间挂起
-        .timeout(std::time::Duration::from_secs(30));
     let ua_value = ua.map(|s| s.to_string()).unwrap_or_else(|| {
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36".to_string()
     });
-    builder = builder.header("User-Agent", &ua_value);
-    let resp = builder
-        .send()
+    // 先直连、失败走代理（死源快速失败，避免播放器长时间挂起）
+    let resp = crate::common::util::request_with_fallback(url, &[("User-Agent", &ua_value)], 30)
         .await
         .map_err(|e| format!("fetch playlist failed: {}", e))?;
     let status = resp.status();
@@ -1481,6 +1494,113 @@ async fn fetch_and_rewrite_playlist(url: &str, ua: Option<&str>) -> Result<Strin
         .map(|l| rewrite_line(l, &base, ua))
         .collect();
     Ok(rewritten.join("\n"))
+}
+
+/// 解析多码率 master playlist，返回各清晰度变体列表
+async fn fetch_variants(url: &str, ua: Option<&str>) -> Result<Vec<serde_json::Value>, String> {
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err("invalid playlist url".to_string());
+    }
+    let base = url::Url::parse(url).map_err(|e| format!("invalid playlist url: {}", e))?;
+    let ua_value = ua.map(|s| s.to_string()).unwrap_or_else(|| {
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36".to_string()
+    });
+    let resp = crate::common::util::request_with_fallback(url, &[("User-Agent", &ua_value)], 20)
+        .await
+        .map_err(|e| format!("fetch playlist failed: {}", e))?;
+    if !resp.status().is_success() {
+        return Err(format!("source returned {}", resp.status()));
+    }
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| format!("read playlist failed: {}", e))?;
+    let mut list: Vec<serde_json::Value> = Vec::new();
+    let mut pending: Option<(u64, String)> = None; // (bandwidth, resolution)
+    for line in text.lines() {
+        let t = line.trim();
+        if t.starts_with("#EXT-X-STREAM-INF") {
+            let bw = t
+                .split("BANDWIDTH=")
+                .nth(1)
+                .and_then(|s| s.split(|c: char| c == ',' || c.is_whitespace()).next())
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(0);
+            let res = t
+                .split("RESOLUTION=")
+                .nth(1)
+                .and_then(|s| s.split(|c: char| c == ',' || c.is_whitespace()).next())
+                .unwrap_or("")
+                .to_string();
+            pending = Some((bw, res));
+        } else if !t.starts_with('#') && !t.is_empty() {
+            if let Some((bw, res)) = pending.take() {
+                if let Some(abs) = resolve_uri(&base, t) {
+                    let height = res
+                        .split('x')
+                        .nth(1)
+                        .and_then(|s| s.parse::<u32>().ok())
+                        .unwrap_or(0);
+                    let label = match height {
+                        2160 => "4K".to_string(),
+                        1440 => "2K".to_string(),
+                        1080 => "1080P".to_string(),
+                        720 => "720P".to_string(),
+                        576 => "576P".to_string(),
+                        480 => "480P".to_string(),
+                        360 => "360P".to_string(),
+                        240 => "240P".to_string(),
+                        _ => {
+                            if !res.is_empty() {
+                                res.clone()
+                            } else if bw > 0 {
+                                format!("{}kbps", bw / 1000)
+                            } else {
+                                "unknown".to_string()
+                            }
+                        }
+                    };
+                    list.push(serde_json::json!({
+                        "url": abs,
+                        "bandwidth": bw,
+                        "resolution": res,
+                        "height": height,
+                        "label": label,
+                    }));
+                }
+            }
+        }
+    }
+    if list.is_empty() {
+        return Err("not a master playlist".to_string());
+    }
+    // 按清晰度从高到低排序（同高度按码率）
+    list.sort_by(|a, b| {
+        let ah = a["height"].as_u64().unwrap_or(0);
+        let bh = b["height"].as_u64().unwrap_or(0);
+        bh.cmp(&ah).then_with(|| {
+            let ab = a["bandwidth"].as_u64().unwrap_or(0);
+            let bb = b["bandwidth"].as_u64().unwrap_or(0);
+            bb.cmp(&ab)
+        })
+    });
+    Ok(list)
+}
+
+/// 多码率变体列表查询
+#[derive(Deserialize)]
+pub struct VariantsQuery {
+    pub url: String,
+    #[serde(default)]
+    pub ua: Option<String>,
+}
+
+#[get("/api/player/variants")]
+async fn player_variants(q: web::Query<VariantsQuery>) -> impl Responder {
+    match fetch_variants(&q.url, q.ua.as_deref()).await {
+        Ok(list) => HttpResponse::Ok().json(serde_json::json!({ "list": list })),
+        Err(e) => HttpResponse::Ok().json(serde_json::json!({ "list": [], "msg": e })),
+    }
 }
 
 /// 透明代理：返回重写后的 m3u8（客户端直连播放入口）
@@ -1502,24 +1622,21 @@ async fn player_proxy_media(q: web::Query<MediaQuery>, req: HttpRequest) -> impl
     if !target.starts_with("http://") && !target.starts_with("https://") {
         return HttpResponse::BadRequest().body("invalid media url");
     }
-    let client = crate::common::util::get_http_client();
-    let mut builder = client
-        .get(&target)
-        .timeout(std::time::Duration::from_secs(60));
-    // 转发 Range（部分源/MP4 需要）
-    if let Some(range) = req.headers().get("range") {
-        if let Ok(v) = range.to_str() {
-            builder = builder.header("Range", v.to_string());
-        }
-    }
     let ua_value = q
         .ua
         .clone()
         .unwrap_or_else(|| {
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36".to_string()
         });
-    builder = builder.header("User-Agent", ua_value);
-    match builder.send().await {
+    // 转发 Range（部分源/MP4 需要）；先直连、失败走代理
+    let mut hdrs: Vec<(String, String)> = vec![("User-Agent".to_string(), ua_value)];
+    if let Some(range) = req.headers().get("range") {
+        if let Ok(v) = range.to_str() {
+            hdrs.push(("Range".to_string(), v.to_string()));
+        }
+    }
+    let hdr_refs: Vec<(&str, &str)> = hdrs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    match crate::common::util::request_with_fallback(&target, &hdr_refs, 60).await {
         Ok(resp) => {
             let status_code = actix_web::http::StatusCode::from_u16(resp.status().as_u16())
                 .unwrap_or(actix_web::http::StatusCode::BAD_GATEWAY);
@@ -2096,10 +2213,13 @@ pub static SNAPSHOT_FOLDER: &str = "./static/thumbnail/channels/";
 pub static SNAPSHOT_URL_BASE: &str = "/static/thumbnail/channels/";
 // 画面文件只要存在就直接复用（重新抓帧只在 refresh=true 或文件缺失时发生）
 
-/// 探测源视频编码（返回小写 codec_name，失败返回 None）
-pub async fn probe_video_codec(url: &str) -> Option<String> {
+async fn probe_video_codec_once(url: &str, with_proxy: bool) -> Option<String> {
     let mut cmd = tokio::process::Command::new("ffprobe");
-    crate::common::util::apply_proxy_to_command(&mut cmd);
+    if with_proxy {
+        crate::common::util::apply_proxy_to_command(&mut cmd);
+    } else {
+        crate::common::util::apply_direct_to_command(&mut cmd);
+    }
     let child = cmd
         .arg("-v")
         .arg("error")
@@ -2131,6 +2251,14 @@ pub async fn probe_video_codec(url: &str) -> Option<String> {
     }
 }
 
+/// 探测源视频编码：先直连，失败再走代理（双路径）
+pub async fn probe_video_codec(url: &str) -> Option<String> {
+    if let Some(codec) = probe_video_codec_once(url, false).await {
+        return Some(codec);
+    }
+    probe_video_codec_once(url, true).await
+}
+
 fn snapshot_ffmpeg_bin() -> &'static str {
     if std::path::Path::new("./tools/ffmpeg/ffmpeg.exe").exists() {
         "./tools/ffmpeg/ffmpeg.exe"
@@ -2141,10 +2269,14 @@ fn snapshot_ffmpeg_bin() -> &'static str {
     }
 }
 
-async fn capture_snapshot(url: &str, out_path: &str) -> bool {
+async fn capture_snapshot_once(url: &str, out_path: &str, with_proxy: bool) -> bool {
     // ffmpeg 抓第一帧（带浏览器 UA，部分源会校验）
     let mut cmd = tokio::process::Command::new(snapshot_ffmpeg_bin());
-    crate::common::util::apply_proxy_to_command(&mut cmd);
+    if with_proxy {
+        crate::common::util::apply_proxy_to_command(&mut cmd);
+    } else {
+        crate::common::util::apply_direct_to_command(&mut cmd);
+    }
     let child = cmd
         .arg("-hide_banner")
         .arg("-loglevel")
@@ -2174,6 +2306,14 @@ async fn capture_snapshot(url: &str, out_path: &str) -> bool {
         }
         Err(_) => false,
     }
+}
+
+/// 抓取单帧快照：先直连，失败再走代理（双路径，国内源直连即可）
+async fn capture_snapshot(url: &str, out_path: &str) -> bool {
+    if capture_snapshot_once(url, out_path, false).await {
+        return true;
+    }
+    capture_snapshot_once(url, out_path, true).await
 }
 
 /// 批量抓取频道快照（并发 4；10 分钟内复用缓存）。
@@ -2474,6 +2614,7 @@ pub fn configure_player_routes(cfg: &mut web::ServiceConfig) {
         .service(clear_channel_cache_api)
         .service(get_cache_config_api)
         .service(set_cache_config_api)
+        .service(player_variants)
         .service(player_proxy)
         .service(player_proxy_media)
         .service(relay_start)

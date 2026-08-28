@@ -31,6 +31,39 @@ static HTTP_CLIENT_INNER: Lazy<RwLock<reqwest::Client>> = Lazy::new(|| {
     RwLock::new(build_http_client())
 });
 
+/// 直连客户端（永不走代理）：用于「先直连、失败再走代理」的双路径策略。
+static HTTP_CLIENT_DIRECT: Lazy<RwLock<reqwest::Client>> = Lazy::new(|| {
+    RwLock::new(build_direct_http_client())
+});
+
+/// 构建直连 reqwest 客户端（no_proxy + 与主客户端相同的 UA / 自定义头）
+fn build_direct_http_client() -> reqwest::Client {
+    let config = crate::config::network::get_network_config();
+    let mut builder = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .no_proxy();
+    let mut headers = reqwest::header::HeaderMap::new();
+    let ua = get_user_agent();
+    if let Ok(hv) = reqwest::header::HeaderValue::from_str(&ua) {
+        headers.insert(reqwest::header::USER_AGENT, hv);
+    }
+    for (key, value) in &config.custom_headers {
+        if let (Ok(hk), Ok(hv)) = (
+            reqwest::header::HeaderName::from_bytes(key.as_bytes()),
+            reqwest::header::HeaderValue::from_str(value),
+        ) {
+            headers.insert(hk, hv);
+        }
+    }
+    builder = builder.default_headers(headers);
+    builder.build().expect("Failed to build direct HTTP client")
+}
+
+/// 直连客户端访问器
+pub fn get_direct_http_client() -> reqwest::Client {
+    HTTP_CLIENT_DIRECT.read().unwrap().clone()
+}
+
 /// Build a reqwest::Client from the current NetworkConfig settings.
 fn build_http_client() -> reqwest::Client {
     let config = crate::config::network::get_network_config();
@@ -86,11 +119,14 @@ fn build_http_client() -> reqwest::Client {
     builder.build().expect("Failed to build shared HTTP client")
 }
 
-/// Rebuild the shared HTTP client from current config (call after config changes).
+/// Rebuild the shared HTTP clients from current config (call after config changes).
 pub fn rebuild_http_client() {
     let new_client = build_http_client();
     let mut client = HTTP_CLIENT_INNER.write().unwrap();
     *client = new_client;
+    let new_direct = build_direct_http_client();
+    let mut direct = HTTP_CLIENT_DIRECT.write().unwrap();
+    *direct = new_direct;
     log::info!("HTTP client rebuilt with current proxy/header settings");
 }
 
@@ -198,6 +234,52 @@ pub fn apply_proxy_to_command<C: ProxyEnv>(cmd: &mut C) {
             cmd.proxy_env_remove(key);
         }
     }
+}
+
+/// 强制子进程直连：清除所有代理环境变量（ffmpeg 双路径策略用）
+pub fn apply_direct_to_command<C: ProxyEnv>(cmd: &mut C) {
+    for key in [
+        "http_proxy",
+        "https_proxy",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "all_proxy",
+        "ALL_PROXY",
+    ] {
+        cmd.proxy_env_remove(key);
+    }
+}
+
+/// 双路径 GET：先直连请求；失败（网络错误或 4xx/5xx）且配置了代理时，
+/// 再用代理客户端重试一次。适用于「国内源直连、国外源走代理」的混合场景。
+pub async fn request_with_fallback(
+    url: &str,
+    headers: &[(&str, &str)],
+    timeout_secs: u64,
+) -> Result<reqwest::Response, reqwest::Error> {
+    let timeout = std::time::Duration::from_secs(timeout_secs);
+    let direct = get_direct_http_client();
+    let mut b = direct.get(url).timeout(timeout);
+    for (k, v) in headers {
+        b = b.header(*k, *v);
+    }
+    let first = b.send().await;
+    let first_ok = matches!(&first, Ok(r) if r.status().is_success() || r.status().is_redirection());
+    if first_ok {
+        return first;
+    }
+    // 没有代理配置时无需重试，直接返回直连结果
+    let config = crate::config::network::get_network_config();
+    let has_proxy = config.use_system_proxy || !config.proxy_url.trim().is_empty();
+    if !has_proxy {
+        return first;
+    }
+    let proxied = get_http_client();
+    let mut b2 = proxied.get(url).timeout(timeout);
+    for (k, v) in headers {
+        b2 = b2.header(*k, *v);
+    }
+    b2.send().await
 }
 
 /// std::process::Command 与 tokio::process::Command 的统一环境变量注入接口
@@ -499,8 +581,9 @@ fn parse_one_m3u(_arr: Vec<&str>, index: i32) -> Option<M3uObject> {
         let icon_item = crate::config::channel_icons::find_for_channel(&icon_name);
         if let Some(item) = icon_item {
             if let Some(ext_mut) = m3u_obj.get_extend_mut() {
-                if !item.group.is_empty() {
-                    ext_mut.set_group_title(item.group.clone());
+                let g = item.effective_group();
+                if !g.is_empty() {
+                    ext_mut.set_group_title(g);
                 }
                 if !item.tvg_id.is_empty() {
                     ext_mut.set_tv_id(item.tvg_id.clone());
@@ -589,8 +672,9 @@ pub fn parse_quota_str(_body: String) -> M3uObjectList {
                     let icon_item = crate::config::channel_icons::find_for_channel(&icon_name);
                     if let Some(item) = icon_item {
                         if let Some(ext) = m3u_obj.get_extend_mut() {
-                            if !item.group.is_empty() {
-                                ext.set_group_title(item.group.clone());
+                            let g = item.effective_group();
+                            if !g.is_empty() {
+                                ext.set_group_title(g);
                             }
                             if !item.tvg_id.is_empty() {
                                 ext.set_tv_id(item.tvg_id.clone());

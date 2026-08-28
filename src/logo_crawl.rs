@@ -368,6 +368,8 @@ async fn bind_crawled_logos_api(req: web::Json<BindLogoReq>) -> impl Responder {
                 name: names[0].clone(),
                 aliases: names.iter().skip(1).cloned().collect(),
                 tvg_id: String::new(),
+                group1: String::new(),
+                group2: String::new(),
                 group: String::new(),
                 logo: item.url.clone(),
             });

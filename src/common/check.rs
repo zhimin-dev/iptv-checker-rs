@@ -28,13 +28,9 @@ pub fn url_is_m3u8(url: &str) -> bool {
 
 /// m3u8 链接预校验：HTTP 拉取 body（最多读前 4KB），检查是否为正规 m3u8
 async fn http_body_is_m3u8(url: &str, timeout_ms: u64) -> Result<bool, std::io::Error> {
-    let client = crate::common::util::get_http_client();
-    // 预校验用较短超时（最多 10s），死链快速失败
+    // 预校验用较短超时（最多 10s），死链快速失败；先直连、失败走代理
     let t = timeout_ms.min(10_000);
-    let resp = client
-        .get(url)
-        .timeout(std::time::Duration::from_millis(t))
-        .send()
+    let resp = crate::common::util::request_with_fallback(url, &[], t / 1000 + 1)
         .await
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("GET failed: {}", e)))?;
     if !resp.status().is_success() {
@@ -526,13 +522,14 @@ pub mod check {
                 return Err(Error::new(ErrorKind::Other, format!("error {}", e)));
             }
         }
-        let client = crate::common::util::get_http_client();
         let curr_timestamp = Utc::now().timestamp_millis();
-        let http_res = client
-            .get(_url.to_owned())
-            .timeout(time::Duration::from_millis(timeout))
-            .send()
-            .await;
+        // 先直连、失败走代理（国内源直连、国外源走代理）
+        let http_res = crate::common::util::request_with_fallback(
+            _url.as_str(),
+            &[],
+            (timeout / 1000).max(1),
+        )
+        .await;
         match http_res {
             Ok(res) => {
                 if res.status().is_success() {

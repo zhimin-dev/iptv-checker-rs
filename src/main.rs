@@ -1,3 +1,4 @@
+mod ai_organize;
 mod check_blacklist;
 mod common;
 mod config;

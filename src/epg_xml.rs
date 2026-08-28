@@ -21,6 +21,10 @@ use lazy_static::lazy_static;
 // ============== 全局 EPG 缓存 ==============
 lazy_static! {
     pub static ref GLOBAL_EPG_CACHE: Arc<RwLock<HashMap<String, Vec<Programme>>>> = Arc::new(RwLock::new(HashMap::new()));
+    /// 规范化名称 -> 原始缓存 key（模糊查询用）
+    static ref EPG_CACHE_NORM: RwLock<HashMap<String, String>> = RwLock::new(HashMap::new());
+    /// EPG 频道 id（tvg-id）-> 节目列表
+    static ref EPG_CACHE_BY_ID: RwLock<HashMap<String, Vec<Programme>>> = RwLock::new(HashMap::new());
 }
 
 /// 安全地更新全局 EPG 缓存
@@ -48,12 +52,57 @@ pub fn update_global_epg_cache(tv: &Tv) {
     if let Ok(mut cache) = GLOBAL_EPG_CACHE.write() {
         *cache = new_cache;
     }
+    // 重建辅助索引（规范化名称 / tvg-id）
+    rebuild_epg_indexes();
 }
 
-/// 根据频道名称查询 EPG 缓存
-pub fn query_epg_by_channel(channel_name: &str) -> Vec<Programme> {
+/// 由 EPG 缓存构建辅助索引（规范化名称、频道 id）
+fn rebuild_epg_indexes() {
+    let mut norm: HashMap<String, String> = HashMap::new();
+    let mut by_id: HashMap<String, Vec<Programme>> = HashMap::new();
     if let Ok(cache) = GLOBAL_EPG_CACHE.read() {
+        for (name, programmes) in cache.iter() {
+            let key = crate::epg_mapping::normalize_epg_name(name);
+            if !key.is_empty() && !norm.contains_key(&key) {
+                norm.insert(key, name.clone());
+            }
+            if let Some(first) = programmes.first() {
+                by_id.entry(first.channel.clone()).or_default().extend(programmes.clone());
+            }
+        }
+    }
+    if let Ok(mut m) = EPG_CACHE_NORM.write() {
+        *m = norm;
+    }
+    if let Ok(mut m) = EPG_CACHE_BY_ID.write() {
+        *m = by_id;
+    }
+}
+
+/// 根据频道名称查询 EPG 缓存：名称精确 -> 规范化模糊（去横线/空格/【台】后缀）-> tvg-id
+pub fn query_epg_by_channel(channel_name: &str) -> Vec<Programme> {
+    // 1. 名称精确匹配
+    {
+        let cache = GLOBAL_EPG_CACHE.read().unwrap();
         if let Some(programmes) = cache.get(channel_name) {
+            return programmes.clone();
+        }
+    }
+    // 2. 规范化模糊匹配
+    let norm = crate::epg_mapping::normalize_epg_name(channel_name);
+    if !norm.is_empty() {
+        if let Ok(map) = EPG_CACHE_NORM.read() {
+            if let Some(orig) = map.get(&norm) {
+                let cache = GLOBAL_EPG_CACHE.read().unwrap();
+                if let Some(programmes) = cache.get(orig) {
+                    return programmes.clone();
+                }
+            }
+        }
+    }
+    // 3. 按 tvg-id 查询
+    if let Ok(by_id) = EPG_CACHE_BY_ID.read() {
+        if let Some(programmes) = by_id.get(channel_name) {
             return programmes.clone();
         }
     }
@@ -86,7 +135,7 @@ pub fn get_all_epg_channels() -> Vec<EpgChannelItem> {
 pub fn generate_custom_epg_xml(channel_names: Vec<String>) -> Result<String, String> {
     let mut tv = Tv {
         generator_info_name: Some("iptv-checker-rs".to_string()),
-        generator_info_url: Some("https://github.com/iptv-checker-rs".to_string()),
+        generator_info_url: Some("https://github.com/zhimin-dev/iptv-checker-rs".to_string()),
         channels: Vec::new(),
         programmes: Vec::new(),
     };

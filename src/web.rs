@@ -738,12 +738,74 @@ async fn upload_logos(MultipartForm(form): MultipartForm<UploadLogosReq>) -> imp
             name: stem,
             aliases: vec![],
             tvg_id: String::new(),
+            group1: String::new(),
+            group2: String::new(),
             group: String::new(),
             logo: format!("{}{}", LOGOS_FOLDER, name),
         });
     }
 
     HttpResponse::Ok().json(serde_json::json!({"msg": "success", "uploaded": uploaded_files}))
+}
+
+/// AI 配置读写
+async fn get_ai_config_api() -> impl Responder {
+    let config = crate::config::ai::get_ai_config();
+    HttpResponse::Ok().json(serde_json::json!({
+        "api_key": config.api_key,
+        "base_url": config.base_url,
+        "model": config.model,
+    }))
+}
+
+async fn save_ai_config_api(req: web::Json<crate::config::ai::AiConfig>) -> impl Responder {
+    match crate::config::ai::save_ai_config(req.into_inner()) {
+        Ok(()) => HttpResponse::Ok().json(serde_json::json!({ "msg": "success" })),
+        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({ "msg": e })),
+    }
+}
+
+/// AI 整理请求体（groups 为分组映射的扁平分组名）
+#[derive(serde::Deserialize)]
+pub struct AiOrganizeReq {
+    #[serde(default)]
+    pub names: Vec<String>,
+    #[serde(default)]
+    pub groups: Vec<String>,
+    /// 允许 AI 创建新分组
+    #[serde(default)]
+    pub allow_create_groups: bool,
+    /// 分组方式：prefix（前缀/地域，默认）| category（电视分类）
+    #[serde(default)]
+    pub group_mode: String,
+}
+
+/// 调用 DeepSeek 整理频道名称
+async fn ai_organize_api(req: web::Json<AiOrganizeReq>) -> impl Responder {
+    let body = req.into_inner();
+    match crate::ai_organize::organize_channel_names(body.names, body.groups, body.allow_create_groups, body.group_mode).await {
+        Ok((items, errors)) => HttpResponse::Ok().json(serde_json::json!({ "items": items, "errors": errors })),
+        Err(e) => HttpResponse::BadRequest().json(serde_json::json!({ "msg": e })),
+    }
+}
+
+/// AI 整理应用请求体
+#[derive(serde::Deserialize)]
+pub struct AiApplyReq {
+    #[serde(default)]
+    pub items: Vec<crate::ai_organize::AiChannelItem>,
+    /// 允许 AI 创建新分组
+    #[serde(default)]
+    pub allow_create_groups: bool,
+}
+
+/// 把 AI 整理结果合并进频道图标统一配置
+async fn ai_apply_api(req: web::Json<AiApplyReq>) -> impl Responder {
+    let body = req.into_inner();
+    match crate::ai_organize::apply_ai_items(body.items, body.allow_create_groups) {
+        Ok((updated, created, grouped)) => HttpResponse::Ok().json(serde_json::json!({ "updated": updated, "created": created, "grouped": grouped, "msg": "success" })),
+        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({ "msg": e })),
+    }
 }
 
 /// 保存统一频道图标配置的请求体
@@ -766,6 +828,49 @@ async fn get_channel_icons_api() -> impl Responder {
 async fn save_channel_icons_api(req: web::Json<ChannelIconsSaveReq>) -> impl Responder {
     match crate::config::channel_icons::save_channel_icons(req.into_inner().items) {
         Ok(()) => HttpResponse::Ok().json(serde_json::json!({ "msg": "success" })),
+        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({ "msg": e })),
+    }
+}
+
+/// 两级分组定义（分组编辑页）
+async fn get_groups_api() -> impl Responder {
+    let groups = crate::config::groups::get_groups();
+    HttpResponse::Ok().json(serde_json::json!({
+        "groups": groups,
+        "total": groups.len(),
+    }))
+}
+
+/// 保存两级分组定义的请求体
+#[derive(serde::Deserialize)]
+pub struct GroupsSaveReq {
+    #[serde(default)]
+    pub groups: Vec<crate::config::groups::GroupDef>,
+}
+
+/// 全量保存两级分组定义
+async fn save_groups_api(req: web::Json<GroupsSaveReq>) -> impl Responder {
+    match crate::config::groups::save_groups(req.into_inner().groups) {
+        Ok(()) => HttpResponse::Ok().json(serde_json::json!({ "msg": "success" })),
+        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({ "msg": e })),
+    }
+}
+
+/// 删除分组定义的请求体
+#[derive(serde::Deserialize)]
+pub struct GroupDeleteReq {
+    pub group1: String,
+    #[serde(default)]
+    pub group2: String,
+    #[serde(default)]
+    pub clear_channels: bool,
+}
+
+/// 删除分组定义（可选同步清除频道项上的分组）
+async fn delete_group_api(req: web::Json<GroupDeleteReq>) -> impl Responder {
+    match crate::config::groups::delete_group(&req.group1, &req.group2, req.clear_channels) {
+        Ok(true) => HttpResponse::Ok().json(serde_json::json!({ "msg": "deleted" })),
+        Ok(false) => HttpResponse::NotFound().json(serde_json::json!({ "msg": "not found" })),
         Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({ "msg": e })),
     }
 }
@@ -1804,6 +1909,20 @@ async fn delete_epg_cache_api() -> impl Responder {
 pub async fn start_web(port: u16) {
     // 启动播放器中继会话的后台清理任务
     crate::player::spawn_cleanup_task();
+    // 服务启动后立即执行一次「爬取源数据」与「EPG 同步」，与定时任务行为保持一致；
+    // 后台异步执行，不阻塞 Web 服务启动（数据已存在时 init 会快速返回）
+    tokio::spawn(async {
+        info!("startup search task started");
+        if let Err(e) = init_search_data().await {
+            error!("startup search data failed: {}", e);
+        }
+        info!("startup search task finished");
+    });
+    tokio::spawn(async {
+        info!("startup epg task started");
+        let _ = init_epg_data().await;
+        info!("startup epg task finished");
+    });
 // ============== 分组映射 API ==============
 
 #[derive(Serialize, Deserialize)]
@@ -1984,6 +2103,13 @@ async fn get_unmapped_epg_channels() -> impl Responder {
             .route("/media/channel-icons", web::get().to(get_channel_icons_api))
             .route("/media/channel-icons", web::post().to(save_channel_icons_api))
             .route("/media/channel-icons/{name}", web::delete().to(delete_channel_icon_api))
+            .route("/system/ai-config", web::get().to(get_ai_config_api))
+            .route("/system/ai-config", web::post().to(save_ai_config_api))
+            .route("/api/ai/organize", web::post().to(ai_organize_api))
+            .route("/api/ai/apply", web::post().to(ai_apply_api))
+            .route("/media/groups", web::get().to(get_groups_api))
+            .route("/media/groups", web::post().to(save_groups_api))
+            .route("/media/groups", web::delete().to(delete_group_api))
             .route("/tasks/update", web::post().to(update_task))
             .route("/tasks/add", web::post().to(add_task))
             .route("/tasks/delete/{id}", web::delete().to(delete_task))
