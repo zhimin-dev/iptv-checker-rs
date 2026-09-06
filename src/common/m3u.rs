@@ -131,12 +131,21 @@ impl M3uObject {
     pub fn check_by_block(&mut self, request_time: i32, ffmpeg_check: bool, not_http_skip: bool) {
         let url = self.url.clone();
         let _log_url = url.clone();
-        let result = actix_rt::System::new().block_on(check_link_is_valid(
-            url,
-            request_time as u64,
-            ffmpeg_check,
-            not_http_skip,
-        ));
+        // 硬超时保护：request_time 毫秒后强制结束本次检查。
+        // 部分源的 body 读取（龟速流/挂起连接）没有超时，会把检查任务永久卡住，
+        // 导致同一任务的其他源与后续定时任务都无法执行。
+        let timeout_ms = (request_time as u64).max(1000);
+        let result = actix_rt::System::new().block_on(async move {
+            tokio::time::timeout(
+                tokio::time::Duration::from_millis(timeout_ms),
+                check_link_is_valid(url, timeout_ms, ffmpeg_check, not_http_skip),
+            )
+            .await
+            .map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::TimedOut, "channel check timed out")
+            })
+            .and_then(|r| r)
+        });
         debug!("url is: {} result: {:?}", self.url.clone(), result);
         return match result {
             Ok(data) => {

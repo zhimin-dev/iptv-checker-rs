@@ -138,9 +138,15 @@ pub fn cleanup_expired() -> usize {
             .collect()
     };
     if !removed.is_empty() {
-        let mut map = BLACKLIST.lock().unwrap();
-        for u in &removed {
-            map.remove(u);
+        {
+            let mut map = BLACKLIST.lock().unwrap();
+            for u in &removed {
+                map.remove(u);
+            }
+            // 注意：必须在块结束释放锁之后再 save()。
+            // 修复：此前 save() 在 guard 存活期间被调用，save() 内部再次 lock
+            // 同一个 Mutex，导致自死锁——BLACKLIST 锁被永久持有，
+            // 之后所有检查任务卡在 get_blacklisted_urls()（表现为“一直在检查”）。
         }
         save();
         info!("check blacklist auto-clean removed {} entries", removed.len());
@@ -244,11 +250,51 @@ async fn set_blacklist_config_api(req: web::Json<BlacklistConfigReq>) -> impl Re
     }
 }
 
+/// 手动添加黑名单（直接标记为已拉黑）
+pub fn add_manual(url: &str) -> bool {
+    let u = url.trim().to_string();
+    if u.is_empty() {
+        return false;
+    }
+    let threshold = get_fail_times().max(1);
+    let now = now_secs();
+    {
+        let mut map = BLACKLIST.lock().unwrap();
+        map.insert(
+            u.clone(),
+            BlacklistEntry {
+                fail_count: threshold,
+                first_fail_at: now,
+                last_fail_at: now,
+            },
+        );
+    }
+    save();
+    info!("check blacklist manually added: {}", u);
+    true
+}
+
+#[derive(Deserialize)]
+pub struct BlacklistAddReq {
+    pub url: String,
+}
+
+/// 手动添加黑名单
+#[post("/api/check/blacklist/add")]
+async fn add_blacklist_api(req: web::Json<BlacklistAddReq>) -> impl Responder {
+    if add_manual(&req.url) {
+        HttpResponse::Ok().json(serde_json::json!({ "msg": "added" }))
+    } else {
+        HttpResponse::BadRequest().json(serde_json::json!({ "msg": "invalid url" }))
+    }
+}
+
 /// 注册路由
 pub fn configure_routes(cfg: &mut web::ServiceConfig) {
     cfg.service(get_blacklist_api)
         .service(clear_blacklist_api)
         .service(get_blacklist_config_api)
-        .service(set_blacklist_config_api);
+        .service(set_blacklist_config_api)
+        .service(add_blacklist_api);
 }
 

@@ -5,7 +5,7 @@ use crate::common::{AudioInfo, CheckOptions, SearchOptions, VideoInfo};
 use crate::config::favourite::get_favourite_list;
 use crate::r#const::constant::{INPUT_SEARCH_FOLDER, OUTPUT_FOLDER};
 use lazy_static::lazy_static;
-use log::info;
+use log::{error, info};
 use serde::{Deserialize, Serialize};
 use std::fmt::Error;
 use std::sync::Mutex;
@@ -28,6 +28,7 @@ pub fn url_is_m3u8(url: &str) -> bool {
 
 /// m3u8 链接预校验：HTTP 拉取 body（最多读前 4KB），检查是否为正规 m3u8
 async fn http_body_is_m3u8(url: &str, timeout_ms: u64) -> Result<bool, std::io::Error> {
+    use futures::StreamExt;
     // 预校验用较短超时（最多 10s），死链快速失败；先直连、失败走代理
     let t = timeout_ms.min(10_000);
     let resp = crate::common::util::request_with_fallback(url, &[], t / 1000 + 1)
@@ -39,11 +40,26 @@ async fn http_body_is_m3u8(url: &str, timeout_ms: u64) -> Result<bool, std::io::
             format!("status {}", resp.status()),
         ));
     }
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("read failed: {}", e)))?;
-    let head = String::from_utf8_lossy(&bytes[..bytes.len().min(4096)]).to_string();
+    // 只读前 4KB：判断 m3u8 格式不需要整个 body，避免大 playlist 白白下载拖慢检查
+    let mut buf: Vec<u8> = Vec::with_capacity(4096);
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        match chunk {
+            Ok(c) => {
+                buf.extend_from_slice(&c);
+                if buf.len() >= 4096 {
+                    break;
+                }
+            }
+            Err(e) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("read failed: {}", e),
+                ));
+            }
+        }
+    }
+    let head = String::from_utf8_lossy(&buf[..buf.len().min(4096)]).to_string();
     Ok(crate::common::util::check_body_is_m3u8_format(head))
 }
 
@@ -625,6 +641,9 @@ pub async fn get_favourite_channel(channel_type: String) -> Result<String, Error
     data.t2s();
     // 去除name中无效的字符
     data.remove_useless_char();
+    // 频道图标取数：从本次频道数据（favourite-channel / 检查任务源数据）自动收集 tvg-logo，
+    // 只补充还没有图标的频道，不覆盖人工配置
+    crate::config::channel_icons::collect_from_m3u(&data);
     let mut keyword_full_match = vec![];
     let mut keyword_like = vec![];
     if channel_type == "like" {
@@ -691,6 +710,9 @@ pub async fn do_check(
     data.t2s();
     // 去除name中无效的字符
     data.remove_useless_char();
+    // 频道图标取数：从每个检查任务的源数据自动收集 tvg-logo，
+    // 只补充还没有图标的频道，不覆盖人工配置
+    crate::config::channel_icons::collect_from_m3u(&data);
     // 搜索关键字
     data.search(SearchOptions {
         keyword_full_match: vec![],

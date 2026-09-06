@@ -26,6 +26,9 @@ pub struct NetworkConfig {
     /// Custom User-Agent; defaults to "iptv-checker/v{version}" if empty
     #[serde(default)]
     pub user_agent: String,
+    /// 不带默认的 iptv-checker User-Agent 头（自定义 user_agent 仍然生效）
+    #[serde(default, deserialize_with = "deserialize_bool_flexible")]
+    pub no_ua_header: bool,
 }
 
 fn default_true() -> bool {
@@ -39,6 +42,7 @@ impl NetworkConfig {
             use_system_proxy: true,
             custom_headers: HashMap::new(),
             user_agent: String::default(),
+            no_ua_header: false,
         }
     }
 }

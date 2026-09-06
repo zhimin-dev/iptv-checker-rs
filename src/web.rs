@@ -581,7 +581,8 @@ async fn upload(MultipartForm(form): MultipartForm<UploadFormReq>) -> impl Respo
 
     let path = format!("{}{}", UPLOAD_FOLDER, file_name);
     log::info!("saving to {path}");
-    if let Err(e) = form.file.file.persist(path.clone()) {
+    // 用 copy 而不是 persist：临时文件与目标目录可能在不同磁盘（persist 是重命名，跨盘会失败）
+    if let Err(e) = std::fs::copy(form.file.file.path(), &path) {
         log::error!("Failed to save file: {}", e);
         return HttpResponse::InternalServerError()
             .json(serde_json::json!({"msg": format!("Failed to save file: {}", e), "url": ""}));
@@ -716,7 +717,8 @@ async fn upload_logos(MultipartForm(form): MultipartForm<UploadLogosReq>) -> imp
 
         let path = format!(".{}{}", LOGOS_FOLDER, file_name);
 
-        if let Err(e) = file.file.persist(path.clone()) {
+        // copy 而非 persist：跨磁盘时重命名会失败（os error 17）
+        if let Err(e) = std::fs::copy(file.file.path(), &path) {
             log::error!("Failed to save logo {}: {}", file_name, e);
             continue;
         }
@@ -1935,7 +1937,26 @@ struct GroupMappingResponse {
 async fn get_group_mapping() -> impl Responder {
     let groups = crate::config::group::get_groups();
     let mapping = crate::config::group::get_group_mapping_map();
-    HttpResponse::Ok().json(GroupMappingResponse { groups, mapping })
+    let active = crate::config::group::get_active_group_type();
+    HttpResponse::Ok().json(serde_json::json!({
+        "groups": groups,
+        "mapping": mapping,
+        "active": active,
+    }))
+}
+
+/// 设置当前生效的分组类型（prefix 前缀/地域 | category 电视分类）
+#[derive(Serialize, Deserialize)]
+struct SetActiveGroupTypeRequest {
+    active: String,
+}
+
+#[post("/system/group-mapping/active")]
+async fn set_active_group_type_api(req: web::Json<SetActiveGroupTypeRequest>) -> impl Responder {
+    match crate::config::group::set_active_group_type(&req.active) {
+        Ok(_) => HttpResponse::Ok().json(serde_json::json!({ "msg": "success", "active": crate::config::group::get_active_group_type() })),
+        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({ "msg": e })),
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1999,11 +2020,14 @@ async fn get_unmapped_epg_channels() -> impl Responder {
 
     // Use atomic bool for thread-safe locking
     let lock = Arc::new(Mutex::new(false));
+    // 正在运行的检查任务集合（task_id），防止同一任务被 30 秒调度重复启动
+    let running_tasks: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
 
     // 设置定时任务
     {
         let mut scheduler = scheduler.lock().unwrap();
         let lock_clone = Arc::clone(&lock);
+        let running_clone = Arc::clone(&running_tasks);
         // 每1小时运行一次，检查
         scheduler.every(1.hour()).run(move || {
             info!("start search task");
@@ -2034,14 +2058,75 @@ async fn get_unmapped_epg_channels() -> impl Responder {
         // 检查任务
         scheduler.every(30.seconds()).run(move || {
             run_check_tasks_with_lock(&lock_clone, || {
+                let now_ts = Local::now().timestamp() as i32;
                 // 获取所有任务
                 if let Ok(tasks) = get_all_tasks() {
                     for (id, _) in tasks {
                         // 运行任务
                         if let Ok(task) = get_task(&id) {
                             if let Some(mut task) = task {
-                                // 运行任务
-                                task.run();
+                                // 卡死保护：任务标记「运行中」但长时间未结束视为卡死，
+                                // 复位状态后允许重新调度（单源检查已有硬超时，正常不会触发）。
+                                // 判断依据：
+                                // - last_run_time 有值（本次运行开始时间）→ 超过 2 小时视为卡死；
+                                // - 从未完成过（last=0，历史遗留状态）→ next_run_time 过期超 30 分钟视为卡死。
+                                let stale_running = if task.task_info.is_running {
+                                    let last = task.task_info.last_run_time;
+                                    if last > 0 {
+                                        now_ts.saturating_sub(last) > 7200
+                                    } else {
+                                        let next = task.task_info.next_run_time;
+                                        next > 0 && now_ts.saturating_sub(next) > 1800
+                                    }
+                                } else {
+                                    false
+                                };
+                                if stale_running {
+                                    error!(
+                                        "task {} seems stuck (is_running > 2h), resetting state",
+                                        id
+                                    );
+                                    task.task_info.is_running = false;
+                                    task.task_info.task_status =
+                                        crate::common::task::TaskStatus::Pending;
+                                    // 清理残留的「当前运行任务」标记，避免前端一直显示“正在执行中”
+                                    if crate::config::get_now_check_task_id().as_deref()
+                                        == Some(id.as_str())
+                                    {
+                                        crate::config::set_now_check_id(None);
+                                    }
+                                    let _ = crate::config::task::file_config::save_task(
+                                        id.clone(),
+                                        task.get_task(),
+                                    );
+                                    let _ = crate::config::task::file_config::save_task_config();
+                                    continue;
+                                }
+                                if task.task_info.is_running {
+                                    continue; // 正在运行：跳过，防止重复调度
+                                }
+                                if task.task_info.next_run_time != 0
+                                    && task.task_info.next_run_time - now_ts > 0
+                                {
+                                    continue; // 未到运行时间
+                                }
+                                // 并发执行：每个到期任务一个独立线程。
+                                // 修复：此前 for 循环串行 task.run()（同步阻塞），
+                                // 一个任务卡住/耗时数小时会阻塞后面所有任务。
+                                let running = Arc::clone(&running_clone);
+                                std::thread::spawn(move || {
+                                    {
+                                        let mut set = running.lock().unwrap_or_else(|e| e.into_inner());
+                                        if set.contains(&id) {
+                                            return;
+                                        }
+                                        set.insert(id.clone());
+                                    }
+                                    task.run();
+                                    if let Ok(mut set) = running.lock() {
+                                        set.remove(&id);
+                                    }
+                                });
                             }
                         }
                     }
@@ -2063,6 +2148,7 @@ async fn get_unmapped_epg_channels() -> impl Responder {
             .service(delete_epg_cache_api)
             .service(get_group_mapping)
             .service(update_group_mapping)
+            .service(set_active_group_type_api)
             .service(get_unmapped_epg_channels)
             .service(check_url_is_available)
             .service(fetch_m3u_body)

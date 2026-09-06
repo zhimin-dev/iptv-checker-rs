@@ -855,18 +855,86 @@ fn filename_from_epg_url(url_str: &str) -> String {
         .unwrap_or_default()
 }
 
-/// 下载 URL 返回字节
+/// 下载 URL 返回字节：
+/// 1. curl 子进程直连下载 + 文件轮询（整个阻塞部分放 spawn_blocking，避免运行时调度问题）；
+/// 2. 失败后回退 reqwest。
 async fn get_url_bytes(url: &str) -> Result<Vec<u8>, Error> {
-    let bytes = crate::common::util::get_http_client()
-        .get(url)
-        .timeout(std::time::Duration::from_secs(60))
-        .send()
-        .await
-        .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?
-        .bytes()
-        .await
-        .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
-    Ok(bytes.to_vec())
+    let ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
+    info!("epg get_url_bytes start: {}", url);
+    let tmp = format!(
+        "./static/epg/_dl_{}.tmp",
+        chrono::Local::now().timestamp_millis()
+    );
+    let curl_bin = if cfg!(target_os = "windows") { "curl.exe" } else { "curl" };
+    let url_owned = url.to_string();
+    let ua_owned = ua.to_string();
+    let tmp_owned = tmp.clone();
+    let curl_owned = curl_bin.to_string();
+    let downloaded = tokio::task::spawn_blocking(move || -> Vec<u8> {
+        let mut cmd = std::process::Command::new(&curl_owned);
+        crate::common::util::apply_direct_to_command(&mut cmd);
+        let child = cmd
+            .arg("-s")
+            .arg("-m")
+            .arg("900")
+            .arg("-A")
+            .arg(&ua_owned)
+            .arg("-o")
+            .arg(&tmp_owned)
+            .arg(&url_owned)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        let Ok(mut c) = child else {
+            log::info!("epg curl spawn failed");
+            return Vec::new();
+        };
+        // 纯文件轮询：文件大小连续 2 秒不变视为下载完成
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(900);
+        let mut last_size = 0u64;
+        let mut stable = 0u32;
+        loop {
+            if std::time::Instant::now() >= deadline {
+                let _ = c.kill();
+                log::info!("epg curl 超时，已终止");
+                break;
+            }
+            let size = std::fs::metadata(&tmp_owned).map(|m| m.len()).unwrap_or(0);
+            if size > 0 && size == last_size {
+                stable += 1;
+            } else {
+                stable = 0;
+                last_size = size;
+            }
+            if stable >= 20 {
+                let _ = c.kill();
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(400));
+        }
+        let bytes = std::fs::read(&tmp_owned).unwrap_or_default();
+        let _ = std::fs::remove_file(&tmp_owned);
+        log::info!("epg curl done: {} bytes", bytes.len());
+        bytes
+    })
+    .await
+    .unwrap_or_default();
+    if !downloaded.is_empty() {
+        return Ok(downloaded);
+    }
+    // 2. reqwest 回退
+    info!("epg curl 失败，回退 reqwest: {}", url);
+    let resp = crate::common::util::request_with_fallback(url, &[("User-Agent", ua)], 15).await;
+    if let Ok(r) = resp {
+        if r.status().is_success() {
+            if let Ok(Ok(bytes)) =
+                tokio::time::timeout(std::time::Duration::from_secs(20), r.bytes()).await
+            {
+                return Ok(bytes.to_vec());
+            }
+        }
+    }
+    Err(Error::new(ErrorKind::Other, "下载失败（curl 与 reqwest 均未成功）"))
 }
 
 /// 解压 gzip 字节流

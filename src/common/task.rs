@@ -383,6 +383,9 @@ impl Task {
     fn run_inner(&mut self) {
         self.task_info.is_running = true;
         self.task_info.task_status = TaskStatus::InProgress;
+        // 记录本次运行开始时间：卡死检测的依据（任务卡住时 last_run_time 不会再更新，
+        // 调度器以此判断「运行中超过 2 小时」并复位）。任务正常完成后会更新为完成时间。
+        self.task_info.last_run_time = now() as i32;
         let _ = save_task(self.id.clone(), self.get_task());
         let _ = save_task_config();
 

@@ -8,7 +8,11 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
-use std::sync::RwLock;
+use std::sync::{Mutex, RwLock};
+
+/// task.json 文件写锁：多个检查任务并发运行时，串行化整个配置文件的写入，
+/// 防止两个线程同时写文件导致内容交错损坏。
+static TASK_FILE_WRITE_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
 /// 检查相关配置结构体
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -81,6 +85,9 @@ pub fn reload_task_config() -> Result<(), String> {
 }
 
 pub fn save_task_to_file() -> Result<(), String> {
+    let _guard = TASK_FILE_WRITE_LOCK
+        .lock()
+        .map_err(|e| format!("Failed to lock task file write: {}", e))?;
     let map = TASK_MAP.read().unwrap();
     let json = serde_json::to_string_pretty(&*map)
         .map_err(|e| format!("Failed to serialize search config: {}", e))?;
@@ -115,6 +122,32 @@ pub fn init_task_config() {
     }
 }
 
+/// 进程启动时调用：清理上一次进程退出时遗留的「运行中」状态。
+/// 进程重启后不可能有任务仍在运行，若不清理，任务会一直显示「正在检查」且不再被调度。
+/// 复位所有 is_running 任务为 Pending，并清空「当前运行任务」标记。
+pub fn reset_running_tasks_on_startup() {
+    let mut config = TASK_MAP.write().unwrap();
+    let mut reset_count = 0;
+    for (_id, task) in config.task.iter_mut() {
+        if task.task_info.is_running {
+            task.task_info.is_running = false;
+            task.task_info.task_status = crate::common::task::TaskStatus::Pending;
+            reset_count += 1;
+        }
+    }
+    if config.now.is_some() {
+        config.now = None;
+    }
+    drop(config);
+    if reset_count > 0 {
+        info!(
+            "reset {} stale running task(s) on startup (previous process left them in progress)",
+            reset_count
+        );
+        let _ = save_task_to_file();
+    }
+}
+
 /// 配置管理模块
 pub mod file_config {
     use std::collections::HashMap;
@@ -133,6 +166,9 @@ pub mod file_config {
 
     /// 保存配置到文件
     pub fn save_task_config() -> Result<(), Error> {
+        let _guard = super::TASK_FILE_WRITE_LOCK
+            .lock()
+            .map_err(|e| Error::new(std::io::ErrorKind::Other, e.to_string()))?;
         let config = TASK_MAP.read().unwrap();
         let content = serde_json::to_string_pretty(&*config)?;
         fs::write(TASK_JSON, content)?;

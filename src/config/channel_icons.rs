@@ -2,6 +2,7 @@
 //! 每一项对应一个频道：主名称、别名、tvg-id（EPG 匹配）、分组、图标地址。
 //! 检查链路中：图标匹配（logo）、分组映射、tvg-id 都从这份配置读取。
 
+use log::{error, info};
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -239,6 +240,75 @@ pub fn logo_exists(logo_url: &str) -> bool {
 /// 重新加载（配置导入后调用）
 pub fn reload() {
     *CHANNEL_ICONS.write().unwrap() = read_channel_icons();
+}
+
+/// 从 m3u 解析结果中自动收集频道图标（tvg-logo）。
+/// 数据来源：/system/get-favourite-channel?channel_type=all 的频道数据、每个检查任务的源数据。
+/// 规则：
+/// - 只补充「还没有图标」的频道，绝不覆盖已有配置（人工上传/绑定的优先）；
+/// - 只收集 http(s) 的图标地址；
+/// - 同名频道（主名/别名/tvg-id 小写匹配）只取第一个 logo。
+/// 返回本次新增/补充的条目数。
+pub fn collect_from_m3u(m3u: &crate::common::M3uObjectList) -> usize {
+    // 配置总量上限保护，防止极端数据把配置文件撑爆
+    const MAX_ITEMS: usize = 5000;
+
+    let mut cfg = get_channel_icons();
+    // key（小写）→ 条目下标，用于快速查找「频道是否已存在」
+    let mut index: HashMap<String, usize> = HashMap::new();
+    for (i, item) in cfg.items.iter().enumerate() {
+        for k in item_name_keys(item) {
+            index.entry(k).or_insert(i);
+        }
+    }
+    let mut changed = 0;
+    for obj in m3u.get_list_ref() {
+        let Some(ext) = obj.get_extend_ref() else { continue };
+        let logo = ext.tv_logo.trim().to_string();
+        if logo.is_empty() || !(logo.starts_with("http://") || logo.starts_with("https://")) {
+            continue;
+        }
+        let name = if !ext.tv_name.trim().is_empty() {
+            ext.tv_name.trim().to_string()
+        } else {
+            obj.get_display_name().to_string()
+        };
+        let key = name.trim().to_lowercase();
+        if key.is_empty() {
+            continue;
+        }
+        if let Some(&i) = index.get(&key) {
+            // 已存在：只在没有 logo 时补充，不覆盖人工配置
+            let item = &mut cfg.items[i];
+            if item.logo.trim().is_empty() {
+                item.logo = logo;
+                changed += 1;
+            }
+            continue;
+        }
+        if cfg.items.len() >= MAX_ITEMS {
+            break;
+        }
+        cfg.items.push(ChannelIconItem {
+            name: name.clone(),
+            aliases: Vec::new(),
+            tvg_id: String::new(),
+            group1: String::new(),
+            group2: String::new(),
+            group: String::new(),
+            logo,
+        });
+        index.insert(key, cfg.items.len() - 1);
+        changed += 1;
+    }
+    if changed > 0 {
+        if let Err(e) = save_channel_icons(cfg.items) {
+            error!("collect channel icons from m3u failed: {}", e);
+        } else {
+            info!("channel icons: auto collected {} logos from m3u source data", changed);
+        }
+    }
+    changed
 }
 
 /// 外部模块读取文件路径用

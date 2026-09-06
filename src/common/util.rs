@@ -43,9 +43,17 @@ fn build_direct_http_client() -> reqwest::Client {
         .danger_accept_invalid_certs(true)
         .no_proxy();
     let mut headers = reqwest::header::HeaderMap::new();
-    let ua = get_user_agent();
-    if let Ok(hv) = reqwest::header::HeaderValue::from_str(&ua) {
-        headers.insert(reqwest::header::USER_AGENT, hv);
+    // 开关：不带 iptv-checker 默认 UA（自定义 user_agent 仍生效）
+    let custom_ua = config.user_agent.trim().to_string();
+    if !custom_ua.is_empty() {
+        if let Ok(hv) = reqwest::header::HeaderValue::from_str(&custom_ua) {
+            headers.insert(reqwest::header::USER_AGENT, hv);
+        }
+    } else if !config.no_ua_header {
+        let ua = get_user_agent();
+        if let Ok(hv) = reqwest::header::HeaderValue::from_str(&ua) {
+            headers.insert(reqwest::header::USER_AGENT, hv);
+        }
     }
     for (key, value) in &config.custom_headers {
         if let (Ok(hk), Ok(hv)) = (
@@ -102,9 +110,17 @@ fn build_http_client() -> reqwest::Client {
 
     // Build default headers: User-Agent first, then custom headers
     let mut headers = reqwest::header::HeaderMap::new();
-    let ua = get_user_agent();
-    if let Ok(hv) = reqwest::header::HeaderValue::from_str(&ua) {
-        headers.insert(reqwest::header::USER_AGENT, hv);
+    // 开关：不带 iptv-checker 默认 UA（自定义 user_agent 仍生效）
+    let custom_ua = config.user_agent.trim().to_string();
+    if !custom_ua.is_empty() {
+        if let Ok(hv) = reqwest::header::HeaderValue::from_str(&custom_ua) {
+            headers.insert(reqwest::header::USER_AGENT, hv);
+        }
+    } else if !config.no_ua_header {
+        let ua = get_user_agent();
+        if let Ok(hv) = reqwest::header::HeaderValue::from_str(&ua) {
+            headers.insert(reqwest::header::USER_AGENT, hv);
+        }
     }
     for (key, value) in &config.custom_headers {
         if let (Ok(hk), Ok(hv)) = (
@@ -367,9 +383,17 @@ pub async fn get_url_body(_url: String, timeout: u64) -> Result<String, Error> {
         }
     }
     let mut headers = reqwest::header::HeaderMap::new();
-    let ua = get_user_agent();
-    if let Ok(hv) = reqwest::header::HeaderValue::from_str(&ua) {
-        headers.insert(reqwest::header::USER_AGENT, hv);
+    // 开关：不带 iptv-checker 默认 UA（自定义 user_agent 仍生效）
+    let custom_ua = config.user_agent.trim().to_string();
+    if !custom_ua.is_empty() {
+        if let Ok(hv) = reqwest::header::HeaderValue::from_str(&custom_ua) {
+            headers.insert(reqwest::header::USER_AGENT, hv);
+        }
+    } else if !config.no_ua_header {
+        let ua = get_user_agent();
+        if let Ok(hv) = reqwest::header::HeaderValue::from_str(&ua) {
+            headers.insert(reqwest::header::USER_AGENT, hv);
+        }
     }
     for (key, value) in &config.custom_headers {
         if let (Ok(hk), Ok(hv)) = (
