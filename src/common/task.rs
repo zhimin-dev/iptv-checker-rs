@@ -55,10 +55,6 @@ impl TaskInfo {
     pub fn set_next_run_time(&mut self, time: i32) {
         self.next_run_time = time
     }
-
-    pub fn set_last_run_time(&mut self, time: i32) {
-        self.last_run_time = time
-    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -383,6 +379,9 @@ impl Task {
     fn run_inner(&mut self) {
         self.task_info.is_running = true;
         self.task_info.task_status = TaskStatus::InProgress;
+        // 记录本次运行开始时间：卡死检测的依据（任务卡住时 last_run_time 不会再更新，
+        // 调度器以此判断「运行中超过 2 小时」并复位）。任务正常完成后会更新为完成时间。
+        self.task_info.last_run_time = now() as i32;
         let _ = save_task(self.id.clone(), self.get_task());
         let _ = save_task_config();
 
@@ -483,18 +482,6 @@ impl TaskManager {
             return Err(Error::new(ErrorKind::Other, e.to_string()));
         }
         Ok(id)
-    }
-
-    pub fn import_task_from_data(&self, data_map: HashMap<String, Task>) -> bool {
-        for (k, v) in data_map {
-            if let Err(_) = file_config::save_task(k, v) {
-                return false;
-            }
-        }
-        if let Err(_) = file_config::save_task_config() {
-            return false;
-        }
-        true
     }
 
     pub fn run_task(&self, id: String) -> Result<bool> {

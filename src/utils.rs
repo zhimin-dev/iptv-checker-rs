@@ -4,11 +4,13 @@ use rand::distr::Alphanumeric;
 use rand::Rng;
 use regex::Regex;
 use serde::Deserializer;
+use std::collections::HashMap;
 use std::fs;
 use std::fs::File;
 use std::io::{Error, ErrorKind, Read};
 use std::net::{IpAddr, Ipv4Addr, ToSocketAddrs};
 use std::process::Command;
+use std::sync::Mutex;
 use url::Url;
 
 /// Helper to deserialize bool from either boolean or string "true"/"false"/"1"/"0"
@@ -164,9 +166,27 @@ pub fn get_url_host_and_port(url_str: &str) -> (String, u16) {
     ("".to_string(), 0)
 }
 
-pub fn get_host_ip_address(domain: &str, port: u16) -> Vec<String> {
-    let mut list = vec![];
+// 域名解析缓存：检查大量频道时，同一域名会被反复解析，
+// 串行同步 DNS 是检测耗时的主要来源之一（每个域名一次系统调用）。
+// 缓存成功与失败结果，失败结果缓存 60 秒（避免 DNS 抖动导致长期错误），
+// 成功结果缓存 10 分钟。
+lazy_static! {
+    static ref DNS_CACHE: Mutex<HashMap<String, (Vec<String>, std::time::Instant)>> =
+        Mutex::new(HashMap::new());
+}
 
+pub fn get_host_ip_address(domain: &str, port: u16) -> Vec<String> {
+    let key = format!("{}:{}", domain.to_lowercase(), port);
+    // 命中缓存：直接返回
+    if let Ok(cache) = DNS_CACHE.lock() {
+        if let Some((list, cached_at)) = cache.get(&key) {
+            if cached_at.elapsed().as_secs() < 600 {
+                return list.clone();
+            }
+        }
+    }
+
+    let mut list = vec![];
     // 使用`ToSocketAddrs`将域名解析为SocketAddr
     match (domain, port).to_socket_addrs() {
         Ok(addrs) => {
@@ -177,6 +197,15 @@ pub fn get_host_ip_address(domain: &str, port: u16) -> Vec<String> {
         Err(e) => {
             println!("Failed to resolve domain: {}", e);
         }
+    }
+
+    // 写入缓存（失败也缓存 60 秒，避免每个频道都重试一次死域名解析）
+    if let Ok(mut cache) = DNS_CACHE.lock() {
+        // 防止缓存无限膨胀
+        if cache.len() > 20000 {
+            cache.clear();
+        }
+        cache.insert(key, (list.clone(), std::time::Instant::now()));
     }
     list
 }

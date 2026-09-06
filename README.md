@@ -103,6 +103,21 @@ GitHub API 对未认证请求有严格的频率限制（60次/时），配置 to
 | 未配置 token | 先尝试 API，触发限流（403/429）后自动降级为 HTML 页面解析 |
 | token 无效 | 保存时拒绝，提示错误信息 |
 
+## 播放器 API（配合 iptv-checker-desktop 客户端）
+
+服务端内置了供播放客户端使用的接口：
+
+- `GET /api/player/channels` —— 当前已有频道列表（JSON）
+- `POST /api/player/relay/start` —— 启动「流畅播放中继」：服务端用 ffmpeg 把源流下载到本地切片缓存
+- `GET /api/player/relay/{sid}/status` —— 中继会话状态
+- `GET /api/player/relay/{sid}/{file}` —— 本地 HLS（playlist/分片）
+- `DELETE /api/player/relay/{sid}` —— 停止中继会话
+- `GET /api/player/relay` —— 会话列表（调试）
+
+当客户端直连源站播放卡顿时，可让服务端接管链接：服务端持续拉取 m3u8 并在本地切成 HLS 分片，客户端改播本地 playlist，保证播放稳定（画面延迟几十秒）。中继模式要求服务端安装 ffmpeg。
+
+完整文档见 [docs/player-api.md](docs/player-api.md)。
+
 ## build
 
 ```bash

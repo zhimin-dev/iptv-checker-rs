@@ -131,12 +131,21 @@ impl M3uObject {
     pub fn check_by_block(&mut self, request_time: i32, ffmpeg_check: bool, not_http_skip: bool) {
         let url = self.url.clone();
         let _log_url = url.clone();
-        let result = actix_rt::System::new().block_on(check_link_is_valid(
-            url,
-            request_time as u64,
-            ffmpeg_check,
-            not_http_skip,
-        ));
+        // 硬超时保护：request_time 毫秒后强制结束本次检查。
+        // 部分源的 body 读取（龟速流/挂起连接）没有超时，会把检查任务永久卡住，
+        // 导致同一任务的其他源与后续定时任务都无法执行。
+        let timeout_ms = (request_time as u64).max(1000);
+        let result = actix_rt::System::new().block_on(async move {
+            tokio::time::timeout(
+                tokio::time::Duration::from_millis(timeout_ms),
+                check_link_is_valid(url, timeout_ms, ffmpeg_check, not_http_skip),
+            )
+            .await
+            .map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::TimedOut, "channel check timed out")
+            })
+            .and_then(|r| r)
+        });
         debug!("url is: {} result: {:?}", self.url.clone(), result);
         return match result {
             Ok(data) => {
@@ -285,8 +294,16 @@ impl M3uObject {
         self.extend = Some(extend)
     }
 
+    pub fn get_other_status(&self) -> &OtherStatus {
+        &self.other_status
+    }
+
     pub fn set_other_status(&mut self, other_status: OtherStatus) {
         self.other_status = other_status
+    }
+
+    pub fn get_status(&self) -> CheckDataStatus {
+        self.status.clone()
     }
 
     pub fn set_status(&mut self, status: CheckDataStatus) {
@@ -411,12 +428,19 @@ impl M3uObjectList {
         self.list = list
     }
 
-    pub fn get_list(self) -> Vec<M3uObject> {
-        self.list
+    pub fn get_list_ref(&self) -> &Vec<M3uObject> {
+        &self.list
     }
 
-    pub fn get_header(self) -> M3uExt {
-        self.header
+    /// 过滤黑名单 URL（检查前调用），返回被过滤数量
+    pub fn filter_urls(&mut self, blacklist: &std::collections::HashSet<String>) -> usize {
+        let before = self.list.len();
+        self.list.retain(|x| !blacklist.contains(&x.url));
+        before - self.list.len()
+    }
+
+    pub fn get_list(self) -> Vec<M3uObject> {
+        self.list
     }
 
     pub fn print_result(&mut self) -> String {
@@ -1227,6 +1251,26 @@ fn quality_numeric_label(q: &QualityType) -> &str {
         QualityType::Quality4K => "2160p",
         QualityType::Quality8K => "4320p",
         QualityType::QualityUnknown => "",
+    }
+}
+
+/// 最大清晰度数值标签（如 720p / 1080p / 2160p）；无 ffmpeg 信息时返回空字符串
+pub fn max_quality_numeric_label(other_status: &OtherStatus) -> String {
+    let info = match &other_status.ffmpeg_info {
+        Some(i) => i,
+        None => return String::new(),
+    };
+    if info.video.is_empty() {
+        return String::new();
+    }
+    let max_q = info
+        .video
+        .iter()
+        .map(|v| &v.quality_type)
+        .max_by(|a, b| quality_order(a).cmp(&quality_order(b)));
+    match max_q {
+        Some(q) => quality_numeric_label(q).to_string(),
+        None => String::new(),
     }
 }
 

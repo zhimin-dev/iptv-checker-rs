@@ -40,6 +40,67 @@ static QUALITY_SUFFIX_RE: Lazy<Regex> = Lazy::new(|| {
     .unwrap()
 });
 
+/// 匹配【】（）() [] 等括号包裹的块（如【台】、（HD）），供规范化时剥除
+static BRACKET_BLOCK_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"[【\[\(（][^【\]\)（）]*[】\]\)）]").unwrap()
+});
+
+/// 规范化频道/EPG 名称用于模糊匹配：
+/// 繁体转简体、转小写、全角转半角、去掉空白与 - _ · . 等分隔符、剥除【台】等括号后缀块。
+/// 例：「CCTV-1 综合【台】」与「CCTV1综合」规范化后一致。
+pub fn normalize_epg_name(raw: &str) -> String {
+    let simp = crate::common::translate::trad_to_simp(raw);
+    // 全角转半角（含全角空格）
+    let half: String = simp
+        .chars()
+        .map(|c| {
+            let code = c as u32;
+            if code == 0x3000 {
+                ' '
+            } else if (0xFF01..=0xFF5E).contains(&code) {
+                char::from_u32(code - 0xFEE0).unwrap_or(c)
+            } else {
+                c
+            }
+        })
+        .collect();
+    let mut s = half.to_lowercase();
+    // 反复剥除括号包裹的块（处理嵌套）
+    loop {
+        let before = s.clone();
+        s = BRACKET_BLOCK_RE.replace_all(&s, "").to_string();
+        if s == before {
+            break;
+        }
+    }
+    // 去掉空白与常见分隔符
+    s.chars()
+        .filter(|c| {
+            !c.is_whitespace()
+                && !matches!(
+                    c,
+                    '-' | '_' | '·' | '•' | '.' | ',' | '，' | '。' | ':' | '：'
+                )
+        })
+        .collect()
+}
+
+/// 规范化后的 EPG 映射索引：normalize(name) -> 原始映射列表
+pub static EPG_MAPPINGS_NORM: Lazy<HashMap<String, Vec<EpgMapping>>> = Lazy::new(|| {
+    let mut map: HashMap<String, Vec<EpgMapping>> = HashMap::new();
+    for mappings in EPG_MAPPINGS.values() {
+        for m in mappings {
+            let key = normalize_epg_name(&m.name);
+            if key.is_empty() {
+                continue;
+            }
+            map.entry(key).or_default().push(m.clone());
+        }
+    }
+    log::info!("Normalized EPG mapping index: {} entries", map.len());
+    map
+});
+
 /// Match a channel name against the EPG mapping, handling quality suffixes.
 /// Returns `Some((epg_name, epg_channel_id))` on match, `None` otherwise.
 ///
@@ -83,7 +144,34 @@ pub fn match_epg_channel(raw_name: &str) -> Option<(String, String)> {
         }
     }
 
-    // Tier 3: longest-prefix fallback
+    // Tier 3: 规范化模糊匹配（去横线/空格/【台】等后缀后精确匹配）
+    let lookup_norm = |name: &str| -> Option<(String, String)> {
+        let key = normalize_epg_name(name);
+        if key.is_empty() {
+            return None;
+        }
+        if let Some(mappings) = EPG_MAPPINGS_NORM.get(&key) {
+            for priority in priorities.iter() {
+                if let Some(m) = mappings.iter().find(|m| m.source == *priority) {
+                    return Some((m.name.clone(), m.channel.clone()));
+                }
+            }
+            if let Some(m) = mappings.first() {
+                return Some((m.name.clone(), m.channel.clone()));
+            }
+        }
+        None
+    };
+    if let Some(result) = lookup_norm(raw_name) {
+        return Some(result);
+    }
+    if stripped != raw_name {
+        if let Some(result) = lookup_norm(&stripped) {
+            return Some(result);
+        }
+    }
+
+    // Tier 4: longest-prefix fallback
     let mut best: Option<(String, String)> = None;
     let mut best_len = 0usize;
     for (epg_name, mappings) in EPG_MAPPINGS.iter() {
@@ -139,6 +227,33 @@ pub fn get_best_tvg_id(tv_name: Option<&str>, display_name: &str) -> String {
         return id;
     }
 
-    // 3. Final fallback: use display_name as id
+    // 3. 规范化模糊匹配（去横线/空格/【台】等后缀）
+    let lookup_norm = |name: &str| -> Option<String> {
+        let key = normalize_epg_name(name);
+        if key.is_empty() {
+            return None;
+        }
+        if let Some(mappings) = EPG_MAPPINGS_NORM.get(&key) {
+            for priority in priorities.iter() {
+                if let Some(mapping) = mappings.iter().find(|m| m.source == *priority) {
+                    return Some(mapping.channel.clone());
+                }
+            }
+            if let Some(mapping) = mappings.first() {
+                return Some(mapping.channel.clone());
+            }
+        }
+        None
+    };
+    if let Some(name) = tv_name {
+        if let Some(id) = lookup_norm(name) {
+            return id;
+        }
+    }
+    if let Some(id) = lookup_norm(display_name) {
+        return id;
+    }
+
+    // 4. Final fallback: use display_name as id
     display_name.to_string()
 }

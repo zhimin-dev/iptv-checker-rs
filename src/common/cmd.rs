@@ -12,7 +12,10 @@ use log::{error, info};
 /// * `bool` - 成功返回true，失败返回false
 pub fn capture_stream_pic(m3u8_url: String, output_image: String, timeout_seconds: u64) -> bool {
     // 使用ffmpeg截取首帧
-    let status = Command::new("ffmpeg")
+    let mut cmd = Command::new("ffmpeg");
+    // 缩略图抓帧遵循网络代理配置
+    crate::common::util::apply_proxy_to_command(&mut cmd);
+    let status = cmd
         .args(&[
             "-i",
             &m3u8_url, // 输入M3U8地址
@@ -53,7 +56,9 @@ pub fn capture_stream_pic(m3u8_url: String, output_image: String, timeout_second
 /// 4. 保持最近的5个片段在播放列表中
 /// 5. 自动删除旧的TS片段
 pub fn live_steam_to_m3u8_steam(rtmp_url: String, hls_output: String) -> bool {
-    let status: ExitStatus = Command::new("ffmpeg")
+    let mut cmd = Command::new("ffmpeg");
+    crate::common::util::apply_proxy_to_command(&mut cmd);
+    let status: ExitStatus = cmd
         .args(&[
             "-i",
             &rtmp_url,

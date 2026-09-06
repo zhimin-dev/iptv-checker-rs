@@ -26,6 +26,9 @@ pub struct NetworkConfig {
     /// Custom User-Agent; defaults to "iptv-checker/v{version}" if empty
     #[serde(default)]
     pub user_agent: String,
+    /// 不带默认的 iptv-checker User-Agent 头（自定义 user_agent 仍然生效）
+    #[serde(default, deserialize_with = "deserialize_bool_flexible")]
+    pub no_ua_header: bool,
 }
 
 fn default_true() -> bool {
@@ -39,6 +42,7 @@ impl NetworkConfig {
             use_system_proxy: true,
             custom_headers: HashMap::new(),
             user_agent: String::default(),
+            no_ua_header: false,
         }
     }
 }
@@ -57,19 +61,6 @@ pub fn get_network_json() -> Result<String, String> {
     let config = NETWORK_MAP.read().unwrap();
     serde_json::to_string_pretty(&*config)
         .map_err(|e| format!("Failed to serialize network config: {}", e))
-}
-
-/// 从 JSON 字符串解析并更新网络配置
-pub fn update_network_from_json(json: &str) -> Result<(), String> {
-    let config: NetworkConfig = serde_json::from_str(json)
-        .map_err(|e| format!("Failed to parse network JSON: {}", e))?;
-    update_network_config(config)
-}
-
-/// 读取 network.json 文件内容（字符串形式）
-pub fn read_network_json_string() -> Result<String, String> {
-    fs::read_to_string(get_network_file_path())
-        .map_err(|e| format!("Failed to read network.json: {}", e))
 }
 
 /// 重新加载 network.json 文件

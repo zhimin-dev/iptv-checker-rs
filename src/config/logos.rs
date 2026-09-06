@@ -6,7 +6,7 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 use std::sync::RwLock;
-use log::{error, info, warn};
+use log::{error, warn};
 
 /// Logos配置结构体
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,20 +43,6 @@ pub fn get_logos_config() -> LogosConfig {
     LOGOS_MAP.read().unwrap().clone()
 }
 
-/// 获取 Logos 配置的 JSON 字符串
-pub fn get_logos_json() -> Result<String, String> {
-    let config = LOGOS_MAP.read().unwrap();
-    serde_json::to_string_pretty(&*config)
-        .map_err(|e| format!("Failed to serialize logos config: {}", e))
-}
-
-/// 从 JSON 字符串解析并更新 Logos 配置
-pub fn update_logos_from_json(json: &str) -> Result<(), String> {
-    let config: LogosConfig = serde_json::from_str(json)
-        .map_err(|e| format!("Failed to parse logos JSON: {}", e))?;
-    update_logos_config(config)
-}
-
 /// 读取 logos.json 文件内容（字符串形式）
 pub fn read_logos_json_string() -> Result<String, String> {
     fs::read_to_string(get_logos_file_path())
@@ -73,12 +59,6 @@ pub fn partial_update_logos_config(
     config.remote_url2local_images = remote_url2local_images;
     
     update_logos_config(config)
-}
-
-/// 根据 URL 查找 LogoItem
-pub fn find_logo_by_url(url: &str) -> Option<LogoItem> {
-    let config = get_logos_config();
-    config.logos.into_iter().find(|logo| logo.url == url)
 }
 
 /// 更新某个 Logo 的名称列表
@@ -137,34 +117,6 @@ pub fn get_logos_map() -> std::collections::HashMap<String, String> {
     logos_map
 }
 
-/// 从 JSON 字符串构建 Logo 映射表（兼容旧格式）
-pub fn get_logos_map_from_json(json: &str) -> std::collections::HashMap<String, String> {
-    let mut logos_map = std::collections::HashMap::new();
-    
-    // 尝试解析为新的完整格式
-    if let Ok(config) = serde_json::from_str::<LogosConfig>(json) {
-        for item in config.logos {
-            for name in item.name {
-                logos_map.insert(name, item.url.clone());
-            }
-        }
-    }
-    // 尝试解析为 List 格式
-    else if let Ok(list) = serde_json::from_str::<Vec<LogoItem>>(json) {
-        for item in list {
-            for name in item.name {
-                logos_map.insert(name, item.url.clone());
-            }
-        }
-    }
-    // 尝试解析为旧的 Map 格式
-    else if let Ok(map) = serde_json::from_str::<std::collections::HashMap<String, String>>(json) {
-        logos_map = map;
-    }
-    
-    logos_map
-}
-
 /// 重新加载 logos.json 文件
 pub fn reload_logos_map() -> Result<(), String> {
     let p = Path::new(get_logos_file_path().as_str()).to_owned();
@@ -172,23 +124,6 @@ pub fn reload_logos_map() -> Result<(), String> {
     let mut map = LOGOS_MAP.write().unwrap();
     *map = new_map;
     Ok(())
-}
-
-/// 根据频道名获取对应的 Logo URL
-pub fn get_logo_url_by_name(channel_name: &str) -> Option<String> {
-    let config = get_logos_config();
-    for logo in config.logos {
-        if logo.name.iter().any(|n| n == channel_name) {
-            return Some(logo.url.clone());
-        }
-    }
-    None
-}
-
-/// 获取所有 Logo 配置列表
-pub fn get_logos_list() -> Vec<LogoItem> {
-    let config = get_logos_config();
-    config.logos
 }
 
 fn read_logos_json<P: AsRef<Path>>(path: P) -> LogosConfig {
@@ -223,22 +158,6 @@ fn read_logos_json<P: AsRef<Path>>(path: P) -> LogosConfig {
             LogosConfig::new()
         }
     }
-}
-
-/// 添加 Logo 配置
-pub fn add_logo(logo: LogoItem) -> Result<(), String> {
-    let mut map = LOGOS_MAP.write().unwrap();
-    map.logos.push(logo);
-    drop(map);
-    save_logos_to_file()
-}
-
-/// 删除 Logo 配置（根据 URL）
-pub fn remove_logo_by_url(url: &str) -> Result<(), String> {
-    let mut map = LOGOS_MAP.write().unwrap();
-    map.logos.retain(|logo| logo.url != url);
-    drop(map);
-    save_logos_to_file()
 }
 
 /// 更新整个 Logos 配置

@@ -5,7 +5,6 @@
 //! - 子节点 `<channel id="...">`，内嵌 `<display-name lang="...">文本</display-name>`
 //! - 子节点 `<programme start="..." stop="..." channel="...">`，内嵌 `<title lang="...">文本</title>`
 
-use crate::search::parse_epg_time_str;
 use crate::common::translate::trad_to_simp;
 use crate::epg_mapping::get_best_tvg_id;
 use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, BytesText, Event};
@@ -21,6 +20,10 @@ use lazy_static::lazy_static;
 // ============== 全局 EPG 缓存 ==============
 lazy_static! {
     pub static ref GLOBAL_EPG_CACHE: Arc<RwLock<HashMap<String, Vec<Programme>>>> = Arc::new(RwLock::new(HashMap::new()));
+    /// 规范化名称 -> 原始缓存 key（模糊查询用）
+    static ref EPG_CACHE_NORM: RwLock<HashMap<String, String>> = RwLock::new(HashMap::new());
+    /// EPG 频道 id（tvg-id）-> 节目列表
+    static ref EPG_CACHE_BY_ID: RwLock<HashMap<String, Vec<Programme>>> = RwLock::new(HashMap::new());
 }
 
 /// 安全地更新全局 EPG 缓存
@@ -48,12 +51,57 @@ pub fn update_global_epg_cache(tv: &Tv) {
     if let Ok(mut cache) = GLOBAL_EPG_CACHE.write() {
         *cache = new_cache;
     }
+    // 重建辅助索引（规范化名称 / tvg-id）
+    rebuild_epg_indexes();
 }
 
-/// 根据频道名称查询 EPG 缓存
-pub fn query_epg_by_channel(channel_name: &str) -> Vec<Programme> {
+/// 由 EPG 缓存构建辅助索引（规范化名称、频道 id）
+fn rebuild_epg_indexes() {
+    let mut norm: HashMap<String, String> = HashMap::new();
+    let mut by_id: HashMap<String, Vec<Programme>> = HashMap::new();
     if let Ok(cache) = GLOBAL_EPG_CACHE.read() {
+        for (name, programmes) in cache.iter() {
+            let key = crate::epg_mapping::normalize_epg_name(name);
+            if !key.is_empty() && !norm.contains_key(&key) {
+                norm.insert(key, name.clone());
+            }
+            if let Some(first) = programmes.first() {
+                by_id.entry(first.channel.clone()).or_default().extend(programmes.clone());
+            }
+        }
+    }
+    if let Ok(mut m) = EPG_CACHE_NORM.write() {
+        *m = norm;
+    }
+    if let Ok(mut m) = EPG_CACHE_BY_ID.write() {
+        *m = by_id;
+    }
+}
+
+/// 根据频道名称查询 EPG 缓存：名称精确 -> 规范化模糊（去横线/空格/【台】后缀）-> tvg-id
+pub fn query_epg_by_channel(channel_name: &str) -> Vec<Programme> {
+    // 1. 名称精确匹配
+    {
+        let cache = GLOBAL_EPG_CACHE.read().unwrap();
         if let Some(programmes) = cache.get(channel_name) {
+            return programmes.clone();
+        }
+    }
+    // 2. 规范化模糊匹配
+    let norm = crate::epg_mapping::normalize_epg_name(channel_name);
+    if !norm.is_empty() {
+        if let Ok(map) = EPG_CACHE_NORM.read() {
+            if let Some(orig) = map.get(&norm) {
+                let cache = GLOBAL_EPG_CACHE.read().unwrap();
+                if let Some(programmes) = cache.get(orig) {
+                    return programmes.clone();
+                }
+            }
+        }
+    }
+    // 3. 按 tvg-id 查询
+    if let Ok(by_id) = EPG_CACHE_BY_ID.read() {
+        if let Some(programmes) = by_id.get(channel_name) {
             return programmes.clone();
         }
     }
@@ -86,7 +134,7 @@ pub fn get_all_epg_channels() -> Vec<EpgChannelItem> {
 pub fn generate_custom_epg_xml(channel_names: Vec<String>) -> Result<String, String> {
     let mut tv = Tv {
         generator_info_name: Some("iptv-checker-rs".to_string()),
-        generator_info_url: Some("https://github.com/iptv-checker-rs".to_string()),
+        generator_info_url: Some("https://github.com/zhimin-dev/iptv-checker-rs".to_string()),
         channels: Vec::new(),
         programmes: Vec::new(),
     };
@@ -134,30 +182,6 @@ pub struct Tv {
     pub programmes: Vec<Programme>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct EpgAllListItem {
-    channel_map: HashMap<String, String>,
-    list_map: HashMap<String, Vec<Programme>>,
-}
-
-impl EpgAllListItem {
-    pub fn new() -> Self {
-        Self::default()
-    }
-    
-    pub fn set_channel_map(&mut self, channel_map: HashMap<String, String>) {
-        self.channel_map = channel_map;
-    }
-    
-    pub fn set_list_map(&mut self, list_map: HashMap<String, Vec<Programme>>) {
-        self.list_map = list_map;
-    }
-    
-    pub fn save_json_file(self, file_name:String) {
-        serde_json::to_writer(File::create(file_name).unwrap(), &self).unwrap();
-    }
-}
-
 /// 频道
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Channel {
@@ -166,39 +190,12 @@ pub struct Channel {
     pub display_names: Vec<DisplayName>,
 }
 
-impl Channel {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn set_id(&mut self, id: String) {
-        self.id = id;
-    }
-
-    pub fn set_display_names(&mut self, display_names: Vec<DisplayName>) {
-        self.display_names = display_names;
-    }
-}
-
 /// 显示名称（多语言）
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DisplayName {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lang: Option<String>,
     pub value: String,
-}
-
-impl DisplayName {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn set_lang(&mut self, lang: String) {
-        self.lang = Some(lang);
-    }
-    pub fn set_value(&mut self, value: String) {
-        self.value = value;
-    }
 }
 
 /// 节目单条
@@ -213,55 +210,12 @@ pub struct Programme {
     pub titles: Vec<ProgrammeTitle>,
 }
 
-impl Programme {
-    pub fn to_unixtime(&mut self) {
-        self.start_unix = parse_epg_time_str(&self.start);
-        self.stop_unix = parse_epg_time_str(&self.stop);
-    }
-}
-
 /// 节目标题（多语言）
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProgrammeTitle {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lang: Option<String>,
     pub value: String,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct EpgProgram {
-    pub start: String,
-    pub stop: String,
-    pub channel: String,
-    pub title: String,
-    pub lang: String,
-}
-
-impl EpgProgram {
-    pub fn new() -> EpgProgram {
-        EpgProgram {
-            start: String::default(),
-            stop: String::default(),
-            channel: String::default(),
-            title: String::default(),
-            lang: String::default(),
-        }
-    }
-    pub fn set_start(&mut self, start: String) {
-        self.start = start;
-    }
-    pub fn set_stop(&mut self, stop: String) {
-        self.stop = stop;
-    }
-    pub fn set_channel(&mut self, channel: String) {
-        self.channel = channel;
-    }
-    pub fn set_titles(&mut self, title: String) {
-        self.title = title
-    }
-    pub fn set_lang(&mut self, lang: String) {
-        self.lang = lang
-    }
 }
 
 // ============== 解析实现 ==============
@@ -642,17 +596,6 @@ pub fn tv_to_epg_xml(tv: &Tv) -> Result<String, String> {
     String::from_utf8(bytes).map_err(|e| format!("UTF-8 转换失败: {}", e))
 }
 
-/// 将 Tv 对象序列化为 JSON 字符串
-pub fn epg_to_json_string(tv: &Tv) -> Result<String, String> {
-    serde_json::to_string_pretty(tv).map_err(|e| format!("JSON 序列化错误: {}", e))
-}
-
-/// 一步：XML 字符串 -> Tv 对象 -> JSON 字符串
-pub fn epg_xml_str_to_json(xml_str: &str) -> Result<String, String> {
-    let tv = parse_epg_xml_str(xml_str)?;
-    epg_to_json_string(&tv)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -682,20 +625,6 @@ mod tests {
         assert_eq!(tv.channels[0].display_names[0].value, "CCTV1");
         assert_eq!(tv.programmes.len(), 2);
         assert_eq!(tv.programmes[0].titles[0].value, "非遗里的中国Ⅳ(6)");
-    }
-
-    #[test]
-    fn epg_to_json() {
-        let tv = parse_epg_xml_str(SAMPLE).unwrap();
-        let json = epg_to_json_string(&tv).unwrap();
-        assert!(json.contains("1") && json.contains("CCTV1"));
-        assert!(json.contains("非遗里的中国Ⅳ(6)"));
-    }
-
-    #[test]
-    fn epg_xml_str_to_json_one_shot() {
-        let json = epg_xml_str_to_json(SAMPLE).unwrap();
-        let _: serde_json::Value = serde_json::from_str(&json).unwrap();
     }
 
     #[test]

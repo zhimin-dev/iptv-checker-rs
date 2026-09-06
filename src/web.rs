@@ -33,7 +33,6 @@ use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time;
 use std::time::Duration;
 use tokio::signal;
 use walkdir::WalkDir;
@@ -199,6 +198,53 @@ async fn system_clear_search_folder() -> impl Responder {
                 .json(serde_json::json!({"msg": "internal error, clear search folder failed"}))
         }
     }
+}
+
+/// 列出最近的检测报告（按格式统计，方便后期人工查看）；可选 output_id 过滤某个任务的报告
+#[get("/system/check-reports")]
+async fn system_check_reports(q: web::Query<CheckReportsQuery>) -> impl Responder {
+    let mut reports: Vec<(u64, String)> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(crate::r#const::constant::OUTPUT_FOLDER) {
+        for entry in rd.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !name.ends_with("_report.json") {
+                continue;
+            }
+            if let Some(oid) = &q.output_id {
+                if !oid.is_empty() && name != format!("{}_report.json", oid) {
+                    continue;
+                }
+            }
+            let modified = entry
+                .metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            reports.push((modified, name));
+        }
+    }
+    reports.sort_by(|a, b| b.0.cmp(&a.0));
+    let list: Vec<serde_json::Value> = reports
+        .into_iter()
+        .take(20)
+        .filter_map(|(modified, name)| {
+            let path = format!("{}{}", crate::r#const::constant::OUTPUT_FOLDER, name);
+            let content = std::fs::read_to_string(&path).ok()?;
+            let mut v: serde_json::Value = serde_json::from_str(&content).ok()?;
+            v["file"] = serde_json::json!(name);
+            v["modified"] = serde_json::json!(modified);
+            Some(v)
+        })
+        .collect();
+    HttpResponse::Ok().json(serde_json::json!({ "list": list }))
+}
+
+/// 检测报告查询参数
+#[derive(serde::Deserialize)]
+pub struct CheckReportsQuery {
+    pub output_id: Option<String>,
 }
 
 /// 初始化今日搜索数据的API端点
@@ -534,7 +580,8 @@ async fn upload(MultipartForm(form): MultipartForm<UploadFormReq>) -> impl Respo
 
     let path = format!("{}{}", UPLOAD_FOLDER, file_name);
     log::info!("saving to {path}");
-    if let Err(e) = form.file.file.persist(path.clone()) {
+    // 用 copy 而不是 persist：临时文件与目标目录可能在不同磁盘（persist 是重命名，跨盘会失败）
+    if let Err(e) = std::fs::copy(form.file.file.path(), &path) {
         log::error!("Failed to save file: {}", e);
         return HttpResponse::InternalServerError()
             .json(serde_json::json!({"msg": format!("Failed to save file: {}", e), "url": ""}));
@@ -669,7 +716,8 @@ async fn upload_logos(MultipartForm(form): MultipartForm<UploadLogosReq>) -> imp
 
         let path = format!(".{}{}", LOGOS_FOLDER, file_name);
 
-        if let Err(e) = file.file.persist(path.clone()) {
+        // copy 而非 persist：跨磁盘时重命名会失败（os error 17）
+        if let Err(e) = std::fs::copy(file.file.path(), &path) {
             log::error!("Failed to save logo {}: {}", file_name, e);
             continue;
         }
@@ -680,8 +728,162 @@ async fn upload_logos(MultipartForm(form): MultipartForm<UploadLogosReq>) -> imp
     if let Err(e) = update_logos_json_file() {
         log::error!("Failed to update logos json: {}", e);
     }
+    // 同步创建统一频道图标配置条目（tvg-id / 分组留空，后续在「频道图标」页编辑）
+    for name in &uploaded_files {
+        let stem = std::path::Path::new(name)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(name)
+            .to_string();
+        crate::config::channel_icons::upsert_item(crate::config::channel_icons::ChannelIconItem {
+            name: stem,
+            aliases: vec![],
+            tvg_id: String::new(),
+            group1: String::new(),
+            group2: String::new(),
+            group: String::new(),
+            logo: format!("{}{}", LOGOS_FOLDER, name),
+        });
+    }
 
     HttpResponse::Ok().json(serde_json::json!({"msg": "success", "uploaded": uploaded_files}))
+}
+
+/// AI 配置读写
+async fn get_ai_config_api() -> impl Responder {
+    let config = crate::config::ai::get_ai_config();
+    HttpResponse::Ok().json(serde_json::json!({
+        "api_key": config.api_key,
+        "base_url": config.base_url,
+        "model": config.model,
+    }))
+}
+
+async fn save_ai_config_api(req: web::Json<crate::config::ai::AiConfig>) -> impl Responder {
+    match crate::config::ai::save_ai_config(req.into_inner()) {
+        Ok(()) => HttpResponse::Ok().json(serde_json::json!({ "msg": "success" })),
+        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({ "msg": e })),
+    }
+}
+
+/// AI 整理请求体（groups 为分组映射的扁平分组名）
+#[derive(serde::Deserialize)]
+pub struct AiOrganizeReq {
+    #[serde(default)]
+    pub names: Vec<String>,
+    #[serde(default)]
+    pub groups: Vec<String>,
+    /// 允许 AI 创建新分组
+    #[serde(default)]
+    pub allow_create_groups: bool,
+    /// 分组方式：prefix（前缀/地域，默认）| category（电视分类）
+    #[serde(default)]
+    pub group_mode: String,
+}
+
+/// 调用 DeepSeek 整理频道名称
+async fn ai_organize_api(req: web::Json<AiOrganizeReq>) -> impl Responder {
+    let body = req.into_inner();
+    match crate::ai_organize::organize_channel_names(body.names, body.groups, body.allow_create_groups, body.group_mode).await {
+        Ok((items, errors)) => HttpResponse::Ok().json(serde_json::json!({ "items": items, "errors": errors })),
+        Err(e) => HttpResponse::BadRequest().json(serde_json::json!({ "msg": e })),
+    }
+}
+
+/// AI 整理应用请求体
+#[derive(serde::Deserialize)]
+pub struct AiApplyReq {
+    #[serde(default)]
+    pub items: Vec<crate::ai_organize::AiChannelItem>,
+    /// 允许 AI 创建新分组
+    #[serde(default)]
+    pub allow_create_groups: bool,
+}
+
+/// 把 AI 整理结果合并进频道图标统一配置
+async fn ai_apply_api(req: web::Json<AiApplyReq>) -> impl Responder {
+    let body = req.into_inner();
+    match crate::ai_organize::apply_ai_items(body.items, body.allow_create_groups) {
+        Ok((updated, created, grouped)) => HttpResponse::Ok().json(serde_json::json!({ "updated": updated, "created": created, "grouped": grouped, "msg": "success" })),
+        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({ "msg": e })),
+    }
+}
+
+/// 保存统一频道图标配置的请求体
+#[derive(serde::Deserialize)]
+pub struct ChannelIconsSaveReq {
+    #[serde(default)]
+    pub items: Vec<crate::config::channel_icons::ChannelIconItem>,
+}
+
+/// 统一频道图标配置（频道图标 + 分组 + tvg-id 合并配置）
+async fn get_channel_icons_api() -> impl Responder {
+    let config = crate::config::channel_icons::get_channel_icons();
+    HttpResponse::Ok().json(serde_json::json!({
+        "items": config.items,
+        "total": config.items.len(),
+    }))
+}
+
+/// 全量保存统一频道图标配置
+async fn save_channel_icons_api(req: web::Json<ChannelIconsSaveReq>) -> impl Responder {
+    match crate::config::channel_icons::save_channel_icons(req.into_inner().items) {
+        Ok(()) => HttpResponse::Ok().json(serde_json::json!({ "msg": "success" })),
+        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({ "msg": e })),
+    }
+}
+
+/// 两级分组定义（分组编辑页）
+async fn get_groups_api() -> impl Responder {
+    let groups = crate::config::groups::get_groups();
+    HttpResponse::Ok().json(serde_json::json!({
+        "groups": groups,
+        "total": groups.len(),
+    }))
+}
+
+/// 保存两级分组定义的请求体
+#[derive(serde::Deserialize)]
+pub struct GroupsSaveReq {
+    #[serde(default)]
+    pub groups: Vec<crate::config::groups::GroupDef>,
+}
+
+/// 全量保存两级分组定义
+async fn save_groups_api(req: web::Json<GroupsSaveReq>) -> impl Responder {
+    match crate::config::groups::save_groups(req.into_inner().groups) {
+        Ok(()) => HttpResponse::Ok().json(serde_json::json!({ "msg": "success" })),
+        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({ "msg": e })),
+    }
+}
+
+/// 删除分组定义的请求体
+#[derive(serde::Deserialize)]
+pub struct GroupDeleteReq {
+    pub group1: String,
+    #[serde(default)]
+    pub group2: String,
+    #[serde(default)]
+    pub clear_channels: bool,
+}
+
+/// 删除分组定义（可选同步清除频道项上的分组）
+async fn delete_group_api(req: web::Json<GroupDeleteReq>) -> impl Responder {
+    match crate::config::groups::delete_group(&req.group1, &req.group2, req.clear_channels) {
+        Ok(true) => HttpResponse::Ok().json(serde_json::json!({ "msg": "deleted" })),
+        Ok(false) => HttpResponse::NotFound().json(serde_json::json!({ "msg": "not found" })),
+        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({ "msg": e })),
+    }
+}
+
+/// 删除单个统一频道图标配置
+async fn delete_channel_icon_api(path: web::Path<String>) -> impl Responder {
+    let name = path.into_inner();
+    if crate::config::channel_icons::remove_item(&name) {
+        HttpResponse::Ok().json(serde_json::json!({ "msg": "deleted", "name": name }))
+    } else {
+        HttpResponse::NotFound().json(serde_json::json!({ "msg": "not found" }))
+    }
 }
 
 /// 获取Logo列表API端点
@@ -747,8 +949,6 @@ async fn get_base_config() -> impl Responder {
 struct UpdateBaseConfigRequest {
     host: String,
     #[serde(default, deserialize_with = "deserialize_bool_flexible")]
-    replace_string: bool,
-    #[serde(default, deserialize_with = "deserialize_bool_flexible")]
     remote_url2local_images: bool,
     #[serde(default)]
     github_token: String,
@@ -778,7 +978,6 @@ async fn update_base_config(req: web::Json<UpdateBaseConfigRequest>) -> impl Res
 
     match crate::config::base::partial_update_base_config(
         inner.host.trim_end_matches('/').to_string(),
-        inner.replace_string,
         inner.remote_url2local_images,
         inner.github_token,
         inner.rename_channel_type,
@@ -929,7 +1128,10 @@ pub async fn get_task_detail(
         }
     };
     // 获取处理后的M3U内容（type = "logo"）
-    let logos_map = crate::config::logos::get_logos_map();
+    let mut logos_map = crate::config::channel_icons::get_logo_map();
+    for (k, v) in crate::config::logos::get_logos_map() {
+        logos_map.entry(k).or_insert(v);
+    }
 let host = crate::config::base::get_effective_host();
     let mut check_result = Vec::new();
     // 获取任务内容（复用 get_task_content 的逻辑）
@@ -1056,7 +1258,10 @@ pub async fn get_task_content(
 
     // 4. 获取处理后的M3U内容（type = "logo"）
     // 使用 config 模块获取 logos 映射
-    let logos_map = crate::config::logos::get_logos_map();
+    let mut logos_map = crate::config::channel_icons::get_logo_map();
+    for (k, v) in crate::config::logos::get_logos_map() {
+        logos_map.entry(k).or_insert(v);
+    }
 
     // 读取 M3U 文件
     let m3u_content = match fs::read_to_string(&file_path) {
@@ -1170,7 +1375,7 @@ async fn system_export_config() -> impl Responder {
             continue;
         }
 
-        info!("Added {} to export", zip_path);
+        debug!("Added {} to export", zip_path);
     }
 
     if let Err(e) = zip.finish() {
@@ -1396,7 +1601,7 @@ async fn system_import_config(
             }
 
             imported_files.push(target_path.clone());
-            info!("Imported {} to {}", file_name, target_path);
+            debug!("Imported {} to {}", file_name, target_path);
         }
     }
 
@@ -1410,6 +1615,7 @@ async fn system_import_config(
     let _ = crate::config::epg::reload_epg_map();
     let _ = crate::config::network::reload_network_map();
     let _ = crate::config::group::reload_group_mapping();
+    crate::config::channel_icons::reload();
 
     info!("Configuration imported successfully");
 
@@ -1521,7 +1727,10 @@ async fn q_m3u(req: web::Query<QRequest>) -> impl Responder {
     let file_name = format!("{}{}.json", OUTPUT_FOLDER, &req.c);
     let json_file = File::open(file_name.clone());
 
-    let logos_map = crate::config::logos::get_logos_map();
+    let mut logos_map = crate::config::channel_icons::get_logo_map();
+    for (k, v) in crate::config::logos::get_logos_map() {
+        logos_map.entry(k).or_insert(v);
+    }
 let host = crate::config::base::get_effective_host();
     let mut qualities: Vec<QualityType> = Vec::new();
     if req.q.is_some() {
@@ -1696,19 +1905,48 @@ async fn delete_epg_cache_api() -> impl Responder {
 
 /// 启动Web服务器
 pub async fn start_web(port: u16) {
+    // 启动播放器中继会话的后台清理任务
+    crate::player::spawn_cleanup_task();
+    // 服务启动后立即执行一次「爬取源数据」与「EPG 同步」，与定时任务行为保持一致；
+    // 后台异步执行，不阻塞 Web 服务启动（数据已存在时 init 会快速返回）
+    tokio::spawn(async {
+        info!("startup search task started");
+        if let Err(e) = init_search_data().await {
+            error!("startup search data failed: {}", e);
+        }
+        info!("startup search task finished");
+    });
+    tokio::spawn(async {
+        info!("startup epg task started");
+        let _ = init_epg_data().await;
+        info!("startup epg task finished");
+    });
 // ============== 分组映射 API ==============
-
-#[derive(Serialize, Deserialize)]
-struct GroupMappingResponse {
-    groups: Vec<String>,
-    mapping: HashMap<String, String>,
-}
 
 #[get("/system/group-mapping")]
 async fn get_group_mapping() -> impl Responder {
     let groups = crate::config::group::get_groups();
     let mapping = crate::config::group::get_group_mapping_map();
-    HttpResponse::Ok().json(GroupMappingResponse { groups, mapping })
+    let active = crate::config::group::get_active_group_type();
+    HttpResponse::Ok().json(serde_json::json!({
+        "groups": groups,
+        "mapping": mapping,
+        "active": active,
+    }))
+}
+
+/// 设置当前生效的分组类型（prefix 前缀/地域 | category 电视分类）
+#[derive(Serialize, Deserialize)]
+struct SetActiveGroupTypeRequest {
+    active: String,
+}
+
+#[post("/system/group-mapping/active")]
+async fn set_active_group_type_api(req: web::Json<SetActiveGroupTypeRequest>) -> impl Responder {
+    match crate::config::group::set_active_group_type(&req.active) {
+        Ok(_) => HttpResponse::Ok().json(serde_json::json!({ "msg": "success", "active": crate::config::group::get_active_group_type() })),
+        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({ "msg": e })),
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1772,11 +2010,14 @@ async fn get_unmapped_epg_channels() -> impl Responder {
 
     // Use atomic bool for thread-safe locking
     let lock = Arc::new(Mutex::new(false));
+    // 正在运行的检查任务集合（task_id），防止同一任务被 30 秒调度重复启动
+    let running_tasks: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
 
     // 设置定时任务
     {
         let mut scheduler = scheduler.lock().unwrap();
         let lock_clone = Arc::clone(&lock);
+        let running_clone = Arc::clone(&running_tasks);
         // 每1小时运行一次，检查
         scheduler.every(1.hour()).run(move || {
             info!("start search task");
@@ -1807,14 +2048,75 @@ async fn get_unmapped_epg_channels() -> impl Responder {
         // 检查任务
         scheduler.every(30.seconds()).run(move || {
             run_check_tasks_with_lock(&lock_clone, || {
+                let now_ts = Local::now().timestamp() as i32;
                 // 获取所有任务
                 if let Ok(tasks) = get_all_tasks() {
                     for (id, _) in tasks {
                         // 运行任务
                         if let Ok(task) = get_task(&id) {
                             if let Some(mut task) = task {
-                                // 运行任务
-                                task.run();
+                                // 卡死保护：任务标记「运行中」但长时间未结束视为卡死，
+                                // 复位状态后允许重新调度（单源检查已有硬超时，正常不会触发）。
+                                // 判断依据：
+                                // - last_run_time 有值（本次运行开始时间）→ 超过 2 小时视为卡死；
+                                // - 从未完成过（last=0，历史遗留状态）→ next_run_time 过期超 30 分钟视为卡死。
+                                let stale_running = if task.task_info.is_running {
+                                    let last = task.task_info.last_run_time;
+                                    if last > 0 {
+                                        now_ts.saturating_sub(last) > 7200
+                                    } else {
+                                        let next = task.task_info.next_run_time;
+                                        next > 0 && now_ts.saturating_sub(next) > 1800
+                                    }
+                                } else {
+                                    false
+                                };
+                                if stale_running {
+                                    error!(
+                                        "task {} seems stuck (is_running > 2h), resetting state",
+                                        id
+                                    );
+                                    task.task_info.is_running = false;
+                                    task.task_info.task_status =
+                                        crate::common::task::TaskStatus::Pending;
+                                    // 清理残留的「当前运行任务」标记，避免前端一直显示“正在执行中”
+                                    if crate::config::get_now_check_task_id().as_deref()
+                                        == Some(id.as_str())
+                                    {
+                                        crate::config::set_now_check_id(None);
+                                    }
+                                    let _ = crate::config::task::file_config::save_task(
+                                        id.clone(),
+                                        task.get_task(),
+                                    );
+                                    let _ = crate::config::task::file_config::save_task_config();
+                                    continue;
+                                }
+                                if task.task_info.is_running {
+                                    continue; // 正在运行：跳过，防止重复调度
+                                }
+                                if task.task_info.next_run_time != 0
+                                    && task.task_info.next_run_time - now_ts > 0
+                                {
+                                    continue; // 未到运行时间
+                                }
+                                // 并发执行：每个到期任务一个独立线程。
+                                // 修复：此前 for 循环串行 task.run()（同步阻塞），
+                                // 一个任务卡住/耗时数小时会阻塞后面所有任务。
+                                let running = Arc::clone(&running_clone);
+                                std::thread::spawn(move || {
+                                    {
+                                        let mut set = running.lock().unwrap_or_else(|e| e.into_inner());
+                                        if set.contains(&id) {
+                                            return;
+                                        }
+                                        set.insert(id.clone());
+                                    }
+                                    task.run();
+                                    if let Ok(mut set) = running.lock() {
+                                        set.remove(&id);
+                                    }
+                                });
                             }
                         }
                     }
@@ -1825,6 +2127,8 @@ async fn get_unmapped_epg_channels() -> impl Responder {
 
     let server = HttpServer::new(move || {
         App::new()
+            // 播放器路由必须注册在 Files("/") 兜底服务之前，否则会被其前缀匹配遮蔽
+            .configure(crate::player::configure_player_routes)
             .service(get_epg)
             .service(get_epg_channel_list)
             .service(get_epg_info)
@@ -1834,6 +2138,7 @@ async fn get_unmapped_epg_channels() -> impl Responder {
             .service(delete_epg_cache_api)
             .service(get_group_mapping)
             .service(update_group_mapping)
+            .service(set_active_group_type_api)
             .service(get_unmapped_epg_channels)
             .service(check_url_is_available)
             .service(fetch_m3u_body)
@@ -1841,6 +2146,7 @@ async fn get_unmapped_epg_channels() -> impl Responder {
             .service(system_list_today_files)
             .service(system_clear_search_folder)
             .service(system_init_search_data)
+            .service(system_check_reports)
             .service(system_open_url)
             .service(system_get_favourite_channel)
             .service(system_save_favourite)
@@ -1870,10 +2176,21 @@ async fn get_unmapped_epg_channels() -> impl Responder {
             .app_data(web::Data::new(Arc::clone(&task_manager)))
             .route("/tasks/list", web::get().to(list_task))
             .route("/tasks/run", web::get().to(run_task))
+            .route("/media/channel-icons", web::get().to(get_channel_icons_api))
+            .route("/media/channel-icons", web::post().to(save_channel_icons_api))
+            .route("/media/channel-icons/{name}", web::delete().to(delete_channel_icon_api))
+            .route("/system/ai-config", web::get().to(get_ai_config_api))
+            .route("/system/ai-config", web::post().to(save_ai_config_api))
+            .route("/api/ai/organize", web::post().to(ai_organize_api))
+            .route("/api/ai/apply", web::post().to(ai_apply_api))
+            .route("/media/groups", web::get().to(get_groups_api))
+            .route("/media/groups", web::post().to(save_groups_api))
+            .route("/media/groups", web::delete().to(delete_group_api))
             .route("/tasks/update", web::post().to(update_task))
             .route("/tasks/add", web::post().to(add_task))
             .route("/tasks/delete/{id}", web::delete().to(delete_task))
             .service(actix_fs::Files::new("/", "./web/"))
+            .wrap(actix_cors::Cors::permissive())
             .wrap(Logger::default())
     })
     .workers(16) // 增加工作线程数到 16，避免本地请求死锁

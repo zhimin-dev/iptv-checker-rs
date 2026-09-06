@@ -12,24 +12,66 @@ use log::{error, info, warn};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BaseConfig {
     pub host: String,
-    pub replace_string: bool,
     pub remote_url2local_images: bool,
     #[serde(default)]
     pub github_token: String,
     #[serde(default)]
     pub rename_channel_type: i8,
+    /// 播放器频道列表缓存有效期（小时），0 表示不缓存
+    #[serde(default = "default_player_cache_ttl_hours")]
+    pub player_cache_ttl_hours: u32,
+    /// 检查黑名单失败阈值：连续失败 N 次加入黑名单
+    #[serde(default = "default_blacklist_fail_times")]
+    pub check_blacklist_fail_times: u32,
+    /// 检查黑名单自动清理天数
+    #[serde(default = "default_blacklist_auto_clean_days")]
+    pub check_blacklist_auto_clean_days: u32,
+    /// 是否展示频道实时画面快照（后台开关，桌面端读取）
+    #[serde(default)]
+    pub player_show_snapshots: bool,
+    /// 流畅模式默认分片时长（秒），后台配置
+    #[serde(default = "default_relay_hls_time")]
+    pub relay_hls_time: u32,
+    /// 流畅模式默认保留分片数（缓冲窗口），后台配置
+    #[serde(default = "default_relay_keep_segments")]
+    pub relay_keep_segments: u32,
     // Note: network-related fields (proxy_url, custom_headers, user_agent)
     // have been moved to config::network::NetworkConfig (network.json)
+}
+
+fn default_player_cache_ttl_hours() -> u32 {
+    24
+}
+
+fn default_blacklist_fail_times() -> u32 {
+    5
+}
+
+fn default_blacklist_auto_clean_days() -> u32 {
+    7
+}
+
+fn default_relay_hls_time() -> u32 {
+    4
+}
+
+fn default_relay_keep_segments() -> u32 {
+    30
 }
 
 impl BaseConfig {
     fn new() -> Self {
         BaseConfig {
             host: String::default(),
-            replace_string: false,
             remote_url2local_images: false,
             github_token: String::default(),
             rename_channel_type: 0,
+            player_cache_ttl_hours: default_player_cache_ttl_hours(),
+            check_blacklist_fail_times: default_blacklist_fail_times(),
+            check_blacklist_auto_clean_days: default_blacklist_auto_clean_days(),
+            player_show_snapshots: false,
+            relay_hls_time: default_relay_hls_time(),
+            relay_keep_segments: default_relay_keep_segments(),
         }
     }
 }
@@ -48,19 +90,6 @@ pub fn get_base_json() -> Result<String, String> {
     let config = BASE_MAP.read().unwrap();
     serde_json::to_string_pretty(&*config)
         .map_err(|e| format!("Failed to serialize base config: {}", e))
-}
-
-/// 从 JSON 字符串解析并更新 Base 配置
-pub fn update_base_from_json(json: &str) -> Result<(), String> {
-    let config: BaseConfig = serde_json::from_str(json)
-        .map_err(|e| format!("Failed to parse base JSON: {}", e))?;
-    update_base_config(config)
-}
-
-/// 读取 base.json 文件内容（字符串形式）
-pub fn read_base_json_string() -> Result<String, String> {
-    fs::read_to_string(get_base_file_path())
-        .map_err(|e| format!("Failed to read base.json: {}", e))
 }
 
 /// 获取有效的 host，优先 base.json，回退 logos.json，自动补 http://
@@ -85,18 +114,16 @@ pub fn get_effective_host() -> String {
     }
 }
 
-/// 部分更新 Base 配置（host、replace_string、remote_url2local_images、github_token）
+/// 部分更新 Base 配置（host、remote_url2local_images、github_token）
 /// Also normalizes host to include http:// if protocol is missing.
 pub fn partial_update_base_config(
     host: String,
-    replace_string: bool,
     remote_url2local_images: bool,
     github_token: String,
     rename_channel_type: i8,
 ) -> Result<(), String> {
     let mut config = get_base_config();
     config.host = host;
-    config.replace_string = replace_string;
     config.remote_url2local_images = remote_url2local_images;
     config.github_token = github_token;
     config.rename_channel_type = rename_channel_type;
@@ -223,7 +250,6 @@ pub fn sync_host_from_logos_if_needed() {
     }
     if let Err(e) = partial_update_base_config(
         logos_host,
-        base_config.replace_string,
         base_config.remote_url2local_images,
         base_config.github_token,
         base_config.rename_channel_type,

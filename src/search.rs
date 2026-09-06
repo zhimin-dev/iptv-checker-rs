@@ -5,7 +5,7 @@ use crate::config::epg::get_epg_config;
 use crate::r#const::constant::{INPUT_EPG_FOLDER, INPUT_SEARCH_FOLDER, OUTPUT_THUMBNAIL_FOLDER};
 use crate::utils::{create_folder, folder_exists};
 use crate::epg_xml::{parse_epg_xml_str, update_global_epg_cache};
-use chrono::{Datelike, FixedOffset, Local, NaiveDateTime, TimeZone};
+use chrono::{Datelike, Local};
 use flate2::read::GzDecoder;
 use log::{debug, error, info, warn};
 use regex::Regex;
@@ -22,6 +22,8 @@ use zip::read::ZipArchive;
 #[derive(Debug, Deserialize)]
 struct GithubRepoInfo {
     default_branch: String,
+    #[serde(default)]
+    pushed_at: Option<String>,
 }
 
 /// GET /repos/{owner}/{repo}/git/trees/{branch}?recursive=1
@@ -274,6 +276,69 @@ fn parse_github_url(url_str: &str) -> Option<(String, String, Option<String>, Op
     }
 }
 
+// === GitHub 文件最后更新时间过滤 ===
+
+/// GET /repos/{owner}/{repo}/commits?path=...&per_page=1
+#[derive(Debug, Deserialize)]
+struct GithubCommitListEntry {
+    commit: GithubCommitInfo,
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubCommitInfo {
+    committer: GithubCommitter,
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubCommitter {
+    date: String,
+}
+
+/// 配置的 GitHub 文件最后更新时间限制（天），0=不限制
+fn github_max_age_days() -> u32 {
+    crate::config::search::get_search_config().github_file_max_age_days
+}
+
+/// 解析 ISO8601 时间为距今多少天（失败返回 None）
+fn days_since_iso8601(s: &str) -> Option<i64> {
+    let dt = chrono::DateTime::parse_from_rfc3339(s.trim()).ok()?;
+    Some(
+        chrono::Utc::now()
+            .signed_duration_since(dt.with_timezone(&chrono::Utc))
+            .num_days(),
+    )
+}
+
+/// 文件最后更新时间是否超过限制（超期返回 true，应跳过）
+async fn github_file_is_stale(
+    client: &reqwest::Client,
+    owner: &str,
+    repo: &str,
+    path: &str,
+    max_days: u32,
+) -> bool {
+    if max_days == 0 {
+        return false;
+    }
+    let url = format!(
+        "https://api.github.com/repos/{}/{}/commits?path={}&per_page=1",
+        owner, repo, path
+    );
+    match client.get(&url).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            if let Ok(commits) = resp.json::<Vec<GithubCommitListEntry>>().await {
+                if let Some(first) = commits.first() {
+                    if let Some(days) = days_since_iso8601(&first.commit.committer.date) {
+                        return days > max_days as i64;
+                    }
+                }
+            }
+            false
+        }
+        _ => false, // 查询失败时宽容处理，不过滤
+    }
+}
+
 /// Build a reqwest Client for GitHub API requests.
 /// Includes Authorization header if a token is configured in base.json.
 fn github_api_client() -> reqwest::Client {
@@ -368,6 +433,22 @@ async fn fetch_github_home_page(
     };
     let default_branch = repo_info.default_branch;
 
+    // 仓库级时间过滤：整个仓库很久没更新则直接跳过
+    let max_age = github_max_age_days();
+    if max_age > 0 {
+        if let Some(pushed) = repo_info.pushed_at.as_deref() {
+            if let Some(days) = days_since_iso8601(pushed) {
+                if days > max_age as i64 {
+                    info!(
+                        "GitHub repo {}/{} last pushed {} days ago, skipped (limit {} days)",
+                        owner, repo, days, max_age
+                    );
+                    return vec![];
+                }
+            }
+        }
+    }
+
     // Step 2: Get recursive file tree
     let tree_api_url = format!(
         "https://api.github.com/repos/{}/{}/git/trees/{}?recursive=1",
@@ -423,6 +504,14 @@ async fn fetch_github_home_page(
 
         for ext in &valid_extensions {
             if item.path.ends_with(ext) {
+                // 文件级时间过滤：文件最后更新时间超过限制则跳过
+                if github_file_is_stale(&client, &owner, &repo, &item.path, max_age).await {
+                    info!(
+                        "GitHub file {}/{} is stale, skipped (limit {} days)",
+                        repo, item.path, max_age
+                    );
+                    break;
+                }
                 let download_url = format!(
                     "https://raw.githubusercontent.com/{}/{}/refs/heads/{}/{}",
                     owner, repo, default_branch, item.path
@@ -549,6 +638,17 @@ async fn fetch_github_sub_page(
             if !include_files.iter().any(|f| f == &item.name) {
                 continue;
             }
+        }
+
+        // 文件级时间过滤
+        let max_age = github_max_age_days();
+        let file_path = format!("{}/{}", path, item.name);
+        if github_file_is_stale(&client, &owner, &repo, &file_path, max_age).await {
+            info!(
+                "GitHub file {}/{} is stale, skipped (limit {} days)",
+                repo, file_path, max_age
+            );
+            continue;
         }
 
         if !valid_extensions.is_empty() {
@@ -755,18 +855,86 @@ fn filename_from_epg_url(url_str: &str) -> String {
         .unwrap_or_default()
 }
 
-/// 下载 URL 返回字节
+/// 下载 URL 返回字节：
+/// 1. curl 子进程直连下载 + 文件轮询（整个阻塞部分放 spawn_blocking，避免运行时调度问题）；
+/// 2. 失败后回退 reqwest。
 async fn get_url_bytes(url: &str) -> Result<Vec<u8>, Error> {
-    let bytes = crate::common::util::get_http_client()
-        .get(url)
-        .timeout(std::time::Duration::from_secs(60))
-        .send()
-        .await
-        .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?
-        .bytes()
-        .await
-        .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
-    Ok(bytes.to_vec())
+    let ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
+    info!("epg get_url_bytes start: {}", url);
+    let tmp = format!(
+        "./static/epg/_dl_{}.tmp",
+        chrono::Local::now().timestamp_millis()
+    );
+    let curl_bin = if cfg!(target_os = "windows") { "curl.exe" } else { "curl" };
+    let url_owned = url.to_string();
+    let ua_owned = ua.to_string();
+    let tmp_owned = tmp.clone();
+    let curl_owned = curl_bin.to_string();
+    let downloaded = tokio::task::spawn_blocking(move || -> Vec<u8> {
+        let mut cmd = std::process::Command::new(&curl_owned);
+        crate::common::util::apply_direct_to_command(&mut cmd);
+        let child = cmd
+            .arg("-s")
+            .arg("-m")
+            .arg("900")
+            .arg("-A")
+            .arg(&ua_owned)
+            .arg("-o")
+            .arg(&tmp_owned)
+            .arg(&url_owned)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        let Ok(mut c) = child else {
+            log::info!("epg curl spawn failed");
+            return Vec::new();
+        };
+        // 纯文件轮询：文件大小连续 2 秒不变视为下载完成
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(900);
+        let mut last_size = 0u64;
+        let mut stable = 0u32;
+        loop {
+            if std::time::Instant::now() >= deadline {
+                let _ = c.kill();
+                log::info!("epg curl 超时，已终止");
+                break;
+            }
+            let size = std::fs::metadata(&tmp_owned).map(|m| m.len()).unwrap_or(0);
+            if size > 0 && size == last_size {
+                stable += 1;
+            } else {
+                stable = 0;
+                last_size = size;
+            }
+            if stable >= 20 {
+                let _ = c.kill();
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(400));
+        }
+        let bytes = std::fs::read(&tmp_owned).unwrap_or_default();
+        let _ = std::fs::remove_file(&tmp_owned);
+        log::info!("epg curl done: {} bytes", bytes.len());
+        bytes
+    })
+    .await
+    .unwrap_or_default();
+    if !downloaded.is_empty() {
+        return Ok(downloaded);
+    }
+    // 2. reqwest 回退
+    info!("epg curl 失败，回退 reqwest: {}", url);
+    let resp = crate::common::util::request_with_fallback(url, &[("User-Agent", ua)], 15).await;
+    if let Ok(r) = resp {
+        if r.status().is_success() {
+            if let Ok(Ok(bytes)) =
+                tokio::time::timeout(std::time::Duration::from_secs(20), r.bytes()).await
+            {
+                return Ok(bytes.to_vec());
+            }
+        }
+    }
+    Err(Error::new(ErrorKind::Other, "下载失败（curl 与 reqwest 均未成功）"))
 }
 
 /// 解压 gzip 字节流
@@ -1009,6 +1177,7 @@ pub async fn init_search_data() -> Result<(), Error> {
         Error::new(ErrorKind::Other, format!("Failed to check search data: {}", e))
     })?;
     if exists {
+        // 台标爬取已改为手动触发（「设置 → 爬取频道图标」页的「立即爬取台标」按钮）
         return Ok(());
     }
     // 初始化search文件夹
@@ -1097,6 +1266,7 @@ pub async fn init_search_data() -> Result<(), Error> {
             }
         }
     }
+    // 台标爬取已改为手动触发（「设置 → 爬取频道图标」页的「立即爬取台标」按钮）
     Ok(())
 }
 
@@ -1238,6 +1408,7 @@ pub async fn do_search(search_params: SearchParams) -> Result<(), Error> {
             let mut m3u_data = load_m3u_data()?;
             m3u_data.t2s();
             m3u_data.search(search_params.search_options).await;
+            // 台标爬取已改为手动触发（「设置 → 爬取频道图标」页的「立即爬取台标」按钮）
             if search_params.thumbnail {
                 m3u_data
                     .generate_thumbnail(search_params.concurrent, search_params.timeout)
@@ -1264,7 +1435,7 @@ pub fn clear_search_folder() -> std::io::Result<()> {
     Ok(())
 }
 
-fn load_m3u_data() -> std::io::Result<M3uObjectList> {
+pub fn load_m3u_data() -> std::io::Result<M3uObjectList> {
     let p = get_search_folder();
     let path = std::path::Path::new(&p);
     let mut file_names = vec![];
@@ -1303,34 +1474,9 @@ pub fn generate_channel_thumbnail_folder_name() -> String {
     folder
 }
 
-pub fn parse_epg_time_str(s: &str) -> i64 {
-    // 分离本地时间部分与偏移部分
-    let (dt_part, offset_part) = s.split_at(14); // "20260205092300" 和 " +0800"
-    let offset_str = offset_part.trim(); // "+0800"
-
-    // 解析本地时间: "YYYYMMDDHHMMSS"
-    let naive = NaiveDateTime::parse_from_str(dt_part, "%Y%m%d%H%M%S")
-        .expect("parse naive datetime failed");
-
-    // 解析时区偏移: "+HHMM" 或 "-HHMM"
-    let offset = FixedOffset::from(offset_str.parse().unwrap());
-
-    // 组合成带偏移的时间
-    let dt_with_offset = offset
-        .from_local_datetime(&naive)
-        .single()
-        .expect("ambiguous or nonexistent local time");
-
-    let ts_millis = dt_with_offset.timestamp_millis();
-
-    ts_millis
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{get_url_extension, init_epg_data, parse_epg_time_str, parse_github_url};
-    use crate::epg_xml::{parse_epg_xml_str, Channel, DisplayName, EpgAllListItem, Programme, Tv};
-    use std::collections::HashMap;
+    use super::{init_epg_data, parse_github_url};
 
     #[test]
     fn test_parse_github_url_home_page() {
@@ -1393,74 +1539,6 @@ mod tests {
         assert!(parse_github_url("https://gitlab.com/owner/repo").is_some()); // parses but won't work with GitHub API
     }
 
-    #[test]
-    fn convert_to_timestamp() {
-        println!("{}", parse_epg_time_str("20260205092300 +0800"));
-        println!("{}", parse_epg_time_str("20260205000000 +0800"));
-    }
-
-    #[test]
-    fn generate_channel_thumbnail_folder_name() {
-        let date_str = "20260211";
-        // 方式一：分两步（先得到 Rust 对象，再转 JSON）
-        let xml = std::fs::read_to_string(format!("static/epg/{}/epg", date_str)).unwrap();
-        let tv: Tv = parse_epg_xml_str(&xml).unwrap();
-        let mut channel_hash_map = HashMap::new();
-        let mut channel_list_map: HashMap<String, Vec<Programme>> = HashMap::new();
-        for i in tv.channels {
-            for c in i.display_names {
-                channel_hash_map.insert(c.value.to_lowercase(), i.id.clone());
-            }
-        }
-        for mut i in tv.programmes {
-            let mut list = vec![];
-            let data = channel_list_map.get(&i.channel);
-            if let Some(hash_list) = data {
-                list = hash_list.to_vec();
-            }
-            i.to_unixtime();
-            list.push(i.clone());
-            channel_list_map.insert(i.channel.clone(), list);
-        }
-        for (index, mut p_list) in channel_list_map.clone() {
-            p_list.sort_by(|a, b| a.start_unix.cmp(&b.start_unix));
-            channel_list_map.insert(index.clone(), p_list);
-        }
-        let mut epg_all = EpgAllListItem::new();
-        epg_all.set_channel_map(channel_hash_map.clone());
-        epg_all.set_list_map(channel_list_map.clone());
-        epg_all.save_json_file("./static/epg/result.json".to_string());
-
-
-        let channel_name = "CCTV-13高清".to_string();
-        let channel_id = channel_hash_map.get(channel_name.to_lowercase().as_str());
-        if let Some(channel_id) = channel_id {
-            let mut channels = vec![];
-            let mut one_channel = Channel::new();
-            one_channel.set_id(channel_id.to_string());
-            let mut displays = vec![];
-            let mut one_display_channel_name = DisplayName::new();
-            one_display_channel_name.set_lang("zh".to_string());
-            one_display_channel_name.set_value(channel_name);
-            displays.push(one_display_channel_name);
-            one_channel.set_display_names(displays);
-            channels.push(one_channel);
-            let mut programs = vec![];
-            for (k, v) in channel_list_map.clone() {
-                programs = v;
-            }
-            let mut new_epg = Tv::new();
-            new_epg.set_generator_info_name("iptv-checker generate".to_string());
-            new_epg.set_generator_info_url("http://127.0.0.1:8081".to_string());
-            new_epg.set_channels(channels);
-            new_epg.set_programmes(programs);
-
-            let _ = new_epg.to_epg_xml_file(format!("./static/epg/{}/iptv_finial_res.xml", date_str));
-        } else {
-            println!("channel not found");
-        }
-    }
-
     #[tokio::test]
     async fn test_init_epg_data() {
         // 先下载文件
@@ -1468,37 +1546,5 @@ mod tests {
         data.download().await.unwrap();
         // 获取下载的文件
 
-    }
-
-    fn get_epg_info() {
-        let date_str = "20260211";
-        // 方式一：分两步（先得到 Rust 对象，再转 JSON）
-        let xml = std::fs::read_to_string(format!("static/epg/{}/epg", date_str)).unwrap();
-        let tv: Tv = parse_epg_xml_str(&xml).unwrap();
-        let mut channel_hash_map = HashMap::new();
-        let mut channel_list_map: HashMap<String, Vec<Programme>> = HashMap::new();
-        for i in tv.channels {
-            for c in i.display_names {
-                channel_hash_map.insert(c.value.to_lowercase(), i.id.clone());
-            }
-        }
-        for mut i in tv.programmes {
-            let mut list = vec![];
-            let data = channel_list_map.get(&i.channel);
-            if let Some(hash_list) = data {
-                list = hash_list.to_vec();
-            }
-            i.to_unixtime();
-            list.push(i.clone());
-            channel_list_map.insert(i.channel.clone(), list);
-        }
-        for (index, mut p_list) in channel_list_map.clone() {
-            p_list.sort_by(|a, b| a.start_unix.cmp(&b.start_unix));
-            channel_list_map.insert(index.clone(), p_list);
-        }
-        let mut epg_all = EpgAllListItem::new();
-        epg_all.set_channel_map(channel_hash_map.clone());
-        epg_all.set_list_map(channel_list_map.clone());
-        epg_all.save_json_file("./static/epg/result.json".to_string());
     }
 }

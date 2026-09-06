@@ -31,6 +31,47 @@ static HTTP_CLIENT_INNER: Lazy<RwLock<reqwest::Client>> = Lazy::new(|| {
     RwLock::new(build_http_client())
 });
 
+/// 直连客户端（永不走代理）：用于「先直连、失败再走代理」的双路径策略。
+static HTTP_CLIENT_DIRECT: Lazy<RwLock<reqwest::Client>> = Lazy::new(|| {
+    RwLock::new(build_direct_http_client())
+});
+
+/// 构建直连 reqwest 客户端（no_proxy + 与主客户端相同的 UA / 自定义头）
+fn build_direct_http_client() -> reqwest::Client {
+    let config = crate::config::network::get_network_config();
+    let mut builder = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .no_proxy();
+    let mut headers = reqwest::header::HeaderMap::new();
+    // 开关：不带 iptv-checker 默认 UA（自定义 user_agent 仍生效）
+    let custom_ua = config.user_agent.trim().to_string();
+    if !custom_ua.is_empty() {
+        if let Ok(hv) = reqwest::header::HeaderValue::from_str(&custom_ua) {
+            headers.insert(reqwest::header::USER_AGENT, hv);
+        }
+    } else if !config.no_ua_header {
+        let ua = get_user_agent();
+        if let Ok(hv) = reqwest::header::HeaderValue::from_str(&ua) {
+            headers.insert(reqwest::header::USER_AGENT, hv);
+        }
+    }
+    for (key, value) in &config.custom_headers {
+        if let (Ok(hk), Ok(hv)) = (
+            reqwest::header::HeaderName::from_bytes(key.as_bytes()),
+            reqwest::header::HeaderValue::from_str(value),
+        ) {
+            headers.insert(hk, hv);
+        }
+    }
+    builder = builder.default_headers(headers);
+    builder.build().expect("Failed to build direct HTTP client")
+}
+
+/// 直连客户端访问器
+pub fn get_direct_http_client() -> reqwest::Client {
+    HTTP_CLIENT_DIRECT.read().unwrap().clone()
+}
+
 /// Build a reqwest::Client from the current NetworkConfig settings.
 fn build_http_client() -> reqwest::Client {
     let config = crate::config::network::get_network_config();
@@ -40,6 +81,16 @@ fn build_http_client() -> reqwest::Client {
     if config.use_system_proxy {
         // Follow system proxy (env vars like HTTP_PROXY from Clash, etc.)
         log::info!("HTTP client using system proxy (if configured)");
+        // Windows 全局代理（系统代理开关）不体现在环境变量里，需从注册表读取
+        #[cfg(target_os = "windows")]
+        {
+            if let Some(url) = get_windows_system_proxy() {
+                if let Ok(proxy) = reqwest::Proxy::all(&url) {
+                    builder = builder.proxy(proxy);
+                    log::info!("HTTP client using Windows system proxy: {}", url);
+                }
+            }
+        }
     } else {
         // Disable system proxy detection
         builder = builder.no_proxy();
@@ -59,9 +110,17 @@ fn build_http_client() -> reqwest::Client {
 
     // Build default headers: User-Agent first, then custom headers
     let mut headers = reqwest::header::HeaderMap::new();
-    let ua = get_user_agent();
-    if let Ok(hv) = reqwest::header::HeaderValue::from_str(&ua) {
-        headers.insert(reqwest::header::USER_AGENT, hv);
+    // 开关：不带 iptv-checker 默认 UA（自定义 user_agent 仍生效）
+    let custom_ua = config.user_agent.trim().to_string();
+    if !custom_ua.is_empty() {
+        if let Ok(hv) = reqwest::header::HeaderValue::from_str(&custom_ua) {
+            headers.insert(reqwest::header::USER_AGENT, hv);
+        }
+    } else if !config.no_ua_header {
+        let ua = get_user_agent();
+        if let Ok(hv) = reqwest::header::HeaderValue::from_str(&ua) {
+            headers.insert(reqwest::header::USER_AGENT, hv);
+        }
     }
     for (key, value) in &config.custom_headers {
         if let (Ok(hk), Ok(hv)) = (
@@ -76,11 +135,14 @@ fn build_http_client() -> reqwest::Client {
     builder.build().expect("Failed to build shared HTTP client")
 }
 
-/// Rebuild the shared HTTP client from current config (call after config changes).
+/// Rebuild the shared HTTP clients from current config (call after config changes).
 pub fn rebuild_http_client() {
     let new_client = build_http_client();
     let mut client = HTTP_CLIENT_INNER.write().unwrap();
     *client = new_client;
+    let new_direct = build_direct_http_client();
+    let mut direct = HTTP_CLIENT_DIRECT.write().unwrap();
+    *direct = new_direct;
     log::info!("HTTP client rebuilt with current proxy/header settings");
 }
 
@@ -89,24 +151,176 @@ pub fn get_http_client() -> reqwest::Client {
     HTTP_CLIENT_INNER.read().unwrap().clone()
 }
 
-/// Shared reqwest Client for GitHub API requests (unauthenticated).
-/// Does NOT disable certificate verification — GitHub always has valid TLS.
-/// For authenticated requests, callers should add `.bearer_auth(token)` on each request.
-pub static GITHUB_CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
-    let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert(
-        reqwest::header::USER_AGENT,
-        reqwest::header::HeaderValue::from_static("iptv-checker-rs"),
-    );
-    headers.insert(
-        reqwest::header::ACCEPT,
-        reqwest::header::HeaderValue::from_static("application/vnd.github+json"),
-    );
-    reqwest::Client::builder()
-        .default_headers(headers)
-        .build()
-        .expect("Failed to build GitHub API client")
-});
+/// 读取 Windows 系统代理（WinINET，即“全局代理”开关，Clash/浏览器等开启系统代理时写入此处）。
+/// 返回形如 http://127.0.0.1:7890 的代理地址；未开启或读取失败返回 None。
+#[cfg(target_os = "windows")]
+pub fn get_windows_system_proxy() -> Option<String> {
+    use std::os::windows::process::CommandExt;
+    let query = |value: &str| -> Option<String> {
+        let out = std::process::Command::new("reg")
+            .args([
+                "query",
+                r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+                "/v",
+                value,
+            ])
+            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+            .output()
+            .ok()?;
+        String::from_utf8(out.stdout).ok()
+    };
+    // ProxyEnable=0x1 表示系统代理已开启
+    if !query("ProxyEnable")?.contains("0x1") {
+        return None;
+    }
+    let server_raw = query("ProxyServer")?;
+    let line = server_raw
+        .lines()
+        .find(|l| l.contains("REG_SZ") || l.contains("REG_EXPAND_SZ"))?;
+    let raw = line.split_whitespace().next_back()?.trim().to_string();
+    // 形如 http=127.0.0.1:7890;https=...;socks=... 或直接是 127.0.0.1:7890
+    let mut server = raw.clone();
+    for proto in ["http=", "socks=", "https="] {
+        if raw.contains(proto) {
+            server = raw
+                .split(proto)
+                .nth(1)
+                .unwrap_or("")
+                .split(';')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            break;
+        }
+    }
+    if server.is_empty() {
+        return None;
+    }
+    Some(if server.contains("://") {
+        server
+    } else {
+        format!("http://{}", server)
+    })
+}
+
+/// 给子进程（ffmpeg/ffprobe 等）注入代理环境变量，使 ffmpeg 任务遵循网络代理配置。
+/// - use_system_proxy=true：继承进程环境（ffmpeg 自带读取 http_proxy/https_proxy），
+///   Windows 下另把系统代理（WinINET 全局代理）写入子进程环境；
+/// - use_system_proxy=false 且配置了 proxy_url：子进程强制走该代理；
+/// - use_system_proxy=false 且未配置：清除子进程的代理环境变量，强制直连。
+pub fn apply_proxy_to_command<C: ProxyEnv>(cmd: &mut C) {
+    let config = crate::config::network::get_network_config();
+    if config.use_system_proxy {
+        // 继承环境变量代理；Windows 系统代理不体现在环境变量里，需显式注入
+        #[cfg(target_os = "windows")]
+        if let Some(url) = get_windows_system_proxy() {
+            for key in [
+                "http_proxy",
+                "https_proxy",
+                "HTTP_PROXY",
+                "HTTPS_PROXY",
+                "all_proxy",
+                "ALL_PROXY",
+            ] {
+                cmd.proxy_env(key, &url);
+            }
+        }
+    } else if !config.proxy_url.trim().is_empty() {
+        let url = config.proxy_url.trim().to_string();
+        for key in [
+            "http_proxy",
+            "https_proxy",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "all_proxy",
+            "ALL_PROXY",
+        ] {
+            cmd.proxy_env(key, &url);
+        }
+    } else {
+        for key in [
+            "http_proxy",
+            "https_proxy",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "all_proxy",
+            "ALL_PROXY",
+        ] {
+            cmd.proxy_env_remove(key);
+        }
+    }
+}
+
+/// 强制子进程直连：清除所有代理环境变量（ffmpeg 双路径策略用）
+pub fn apply_direct_to_command<C: ProxyEnv>(cmd: &mut C) {
+    for key in [
+        "http_proxy",
+        "https_proxy",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "all_proxy",
+        "ALL_PROXY",
+    ] {
+        cmd.proxy_env_remove(key);
+    }
+}
+
+/// 双路径 GET：先直连请求；失败（网络错误或 4xx/5xx）且配置了代理时，
+/// 再用代理客户端重试一次。适用于「国内源直连、国外源走代理」的混合场景。
+pub async fn request_with_fallback(
+    url: &str,
+    headers: &[(&str, &str)],
+    timeout_secs: u64,
+) -> Result<reqwest::Response, reqwest::Error> {
+    let timeout = std::time::Duration::from_secs(timeout_secs);
+    let direct = get_direct_http_client();
+    let mut b = direct.get(url).timeout(timeout);
+    for (k, v) in headers {
+        b = b.header(*k, *v);
+    }
+    let first = b.send().await;
+    let first_ok = matches!(&first, Ok(r) if r.status().is_success() || r.status().is_redirection());
+    if first_ok {
+        return first;
+    }
+    // 没有代理配置时无需重试，直接返回直连结果
+    let config = crate::config::network::get_network_config();
+    let has_proxy = config.use_system_proxy || !config.proxy_url.trim().is_empty();
+    if !has_proxy {
+        return first;
+    }
+    let proxied = get_http_client();
+    let mut b2 = proxied.get(url).timeout(timeout);
+    for (k, v) in headers {
+        b2 = b2.header(*k, *v);
+    }
+    b2.send().await
+}
+
+/// std::process::Command 与 tokio::process::Command 的统一环境变量注入接口
+pub trait ProxyEnv {
+    fn proxy_env(&mut self, key: &str, val: &str) -> &mut Self;
+    fn proxy_env_remove(&mut self, key: &str) -> &mut Self;
+}
+
+impl ProxyEnv for std::process::Command {
+    fn proxy_env(&mut self, key: &str, val: &str) -> &mut Self {
+        self.env(key, val)
+    }
+    fn proxy_env_remove(&mut self, key: &str) -> &mut Self {
+        self.env_remove(key)
+    }
+}
+
+impl ProxyEnv for tokio::process::Command {
+    fn proxy_env(&mut self, key: &str, val: &str) -> &mut Self {
+        self.env(key, val)
+    }
+    fn proxy_env_remove(&mut self, key: &str) -> &mut Self {
+        self.env_remove(key)
+    }
+}
 
 /// Get the GitHub token from base.json config, if configured.
 pub fn get_github_token() -> Option<String> {
@@ -133,7 +347,15 @@ pub async fn get_url_body(_url: String, timeout: u64) -> Result<String, Error> {
 
     // Apply proxy and headers from config
     let config = crate::config::network::get_network_config();
-    if !config.use_system_proxy {
+    if config.use_system_proxy {
+        // Windows 全局代理（系统代理开关）不体现在环境变量里，需从注册表读取
+        #[cfg(target_os = "windows")]
+        if let Some(url) = get_windows_system_proxy() {
+            if let Ok(proxy) = reqwest::Proxy::all(&url) {
+                builder = builder.proxy(proxy);
+            }
+        }
+    } else {
         builder = builder.no_proxy();
         if !config.proxy_url.trim().is_empty() {
             if let Ok(proxy) = reqwest::Proxy::all(&config.proxy_url) {
@@ -142,9 +364,17 @@ pub async fn get_url_body(_url: String, timeout: u64) -> Result<String, Error> {
         }
     }
     let mut headers = reqwest::header::HeaderMap::new();
-    let ua = get_user_agent();
-    if let Ok(hv) = reqwest::header::HeaderValue::from_str(&ua) {
-        headers.insert(reqwest::header::USER_AGENT, hv);
+    // 开关：不带 iptv-checker 默认 UA（自定义 user_agent 仍生效）
+    let custom_ua = config.user_agent.trim().to_string();
+    if !custom_ua.is_empty() {
+        if let Ok(hv) = reqwest::header::HeaderValue::from_str(&custom_ua) {
+            headers.insert(reqwest::header::USER_AGENT, hv);
+        }
+    } else if !config.no_ua_header {
+        let ua = get_user_agent();
+        if let Ok(hv) = reqwest::header::HeaderValue::from_str(&ua) {
+            headers.insert(reqwest::header::USER_AGENT, hv);
+        }
     }
     for (key, value) in &config.custom_headers {
         if let (Ok(hk), Ok(hv)) = (
@@ -348,12 +578,30 @@ fn parse_one_m3u(_arr: Vec<&str>, index: i32) -> Option<M3uObject> {
                 ext.set_tv_id(epg_id);
             }
         }
-        // Apply local group mapping: tvg-name → group-title
-        if let Some(ref ext) = m3u_obj.get_extend_ref() {
-            if !ext.tv_name.is_empty() {
-                if let Some(mapped_group) = crate::config::group::get_group_for_channel(&ext.tv_name) {
-                    if let Some(ext_mut) = m3u_obj.get_extend_mut() {
-                        ext_mut.set_group_title(mapped_group);
+        // 统一频道图标配置：分组 + tvg-id（按 tvg-name / 频道名匹配，配置了才覆盖）
+        let icon_name = m3u_obj
+            .get_extend_ref()
+            .and_then(|e| if e.tv_name.is_empty() { None } else { Some(e.tv_name.clone()) })
+            .unwrap_or_else(|| name.to_string());
+        let icon_item = crate::config::channel_icons::find_for_channel(&icon_name);
+        if let Some(item) = icon_item {
+            if let Some(ext_mut) = m3u_obj.get_extend_mut() {
+                let g = item.effective_group();
+                if !g.is_empty() {
+                    ext_mut.set_group_title(g);
+                }
+                if !item.tvg_id.is_empty() {
+                    ext_mut.set_tv_id(item.tvg_id.clone());
+                }
+            }
+        } else {
+            // 回退：旧的 group.json 映射（tvg-name → group-title）
+            if let Some(ref ext) = m3u_obj.get_extend_ref() {
+                if !ext.tv_name.is_empty() {
+                    if let Some(mapped_group) = crate::config::group::get_group_for_channel(&ext.tv_name) {
+                        if let Some(ext_mut) = m3u_obj.get_extend_mut() {
+                            ext_mut.set_group_title(mapped_group);
+                        }
                     }
                 }
             }
@@ -420,14 +668,32 @@ pub fn parse_quota_str(_body: String) -> M3uObjectList {
                         ext.set_tv_id(epg_id);
                     }
                 }
-                // Apply local group mapping: tvg-name → group-title
+                // 统一频道图标配置：分组 + tvg-id（按 tvg-name / 频道名匹配，配置了才覆盖）
                 {
-                    let tv_name = m3u_obj.get_extend_ref()
-                        .and_then(|e| if e.tv_name.is_empty() { None } else { Some(e.tv_name.clone()) });
-                    if let Some(tvn) = tv_name {
-                        if let Some(mapped_group) = crate::config::group::get_group_for_channel(&tvn) {
-                            if let Some(ext) = m3u_obj.get_extend_mut() {
-                                ext.set_group_title(mapped_group);
+                    let icon_name = m3u_obj
+                        .get_extend_ref()
+                        .and_then(|e| if e.tv_name.is_empty() { None } else { Some(e.tv_name.clone()) })
+                        .unwrap_or_else(|| name.clone());
+                    let icon_item = crate::config::channel_icons::find_for_channel(&icon_name);
+                    if let Some(item) = icon_item {
+                        if let Some(ext) = m3u_obj.get_extend_mut() {
+                            let g = item.effective_group();
+                            if !g.is_empty() {
+                                ext.set_group_title(g);
+                            }
+                            if !item.tvg_id.is_empty() {
+                                ext.set_tv_id(item.tvg_id.clone());
+                            }
+                        }
+                    } else {
+                        // 回退：旧的 group.json 映射（tvg-name → group-title）
+                        let tv_name = m3u_obj.get_extend_ref()
+                            .and_then(|e| if e.tv_name.is_empty() { None } else { Some(e.tv_name.clone()) });
+                        if let Some(tvn) = tv_name {
+                            if let Some(mapped_group) = crate::config::group::get_group_for_channel(&tvn) {
+                                if let Some(ext) = m3u_obj.get_extend_mut() {
+                                    ext.set_group_title(mapped_group);
+                                }
                             }
                         }
                     }

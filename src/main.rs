@@ -1,9 +1,13 @@
+mod ai_organize;
+mod check_blacklist;
 mod common;
 mod config;
+mod logo_crawl;
 mod r#const;
 mod epg_xml;
 mod epg_mapping;
 mod live;
+mod player;
 mod search;
 mod utils;
 mod web;
@@ -293,6 +297,8 @@ fn init_translate() {
 pub async fn main() {
     let args = Args::parse();
     init_all_config_files();
+    // 清理上次进程退出时遗留的「运行中」任务状态（进程重启后不会有任务在运行）
+    crate::config::task::reset_running_tasks_on_startup();
     // Rebuild HTTP client to pick up saved proxy/header settings
     common::util::rebuild_http_client();
     init_folder();

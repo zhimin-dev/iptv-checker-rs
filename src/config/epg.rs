@@ -6,7 +6,7 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 use std::sync::RwLock;
-use log::{error, info, warn};
+use log::{error, warn};
 
 /// EPG 配置结构体
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,57 +44,10 @@ pub fn get_epg_json() -> Result<String, String> {
         .map_err(|e| format!("Failed to serialize epg config: {}", e))
 }
 
-/// 从 JSON 字符串解析并更新 EPG 配置
-pub fn update_epg_from_json(json: &str) -> Result<(), String> {
-    let config: EpgConfig = serde_json::from_str(json)
-        .map_err(|e| format!("Failed to parse epg JSON: {}", e))?;
-    update_epg_config(config)
-}
-
-/// 读取 epg.json 文件内容（字符串形式）
-pub fn read_epg_json_string() -> Result<String, String> {
-    fs::read_to_string(get_epg_file_path())
-        .map_err(|e| format!("Failed to read epg.json: {}", e))
-}
-
 /// 获取 EPG 源 URL 列表
 pub fn get_epg_list() -> Vec<String> {
     let config = get_epg_config();
     config.source.list
-}
-
-/// 添加 EPG 源 URL
-pub fn add_epg_url(url: String) -> Result<(), String> {
-    let mut map = EPG_MAP.write().unwrap();
-    if !map.source.list.contains(&url) {
-        map.source.list.push(url);
-    }
-    drop(map);
-    save_epg_to_file()
-}
-
-/// 删除 EPG 源 URL（根据索引）
-pub fn remove_epg_url_by_index(index: usize) -> Result<(), String> {
-    let mut map = EPG_MAP.write().unwrap();
-    if index < map.source.list.len() {
-        map.source.list.remove(index);
-        drop(map);
-        save_epg_to_file()
-    } else {
-        Err(format!("Index {} out of bounds", index))
-    }
-}
-
-/// 删除 EPG 源 URL（根据 URL 字符串）
-pub fn remove_epg_url_by_url(url: &str) -> Result<(), String> {
-    let mut map = EPG_MAP.write().unwrap();
-    if let Some(pos) = map.source.list.iter().position(|u| u == url) {
-        map.source.list.remove(pos);
-        drop(map);
-        save_epg_to_file()
-    } else {
-        Err(format!("EPG URL {} not found", url))
-    }
 }
 
 /// 更新 EPG 源 URL 列表

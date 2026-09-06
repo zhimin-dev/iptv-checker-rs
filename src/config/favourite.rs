@@ -6,7 +6,7 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 use std::sync::RwLock;
-use log::{error, info, warn};
+use log::{error, warn};
 
 /// Replace配置结构体
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,13 +33,6 @@ static FAVOURITE_MAP: Lazy<RwLock<FavouriteConfig>> = Lazy::new(|| {
 
 pub fn get_favourite_map() -> FavouriteConfig {
     FAVOURITE_MAP.read().unwrap().clone()
-}
-
-/// 获取收藏配置的 JSON 字符串
-pub fn get_favourite_json() -> Result<String, String> {
-    let config = FAVOURITE_MAP.read().unwrap();
-    serde_json::to_string_pretty(&*config)
-        .map_err(|e| format!("Failed to serialize favourite config: {}", e))
 }
 
 /// 重新加载 favourite.json 文件
@@ -95,38 +88,6 @@ fn read_favourite_json<P: AsRef<Path>>(path: P) -> FavouriteConfig {
             FavouriteConfig::new()
         }
     }
-}
-
-/// 添加频道到收藏列表
-pub fn add_to_favourite(group: &str, channel: String) -> Result<(), String> {
-    let mut map = FAVOURITE_MAP.write().unwrap();
-    if group == "like" {
-        if !map.like.contains(&channel) {
-            map.like.push(channel);
-        }
-    } else if group == "equal" {
-        if !map.equal.contains(&channel) {
-            map.equal.push(channel);
-        }
-    } else {
-        return Err(format!("Unknown group: {}", group));
-    }
-    drop(map);
-    save_favourite_to_file()
-}
-
-/// 从收藏列表移除频道
-pub fn remove_from_favourite(group: &str, channel: &str) -> Result<(), String> {
-    let mut map = FAVOURITE_MAP.write().unwrap();
-    if group == "like" {
-        map.like.retain(|c| c != channel);
-    } else if group == "equal" {
-        map.equal.retain(|c| c != channel);
-    } else {
-        return Err(format!("Unknown group: {}", group));
-    }
-    drop(map);
-    save_favourite_to_file()
 }
 
 /// 更新整个收藏配置

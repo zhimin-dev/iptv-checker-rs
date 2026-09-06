@@ -1,0 +1,286 @@
+//! 统一频道图标配置：把「频道图标 + 分组 + tvg-id」合并为一组配置。
+//! 每一项对应一个频道：主名称、别名、tvg-id（EPG 匹配）、分组、图标地址。
+//! 检查链路中：图标匹配（logo）、分组映射、tvg-id 都从这份配置读取。
+
+use log::{error, info};
+use once_cell::sync::Lazy;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::fs;
+use std::path::Path;
+use std::sync::RwLock;
+
+pub static CHANNEL_ICONS_FILE: &str = "./static/core/channel_icons.json";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChannelIconItem {
+    /// 主频道名（tvg-name / 展示名）
+    pub name: String,
+    /// 别名列表
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    /// 映射到 tvg-id（EPG 节目单匹配），可为空
+    #[serde(default)]
+    pub tvg_id: String,
+    /// 一级分组（如：中国），可为空
+    #[serde(default)]
+    pub group1: String,
+    /// 二级分组（如：央视），可为空
+    #[serde(default)]
+    pub group2: String,
+    /// 旧版单级分组（兼容历史数据）
+    #[serde(default)]
+    pub group: String,
+    /// 图标地址
+    #[serde(default)]
+    pub logo: String,
+}
+
+impl ChannelIconItem {
+    /// 最终生效的分组名：两级分组拼接为「分组1-分组2」
+    pub fn effective_group(&self) -> String {
+        let g1 = self.group1.trim();
+        let g2 = self.group2.trim();
+        if g1.is_empty() && g2.is_empty() {
+            return self.group.trim().to_string();
+        }
+        match (g1.is_empty(), g2.is_empty()) {
+            (true, false) => g2.to_string(),
+            (false, true) => g1.to_string(),
+            _ => format!("{}-{}", g1, g2),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ChannelIconsConfig {
+    #[serde(default)]
+    pub items: Vec<ChannelIconItem>,
+}
+
+static CHANNEL_ICONS: Lazy<RwLock<ChannelIconsConfig>> = Lazy::new(|| {
+    RwLock::new(read_channel_icons())
+});
+
+fn read_channel_icons() -> ChannelIconsConfig {
+    match fs::read_to_string(CHANNEL_ICONS_FILE) {
+        Ok(s) => serde_json::from_str::<ChannelIconsConfig>(&s).unwrap_or_else(|_| migrate_from_logos()),
+        Err(_) => migrate_from_logos(),
+    }
+}
+
+/// 首次使用时从旧 logos.json 迁移：每个 LogoItem（url + 别名列表）生成一组条目
+fn migrate_from_logos() -> ChannelIconsConfig {
+    let cfg = crate::config::logos::get_logos_config();
+    let mut items: Vec<ChannelIconItem> = Vec::new();
+    for l in &cfg.logos {
+        if l.name.is_empty() {
+            continue;
+        }
+        items.push(ChannelIconItem {
+            name: l.name[0].clone(),
+            aliases: l.name.iter().skip(1).cloned().collect(),
+            tvg_id: String::new(),
+            group1: String::new(),
+            group2: String::new(),
+            group: String::new(),
+            logo: l.url.clone(),
+        });
+    }
+    let config = ChannelIconsConfig { items };
+    if let Ok(json) = serde_json::to_string_pretty(&config) {
+        let _ = fs::write(CHANNEL_ICONS_FILE, json);
+    }
+    config
+}
+
+pub fn get_channel_icons() -> ChannelIconsConfig {
+    CHANNEL_ICONS.read().unwrap().clone()
+}
+
+/// 全量保存
+pub fn save_channel_icons(items: Vec<ChannelIconItem>) -> Result<(), String> {
+    let config = ChannelIconsConfig { items };
+    let json = serde_json::to_string_pretty(&config)
+        .map_err(|e| format!("serialize failed: {}", e))?;
+    fs::write(CHANNEL_ICONS_FILE, json).map_err(|e| format!("write failed: {}", e))?;
+    *CHANNEL_ICONS.write().unwrap() = config;
+    Ok(())
+}
+
+/// 添加或更新一个条目（按 name 匹配）。
+/// 更新时保留已有条目的 tvg_id / 分组（仅当新值为空时不覆盖），避免绑定图标时冲掉人工配置。
+pub fn upsert_item(item: ChannelIconItem) {
+    let mut config = get_channel_icons();
+    if let Some(existing) = config
+        .items
+        .iter_mut()
+        .find(|i| i.name.eq_ignore_ascii_case(&item.name))
+    {
+        existing.aliases = item.aliases;
+        existing.logo = item.logo;
+        if !item.tvg_id.is_empty() {
+            existing.tvg_id = item.tvg_id;
+        }
+        if !item.group1.is_empty() {
+            existing.group1 = item.group1;
+        }
+        if !item.group2.is_empty() {
+            existing.group2 = item.group2;
+        }
+    } else {
+        config.items.push(item);
+    }
+    let _ = save_channel_icons(config.items);
+}
+
+pub fn remove_item(name: &str) -> bool {
+    let mut config = get_channel_icons();
+    let before = config.items.len();
+    config.items.retain(|i| !i.name.eq_ignore_ascii_case(name));
+    if config.items.len() != before {
+        let _ = save_channel_icons(config.items);
+        true
+    } else {
+        false
+    }
+}
+
+/// 图标匹配表：主名称/别名/tvg-id（小写）→ 图标地址
+pub fn get_logo_map() -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    for item in get_channel_icons().items {
+        if item.logo.trim().is_empty() {
+            continue;
+        }
+        let logo = item.logo.clone();
+        for key in item_name_keys(&item) {
+            map.entry(key).or_insert_with(|| logo.clone());
+        }
+    }
+    map
+}
+
+/// 该项的所有匹配键（小写）：主名称、别名、tvg-id
+fn item_name_keys(item: &ChannelIconItem) -> Vec<String> {
+    let mut keys = Vec::new();
+    let mut push = |s: &str| {
+        let t = s.trim().to_lowercase();
+        if !t.is_empty() {
+            keys.push(t);
+        }
+    };
+    push(&item.name);
+    for a in &item.aliases {
+        push(a);
+    }
+    push(&item.tvg_id);
+    keys
+}
+
+/// 按频道名（tvg-name / 展示名）查找统一配置项。
+/// 先精确匹配；匹配不上时用规范化模糊匹配（去横线/空格/【台】等后缀），
+/// 解决「CCTV-1 综合」与「CCTV1综合」、「东方卫视【台】」与「东方卫视」这类差异。
+pub fn find_for_channel(channel_name: &str) -> Option<ChannelIconItem> {
+    let target = channel_name.trim().to_lowercase();
+    if target.is_empty() {
+        return None;
+    }
+    let config = get_channel_icons();
+    if let Some(item) = config
+        .items
+        .iter()
+        .find(|i| item_name_keys(i).iter().any(|k| k == &target))
+    {
+        return Some(item.clone());
+    }
+    // 规范化模糊匹配
+    let norm = crate::epg_mapping::normalize_epg_name(channel_name);
+    if !norm.is_empty() {
+        if let Some(item) = config.items.iter().find(|i| {
+            item_name_keys(i).iter().any(|k| {
+                !k.trim().is_empty() && crate::epg_mapping::normalize_epg_name(k) == norm
+            })
+        }) {
+            return Some(item.clone());
+        }
+    }
+    None
+}
+
+/// 重新加载（配置导入后调用）
+pub fn reload() {
+    *CHANNEL_ICONS.write().unwrap() = read_channel_icons();
+}
+
+/// 从 m3u 解析结果中自动收集频道图标（tvg-logo）。
+/// 数据来源：/system/get-favourite-channel?channel_type=all 的频道数据、每个检查任务的源数据。
+/// 规则：
+/// - 只补充「还没有图标」的频道，绝不覆盖已有配置（人工上传/绑定的优先）；
+/// - 只收集 http(s) 的图标地址；
+/// - 同名频道（主名/别名/tvg-id 小写匹配）只取第一个 logo。
+/// 返回本次新增/补充的条目数。
+pub fn collect_from_m3u(m3u: &crate::common::M3uObjectList) -> usize {
+    // 配置总量上限保护，防止极端数据把配置文件撑爆
+    const MAX_ITEMS: usize = 5000;
+
+    let mut cfg = get_channel_icons();
+    // key（小写）→ 条目下标，用于快速查找「频道是否已存在」
+    let mut index: HashMap<String, usize> = HashMap::new();
+    for (i, item) in cfg.items.iter().enumerate() {
+        for k in item_name_keys(item) {
+            index.entry(k).or_insert(i);
+        }
+    }
+    let mut changed = 0;
+    for obj in m3u.get_list_ref() {
+        let Some(ext) = obj.get_extend_ref() else { continue };
+        let logo = ext.tv_logo.trim().to_string();
+        if logo.is_empty() || !(logo.starts_with("http://") || logo.starts_with("https://")) {
+            continue;
+        }
+        let name = if !ext.tv_name.trim().is_empty() {
+            ext.tv_name.trim().to_string()
+        } else {
+            obj.get_display_name().to_string()
+        };
+        let key = name.trim().to_lowercase();
+        if key.is_empty() {
+            continue;
+        }
+        if let Some(&i) = index.get(&key) {
+            // 已存在：只在没有 logo 时补充，不覆盖人工配置
+            let item = &mut cfg.items[i];
+            if item.logo.trim().is_empty() {
+                item.logo = logo;
+                changed += 1;
+            }
+            continue;
+        }
+        if cfg.items.len() >= MAX_ITEMS {
+            break;
+        }
+        cfg.items.push(ChannelIconItem {
+            name: name.clone(),
+            aliases: Vec::new(),
+            tvg_id: String::new(),
+            group1: String::new(),
+            group2: String::new(),
+            group: String::new(),
+            logo,
+        });
+        index.insert(key, cfg.items.len() - 1);
+        changed += 1;
+    }
+    if changed > 0 {
+        if let Err(e) = save_channel_icons(cfg.items) {
+            error!("collect channel icons from m3u failed: {}", e);
+        } else {
+            info!("channel icons: auto collected {} logos from m3u source data", changed);
+        }
+    }
+    changed
+}
+
+#[allow(dead_code)]
+fn _path_guard(_p: &Path) {}

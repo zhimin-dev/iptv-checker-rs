@@ -6,12 +6,18 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 use std::sync::RwLock;
-use log::{error, info, warn};
+use log::{error, warn};
 
 /// 搜索配置结构体
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchConfig {
     pub source: Vec<SearchSource>,
+    /// 爬取时自动下载频道 logo（下载后在封面配置页整理绑定）
+    #[serde(default)]
+    pub auto_download_logos: bool,
+    /// GitHub 源文件最后更新时间限制（天）：超过该天数的文件不爬取；0=不限制
+    #[serde(default)]
+    pub github_file_max_age_days: u32,
 }
 
 /// 搜索源配置结构体
@@ -27,6 +33,8 @@ impl SearchConfig {
     pub fn new() -> Self {
         SearchConfig {
             source: Vec::new(),
+            auto_download_logos: false,
+            github_file_max_age_days: 0,
         }
     }
 }
@@ -47,46 +55,6 @@ pub fn reload_search_map() -> Result<(), String> {
     let mut map = SEARCH_MAP.write().unwrap();
     *map = new_map;
     Ok(())
-}
-
-/// 获取所有搜索源列表
-pub fn get_search_sources() -> Vec<SearchSource> {
-    let config = get_search_config();
-    config.source
-}
-
-/// 获取支持的文件扩展名列表（从所有 source 收集）
-pub fn get_supported_extensions() -> Vec<String> {
-    let config = get_search_config();
-    let mut extensions = Vec::new();
-    for source in config.source {
-        for ext in source.extensions {
-            if !extensions.contains(&ext) {
-                extensions.push(ext);
-            }
-        }
-    }
-    extensions
-}
-
-/// 根据解析类型获取搜索源
-pub fn get_sources_by_parse_type(parse_type: &str) -> Vec<SearchSource> {
-    let config = get_search_config();
-    config
-        .source
-        .into_iter()
-        .filter(|s| s.parse_type == parse_type)
-        .collect()
-}
-
-/// 获取所有 URL 列表（扁平化）
-pub fn get_all_urls() -> Vec<String> {
-    let config = get_search_config();
-    config
-        .source
-        .into_iter()
-        .flat_map(|s| s.urls)
-        .collect()
 }
 
 fn read_search_json<P: AsRef<Path>>(path: P) -> SearchConfig {
@@ -180,24 +148,4 @@ pub fn save_search_to_file() -> Result<(), String> {
     fs::write(SEARCH_JSON, json)
         .map_err(|e| format!("Failed to write search config: {}", e))?;
     Ok(())
-}
-
-/// 添加搜索源
-pub fn add_search_source(source: SearchSource) -> Result<(), String> {
-    let mut map = SEARCH_MAP.write().unwrap();
-    map.source.push(source);
-    drop(map);
-    save_search_to_file()
-}
-
-/// 删除搜索源（根据索引）
-pub fn remove_search_source(index: usize) -> Result<(), String> {
-    let mut map = SEARCH_MAP.write().unwrap();
-    if index < map.source.len() {
-        map.source.remove(index);
-        drop(map);
-        save_search_to_file()
-    } else {
-        Err(format!("Index {} out of bounds", index))
-    }
 }
