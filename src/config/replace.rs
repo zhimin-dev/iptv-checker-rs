@@ -8,7 +8,7 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 use std::sync::RwLock;
-use log::{error, info, warn};
+use log::error;
 
 /// Matches empty parentheses or parentheses containing only a single known quality-tag
 /// suffix letter (`p`, `k`, `i` and their uppercase equivalents), e.g. `()`, `( )`, `(p)`,
@@ -49,11 +49,6 @@ static REPLACE_MAP: Lazy<RwLock<ReplaceConfig>> = Lazy::new(|| {
     RwLock::new(read_replace_json(p))
 });
 
-/// 获取替换配置（用于读取）
-pub fn get_replace_config_for_api() -> ReplaceConfig {
-    REPLACE_MAP.read().unwrap().clone()
-}
-
 /// 保存替换配置到文件
 fn save_replace_to_file() -> Result<(), String> {
     let config = REPLACE_MAP.read().unwrap();
@@ -62,14 +57,6 @@ fn save_replace_to_file() -> Result<(), String> {
     fs::write(REPLACE_JSON, json)
         .map_err(|e| format!("Failed to write replace config: {}", e))?;
     Ok(())
-}
-
-/// 更新替换配置（立即生效，无需重启）
-pub fn update_replace_config(config: ReplaceConfig) -> Result<(), String> {
-    let mut map = REPLACE_MAP.write().unwrap();
-    *map = config;
-    drop(map);
-    save_replace_to_file()
 }
 
 /// 重新加载配置文件
@@ -94,30 +81,6 @@ pub fn partial_update_replace_config(
     map.replace_map = replace_map;
     drop(map);
     
-    save_replace_to_file()
-}
-
-/// 添加替换规则
-pub fn add_replace_rule(key: String, value: String) -> Result<(), String> {
-    let mut map = REPLACE_MAP.write().unwrap();
-    map.replace_map.insert(key, value);
-    drop(map);
-    save_replace_to_file()
-}
-
-/// 删除替换规则
-pub fn remove_replace_rule(key: &str) -> Result<(), String> {
-    let mut map = REPLACE_MAP.write().unwrap();
-    map.replace_map.remove(key);
-    drop(map);
-    save_replace_to_file()
-}
-
-/// 启用/禁用字符串替换
-pub fn set_replace_enabled(enabled: bool) -> Result<(), String> {
-    let mut map = REPLACE_MAP.write().unwrap();
-    map.replace_string = enabled;
-    drop(map);
     save_replace_to_file()
 }
 
@@ -166,11 +129,6 @@ fn read_replace_json<P: AsRef<Path>>(path: P) -> ReplaceConfig {
 
 /// 获取全局替换配置（内部使用）
 fn get_replace_config() -> ReplaceConfig {
-    REPLACE_MAP.read().unwrap().clone()
-}
-
-/// 获取替换配置的克隆（用于API返回）
-pub fn get_replace_config_clone() -> ReplaceConfig {
     REPLACE_MAP.read().unwrap().clone()
 }
 

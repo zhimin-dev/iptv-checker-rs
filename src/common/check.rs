@@ -5,7 +5,7 @@ use crate::common::{AudioInfo, CheckOptions, SearchOptions, VideoInfo};
 use crate::config::favourite::get_favourite_list;
 use crate::r#const::constant::{INPUT_SEARCH_FOLDER, OUTPUT_FOLDER};
 use lazy_static::lazy_static;
-use log::{error, info};
+use log::info;
 use serde::{Deserialize, Serialize};
 use std::fmt::Error;
 use std::sync::Mutex;
@@ -255,7 +255,6 @@ pub mod check {
     use std::process::{Command, ExitStatus, Stdio};
     use std::sync::{Arc, Mutex};
     use std::thread;
-    use std::time;
     use std::time::Instant;
     use tokio::time::Duration;
     use url::Url;

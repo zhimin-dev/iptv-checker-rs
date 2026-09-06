@@ -208,35 +208,6 @@ pub fn find_for_channel(channel_name: &str) -> Option<ChannelIconItem> {
     None
 }
 
-/// 统一配置中的分组映射（按频道名匹配），返回「分组1-分组2」拼接后的 group-title
-pub fn get_group_for_channel(channel_name: &str) -> Option<String> {
-    let item = find_for_channel(channel_name)?;
-    let g = item.effective_group();
-    if g.is_empty() {
-        None
-    } else {
-        Some(g)
-    }
-}
-
-/// 统一配置中的 tvg-id（按频道名匹配）
-pub fn get_tvg_id_for_channel(channel_name: &str) -> Option<String> {
-    let item = find_for_channel(channel_name)?;
-    if item.tvg_id.trim().is_empty() {
-        None
-    } else {
-        Some(item.tvg_id.trim().to_string())
-    }
-}
-
-/// 图标地址是否已在统一配置中（爬取列表过滤用）
-pub fn logo_exists(logo_url: &str) -> bool {
-    get_channel_icons()
-        .items
-        .iter()
-        .any(|i| i.logo == logo_url)
-}
-
 /// 重新加载（配置导入后调用）
 pub fn reload() {
     *CHANNEL_ICONS.write().unwrap() = read_channel_icons();
@@ -309,11 +280,6 @@ pub fn collect_from_m3u(m3u: &crate::common::M3uObjectList) -> usize {
         }
     }
     changed
-}
-
-/// 外部模块读取文件路径用
-pub fn get_file_path() -> &'static str {
-    CHANNEL_ICONS_FILE
 }
 
 #[allow(dead_code)]

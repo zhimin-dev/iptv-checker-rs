@@ -12,7 +12,6 @@ use log::{error, info, warn};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BaseConfig {
     pub host: String,
-    pub replace_string: bool,
     pub remote_url2local_images: bool,
     #[serde(default)]
     pub github_token: String,
@@ -64,7 +63,6 @@ impl BaseConfig {
     fn new() -> Self {
         BaseConfig {
             host: String::default(),
-            replace_string: false,
             remote_url2local_images: false,
             github_token: String::default(),
             rename_channel_type: 0,
@@ -94,19 +92,6 @@ pub fn get_base_json() -> Result<String, String> {
         .map_err(|e| format!("Failed to serialize base config: {}", e))
 }
 
-/// 从 JSON 字符串解析并更新 Base 配置
-pub fn update_base_from_json(json: &str) -> Result<(), String> {
-    let config: BaseConfig = serde_json::from_str(json)
-        .map_err(|e| format!("Failed to parse base JSON: {}", e))?;
-    update_base_config(config)
-}
-
-/// 读取 base.json 文件内容（字符串形式）
-pub fn read_base_json_string() -> Result<String, String> {
-    fs::read_to_string(get_base_file_path())
-        .map_err(|e| format!("Failed to read base.json: {}", e))
-}
-
 /// 获取有效的 host，优先 base.json，回退 logos.json，自动补 http://
 pub fn get_effective_host() -> String {
     let raw = {
@@ -129,18 +114,16 @@ pub fn get_effective_host() -> String {
     }
 }
 
-/// 部分更新 Base 配置（host、replace_string、remote_url2local_images、github_token）
+/// 部分更新 Base 配置（host、remote_url2local_images、github_token）
 /// Also normalizes host to include http:// if protocol is missing.
 pub fn partial_update_base_config(
     host: String,
-    replace_string: bool,
     remote_url2local_images: bool,
     github_token: String,
     rename_channel_type: i8,
 ) -> Result<(), String> {
     let mut config = get_base_config();
     config.host = host;
-    config.replace_string = replace_string;
     config.remote_url2local_images = remote_url2local_images;
     config.github_token = github_token;
     config.rename_channel_type = rename_channel_type;
@@ -267,7 +250,6 @@ pub fn sync_host_from_logos_if_needed() {
     }
     if let Err(e) = partial_update_base_config(
         logos_host,
-        base_config.replace_string,
         base_config.remote_url2local_images,
         base_config.github_token,
         base_config.rename_channel_type,

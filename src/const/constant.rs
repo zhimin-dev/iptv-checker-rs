@@ -93,7 +93,6 @@ pub static LOGOS_CONFIG_JSON_CONTENT: &str = r#"{
 
 pub static BASE_CONFIG_JSON_CONTENT: &str = r#"{
   "host": "",
-  "replace_string": false,
   "remote_url2local_images": false,
   "github_token": "",
   "player_cache_ttl_hours": 24

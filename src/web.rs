@@ -20,7 +20,7 @@ use actix_files as actix_fs;
 use actix_files::NamedFile;
 use actix_multipart::form::{tempfile::TempFile, MultipartForm};
 use actix_web::middleware::Logger;
-use actix_web::{delete, get, post, web, App, HttpResponse, HttpServer, Responder};
+use actix_web::{get, post, web, App, HttpResponse, HttpServer, Responder};
 use chrono::Local;
 use clokwerk::{Scheduler, TimeUnits};
 use log::{debug, error, info};
@@ -33,7 +33,6 @@ use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time;
 use std::time::Duration;
 use tokio::signal;
 use walkdir::WalkDir;
@@ -950,8 +949,6 @@ async fn get_base_config() -> impl Responder {
 struct UpdateBaseConfigRequest {
     host: String,
     #[serde(default, deserialize_with = "deserialize_bool_flexible")]
-    replace_string: bool,
-    #[serde(default, deserialize_with = "deserialize_bool_flexible")]
     remote_url2local_images: bool,
     #[serde(default)]
     github_token: String,
@@ -981,7 +978,6 @@ async fn update_base_config(req: web::Json<UpdateBaseConfigRequest>) -> impl Res
 
     match crate::config::base::partial_update_base_config(
         inner.host.trim_end_matches('/').to_string(),
-        inner.replace_string,
         inner.remote_url2local_images,
         inner.github_token,
         inner.rename_channel_type,
@@ -1379,7 +1375,7 @@ async fn system_export_config() -> impl Responder {
             continue;
         }
 
-        info!("Added {} to export", zip_path);
+        debug!("Added {} to export", zip_path);
     }
 
     if let Err(e) = zip.finish() {
@@ -1605,7 +1601,7 @@ async fn system_import_config(
             }
 
             imported_files.push(target_path.clone());
-            info!("Imported {} to {}", file_name, target_path);
+            debug!("Imported {} to {}", file_name, target_path);
         }
     }
 
@@ -1926,12 +1922,6 @@ pub async fn start_web(port: u16) {
         info!("startup epg task finished");
     });
 // ============== 分组映射 API ==============
-
-#[derive(Serialize, Deserialize)]
-struct GroupMappingResponse {
-    groups: Vec<String>,
-    mapping: HashMap<String, String>,
-}
 
 #[get("/system/group-mapping")]
 async fn get_group_mapping() -> impl Responder {

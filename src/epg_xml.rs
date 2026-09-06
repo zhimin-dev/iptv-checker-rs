@@ -5,7 +5,6 @@
 //! - 子节点 `<channel id="...">`，内嵌 `<display-name lang="...">文本</display-name>`
 //! - 子节点 `<programme start="..." stop="..." channel="...">`，内嵌 `<title lang="...">文本</title>`
 
-use crate::search::parse_epg_time_str;
 use crate::common::translate::trad_to_simp;
 use crate::epg_mapping::get_best_tvg_id;
 use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, BytesText, Event};
@@ -183,30 +182,6 @@ pub struct Tv {
     pub programmes: Vec<Programme>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct EpgAllListItem {
-    channel_map: HashMap<String, String>,
-    list_map: HashMap<String, Vec<Programme>>,
-}
-
-impl EpgAllListItem {
-    pub fn new() -> Self {
-        Self::default()
-    }
-    
-    pub fn set_channel_map(&mut self, channel_map: HashMap<String, String>) {
-        self.channel_map = channel_map;
-    }
-    
-    pub fn set_list_map(&mut self, list_map: HashMap<String, Vec<Programme>>) {
-        self.list_map = list_map;
-    }
-    
-    pub fn save_json_file(self, file_name:String) {
-        serde_json::to_writer(File::create(file_name).unwrap(), &self).unwrap();
-    }
-}
-
 /// 频道
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Channel {
@@ -215,39 +190,12 @@ pub struct Channel {
     pub display_names: Vec<DisplayName>,
 }
 
-impl Channel {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn set_id(&mut self, id: String) {
-        self.id = id;
-    }
-
-    pub fn set_display_names(&mut self, display_names: Vec<DisplayName>) {
-        self.display_names = display_names;
-    }
-}
-
 /// 显示名称（多语言）
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DisplayName {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lang: Option<String>,
     pub value: String,
-}
-
-impl DisplayName {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn set_lang(&mut self, lang: String) {
-        self.lang = Some(lang);
-    }
-    pub fn set_value(&mut self, value: String) {
-        self.value = value;
-    }
 }
 
 /// 节目单条
@@ -262,55 +210,12 @@ pub struct Programme {
     pub titles: Vec<ProgrammeTitle>,
 }
 
-impl Programme {
-    pub fn to_unixtime(&mut self) {
-        self.start_unix = parse_epg_time_str(&self.start);
-        self.stop_unix = parse_epg_time_str(&self.stop);
-    }
-}
-
 /// 节目标题（多语言）
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProgrammeTitle {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lang: Option<String>,
     pub value: String,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct EpgProgram {
-    pub start: String,
-    pub stop: String,
-    pub channel: String,
-    pub title: String,
-    pub lang: String,
-}
-
-impl EpgProgram {
-    pub fn new() -> EpgProgram {
-        EpgProgram {
-            start: String::default(),
-            stop: String::default(),
-            channel: String::default(),
-            title: String::default(),
-            lang: String::default(),
-        }
-    }
-    pub fn set_start(&mut self, start: String) {
-        self.start = start;
-    }
-    pub fn set_stop(&mut self, stop: String) {
-        self.stop = stop;
-    }
-    pub fn set_channel(&mut self, channel: String) {
-        self.channel = channel;
-    }
-    pub fn set_titles(&mut self, title: String) {
-        self.title = title
-    }
-    pub fn set_lang(&mut self, lang: String) {
-        self.lang = lang
-    }
 }
 
 // ============== 解析实现 ==============
@@ -691,17 +596,6 @@ pub fn tv_to_epg_xml(tv: &Tv) -> Result<String, String> {
     String::from_utf8(bytes).map_err(|e| format!("UTF-8 转换失败: {}", e))
 }
 
-/// 将 Tv 对象序列化为 JSON 字符串
-pub fn epg_to_json_string(tv: &Tv) -> Result<String, String> {
-    serde_json::to_string_pretty(tv).map_err(|e| format!("JSON 序列化错误: {}", e))
-}
-
-/// 一步：XML 字符串 -> Tv 对象 -> JSON 字符串
-pub fn epg_xml_str_to_json(xml_str: &str) -> Result<String, String> {
-    let tv = parse_epg_xml_str(xml_str)?;
-    epg_to_json_string(&tv)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -731,20 +625,6 @@ mod tests {
         assert_eq!(tv.channels[0].display_names[0].value, "CCTV1");
         assert_eq!(tv.programmes.len(), 2);
         assert_eq!(tv.programmes[0].titles[0].value, "非遗里的中国Ⅳ(6)");
-    }
-
-    #[test]
-    fn epg_to_json() {
-        let tv = parse_epg_xml_str(SAMPLE).unwrap();
-        let json = epg_to_json_string(&tv).unwrap();
-        assert!(json.contains("1") && json.contains("CCTV1"));
-        assert!(json.contains("非遗里的中国Ⅳ(6)"));
-    }
-
-    #[test]
-    fn epg_xml_str_to_json_one_shot() {
-        let json = epg_xml_str_to_json(SAMPLE).unwrap();
-        let _: serde_json::Value = serde_json::from_str(&json).unwrap();
     }
 
     #[test]

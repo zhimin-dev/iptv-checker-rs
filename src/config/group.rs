@@ -89,10 +89,6 @@ static GROUP_MAP: Lazy<RwLock<GroupMappingConfig>> = Lazy::new(|| {
     RwLock::new(read_group_mapping_json(&p))
 });
 
-pub fn get_group_mapping_config() -> GroupMappingConfig {
-    GROUP_MAP.read().unwrap().clone()
-}
-
 /// 当前生效的分组类型：prefix | category
 pub fn get_active_group_type() -> String {
     GROUP_MAP.read().unwrap().active.clone()
@@ -138,20 +134,6 @@ pub fn get_groups() -> Vec<String> {
         .unwrap_or_default()
 }
 
-pub fn get_group_mapping_json() -> Result<String, String> {
-    let config = GROUP_MAP.read().unwrap();
-    serde_json::to_string_pretty(&*config)
-        .map_err(|e| format!("Failed to serialize group mapping: {}", e))
-}
-
-pub fn update_group_mapping(mapping: HashMap<String, String>) -> Result<(), String> {
-    {
-        let mut config = GROUP_MAP.write().unwrap();
-        config.active_config().mapping = mapping;
-    }
-    save_group_mapping_to_file()
-}
-
 pub fn save_full_config(groups: Vec<String>, mapping: HashMap<String, String>) -> Result<(), String> {
     {
         let mut config = GROUP_MAP.write().unwrap();
@@ -171,35 +153,6 @@ pub fn set_group_mapping(tv_name: String, group_title: String) -> Result<(), Str
             active.groups.push(group_title.clone());
         }
         active.mapping.insert(tv_name, group_title);
-    }
-    save_group_mapping_to_file()
-}
-
-pub fn remove_group_mapping(tv_name: &str) -> Result<(), String> {
-    {
-        let mut config = GROUP_MAP.write().unwrap();
-        config.active_config().mapping.remove(tv_name);
-    }
-    save_group_mapping_to_file()
-}
-
-pub fn add_group(group_title: String) -> Result<(), String> {
-    {
-        let mut config = GROUP_MAP.write().unwrap();
-        let active = config.active_config();
-        if !active.groups.contains(&group_title) {
-            active.groups.push(group_title);
-        }
-    }
-    save_group_mapping_to_file()
-}
-
-pub fn delete_group(group_title: &str) -> Result<(), String> {
-    {
-        let mut config = GROUP_MAP.write().unwrap();
-        let active = config.active_config();
-        active.groups.retain(|g| g != group_title);
-        active.mapping.retain(|_, v| v != group_title);
     }
     save_group_mapping_to_file()
 }

@@ -322,25 +322,6 @@ impl ProxyEnv for tokio::process::Command {
     }
 }
 
-/// Shared reqwest Client for GitHub API requests (unauthenticated).
-/// Does NOT disable certificate verification — GitHub always has valid TLS.
-/// For authenticated requests, callers should add `.bearer_auth(token)` on each request.
-pub static GITHUB_CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
-    let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert(
-        reqwest::header::USER_AGENT,
-        reqwest::header::HeaderValue::from_static("iptv-checker-rs"),
-    );
-    headers.insert(
-        reqwest::header::ACCEPT,
-        reqwest::header::HeaderValue::from_static("application/vnd.github+json"),
-    );
-    reqwest::Client::builder()
-        .default_headers(headers)
-        .build()
-        .expect("Failed to build GitHub API client")
-});
-
 /// Get the GitHub token from base.json config, if configured.
 pub fn get_github_token() -> Option<String> {
     let token = crate::config::base::get_base_config().github_token;

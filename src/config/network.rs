@@ -63,19 +63,6 @@ pub fn get_network_json() -> Result<String, String> {
         .map_err(|e| format!("Failed to serialize network config: {}", e))
 }
 
-/// 从 JSON 字符串解析并更新网络配置
-pub fn update_network_from_json(json: &str) -> Result<(), String> {
-    let config: NetworkConfig = serde_json::from_str(json)
-        .map_err(|e| format!("Failed to parse network JSON: {}", e))?;
-    update_network_config(config)
-}
-
-/// 读取 network.json 文件内容（字符串形式）
-pub fn read_network_json_string() -> Result<String, String> {
-    fs::read_to_string(get_network_file_path())
-        .map_err(|e| format!("Failed to read network.json: {}", e))
-}
-
 /// 重新加载 network.json 文件
 pub fn reload_network_map() -> Result<(), String> {
     let p = Path::new(get_network_file_path().as_str()).to_owned();

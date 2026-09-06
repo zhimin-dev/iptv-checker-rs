@@ -66,14 +66,6 @@ pub fn get_auto_clean_days() -> u64 {
         .max(1) as u64
 }
 
-/// 该 url 是否已被拉黑（连续失败次数达到阈值）
-pub fn is_blacklisted(url: &str) -> bool {
-    let map = BLACKLIST.lock().unwrap();
-    map.get(url.trim())
-        .map(|e| e.fail_count >= get_fail_times())
-        .unwrap_or(false)
-}
-
 /// 当前生效的黑名单 url 集合（用于检查前过滤）
 pub fn get_blacklisted_urls() -> HashSet<String> {
     let threshold = get_fail_times();

@@ -55,10 +55,6 @@ impl TaskInfo {
     pub fn set_next_run_time(&mut self, time: i32) {
         self.next_run_time = time
     }
-
-    pub fn set_last_run_time(&mut self, time: i32) {
-        self.last_run_time = time
-    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -486,18 +482,6 @@ impl TaskManager {
             return Err(Error::new(ErrorKind::Other, e.to_string()));
         }
         Ok(id)
-    }
-
-    pub fn import_task_from_data(&self, data_map: HashMap<String, Task>) -> bool {
-        for (k, v) in data_map {
-            if let Err(_) = file_config::save_task(k, v) {
-                return false;
-            }
-        }
-        if let Err(_) = file_config::save_task_config() {
-            return false;
-        }
-        true
     }
 
     pub fn run_task(&self, id: String) -> Result<bool> {

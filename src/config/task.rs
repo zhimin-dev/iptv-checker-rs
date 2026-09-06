@@ -70,11 +70,6 @@ fn read_task_json<P: AsRef<Path>>(path: P) -> TaskConfig {
     }
 }
 
-/// 获取任务配置
-pub fn get_task_config() -> TaskConfig {
-    TASK_MAP.read().unwrap().clone()
-}
-
 /// 重新加载任务配置
 pub fn reload_task_config() -> Result<(), String> {
     let p = Path::new(TASK_JSON);
@@ -152,17 +147,10 @@ pub fn reset_running_tasks_on_startup() {
 pub mod file_config {
     use std::collections::HashMap;
     use std::fs;
-    use crate::config::task::{TaskConfig, TASK_MAP};
+    use crate::config::task::TASK_MAP;
     use crate::r#const::constant::TASK_JSON;
     use std::io::Error;
     use crate::common::task::Task;
-
-    /// 从文件解析配置
-    pub fn parse_task_json(file_path: &str) -> Result<TaskConfig, Error> {
-        let content = fs::read_to_string(file_path)?;
-        let config: TaskConfig = serde_json::from_str(&content)?;
-        Ok(config)
-    }
 
     /// 保存配置到文件
     pub fn save_task_config() -> Result<(), Error> {
@@ -172,13 +160,6 @@ pub mod file_config {
         let config = TASK_MAP.read().unwrap();
         let content = serde_json::to_string_pretty(&*config)?;
         fs::write(TASK_JSON, content)?;
-        Ok(())
-    }
-
-    /// 更新整个配置
-    pub fn update_config(new_config: TaskConfig) -> Result<(), Error> {
-        let mut config = TASK_MAP.write().unwrap();
-        *config = new_config;
         Ok(())
     }
 

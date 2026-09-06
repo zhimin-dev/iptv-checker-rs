@@ -443,10 +443,6 @@ impl M3uObjectList {
         self.list
     }
 
-    pub fn get_header(self) -> M3uExt {
-        self.header
-    }
-
     pub fn print_result(&mut self) -> String {
         let succ_num = self.counter.success_count;
         let failed_num = self.counter.total - succ_num;
