@@ -25,6 +25,134 @@ pub fn get_user_agent() -> String {
     }
 }
 
+/// 去掉正文开头的 UTF-8 BOM。
+/// 不少播放列表由记事本 / Excel / 各类导出工具生成，开头会带 `\u{feff}`，
+/// 会导致 `starts_with("#EXTM3U")` 判断失败，整个列表被当成非标准格式解析出 0 个频道。
+pub fn strip_bom(body: &str) -> &str {
+    body.strip_prefix('\u{feff}').unwrap_or(body)
+}
+
+/// 频道级 User-Agent（播放列表里的 `http-user-agent` / `#EXTVLCOPT:http-user-agent=`）优先，
+/// 其次全局配置的 user_agent。返回 None 表示不覆盖默认 UA。
+///
+/// 播放器会带这个 UA，检查链路（预校验 + ffprobe）也必须带，
+/// 否则需要特定 UA 的源会直接 403：播放器能播、检查全是失败。
+pub fn effective_user_agent(channel_ua: Option<&str>) -> Option<String> {
+    if let Some(ua) = channel_ua {
+        let ua = ua.trim();
+        if !ua.is_empty() {
+            return Some(ua.to_string());
+        }
+    }
+    let config = crate::config::network::get_network_config();
+    let ua = config.user_agent.trim();
+    if !ua.is_empty() {
+        return Some(ua.to_string());
+    }
+    // 兼容：有的用户把 UA 直接配在自定义请求头里
+    for (k, v) in &config.custom_headers {
+        if k.eq_ignore_ascii_case("user-agent") && !v.trim().is_empty() {
+            return Some(v.trim().to_string());
+        }
+    }
+    None
+}
+
+/// 全局自定义请求头（检查链路与 reqwest 客户端保持一致）。
+/// User-Agent 单独走 `effective_user_agent`，这里过滤掉，避免出现两个 UA 头。
+pub fn check_extra_headers() -> Vec<(String, String)> {
+    crate::config::network::get_network_config()
+        .custom_headers
+        .iter()
+        .filter(|(k, _)| !k.eq_ignore_ascii_case("user-agent"))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
+}
+
+/// HTTP 预校验 / 快速检查要带的请求头（频道 UA 覆盖默认 UA + 全局自定义头）
+pub fn check_request_headers(channel_ua: Option<&str>) -> Vec<(String, String)> {
+    let mut headers = Vec::new();
+    if let Some(ua) = effective_user_agent(channel_ua) {
+        headers.push(("User-Agent".to_string(), ua));
+    }
+    headers.extend(check_extra_headers());
+    headers
+}
+
+/// ffprobe 探测要用的 (User-Agent, 额外请求头)
+pub fn probe_request_headers(channel_ua: Option<&str>) -> (Option<String>, Vec<(String, String)>) {
+    (effective_user_agent(channel_ua), check_extra_headers())
+}
+
+/// 优先使用项目自带的二进制（`tools/ffmpeg/<name>`，与播放器中继的选择逻辑一致），
+/// 没有则回退到 PATH。
+pub fn bundled_bin(name: &str) -> String {
+    let exe = format!("./tools/ffmpeg/{}.exe", name);
+    let plain = format!("./tools/ffmpeg/{}", name);
+    if std::path::Path::new(&exe).exists() {
+        exe
+    } else if std::path::Path::new(&plain).exists() {
+        plain
+    } else {
+        name.to_string()
+    }
+}
+
+/// ffmpeg 可执行文件路径（自带优先）
+pub fn ffmpeg_bin() -> String {
+    bundled_bin("ffmpeg")
+}
+
+/// ffprobe 可执行文件路径（自带优先）
+pub fn ffprobe_bin() -> String {
+    bundled_bin("ffprobe")
+}
+
+/// 执行 `<bin> -version`，成功返回版本首行
+fn binary_version(bin: &str) -> Result<String, String> {
+    let out = std::process::Command::new(bin)
+        .arg("-version")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("{} 无法执行（未安装或不在 PATH）: {}", bin, e))?;
+    if !out.status.success() {
+        return Err(format!("{} -version 执行失败: {}", bin, out.status));
+    }
+    let first = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if first.is_empty() {
+        return Err(format!("{} -version 无输出", bin));
+    }
+    Ok(first)
+}
+
+/// ffmpeg 检查（ffmpeg_check=true）依赖 ffprobe：缺失时必须在开始检查前就明确报错，
+/// 否则每个频道都会被判定失败（并写进黑名单），表现为「检查没有任何结果」。
+pub fn check_ffprobe_available() -> Result<String, String> {
+    binary_version(&ffprobe_bin())
+}
+
+/// `GET /system/ffmpeg-status` 的响应：服务端 ffmpeg / ffprobe 可用性
+pub fn ffmpeg_tools_status() -> serde_json::Value {
+    let ffmpeg_bin = ffmpeg_bin();
+    let ffprobe_bin = ffprobe_bin();
+    let ffmpeg_version = binary_version(&ffmpeg_bin);
+    let ffprobe_version = binary_version(&ffprobe_bin);
+    serde_json::json!({
+        "ffmpeg": ffmpeg_version.is_ok(),
+        "ffprobe": ffprobe_version.is_ok(),
+        "ffmpeg_bin": ffmpeg_bin,
+        "ffprobe_bin": ffprobe_bin,
+        "ffmpeg_version": ffmpeg_version.unwrap_or_default(),
+        "ffprobe_version": ffprobe_version.clone().unwrap_or_default(),
+        "ffprobe_error": ffprobe_version.err().unwrap_or_default(),
+    })
+}
+
 /// Rebuildable HTTP client stored behind a RwLock so proxy/header settings
 /// can be changed at runtime without restarting the server.
 static HTTP_CLIENT_INNER: Lazy<RwLock<reqwest::Client>> = Lazy::new(|| {
@@ -398,7 +526,9 @@ pub async fn get_url_body(_url: String, timeout: u64) -> Result<String, Error> {
 /// # 返回值
 /// * `bool` - 如果是M3U8格式返回true，否则返回false
 pub fn check_body_is_m3u8_format(_body: String) -> bool {
-    _body.starts_with("#EXTM3U")
+    // 允许开头有 BOM / 空白：部分服务端返回的 playlist 带 UTF-8 BOM，
+    // 直接 starts_with 会把合法 m3u8 判成无效
+    strip_bom(&_body).trim_start().starts_with("#EXTM3U")
 }
 
 /// 检查字符串是否为IPv6格式
@@ -455,6 +585,8 @@ pub fn check_body_is_m3u8_format(_body: String) -> bool {
 /// # 返回值
 /// * `M3uObjectList` - 解析后的M3U对象列表
 pub fn parse_normal_str(_body: String) -> M3uObjectList {
+    // 去掉可能的 UTF-8 BOM，否则第一行 `#EXTM3U`（含 x-tvg-url 等头信息）会解析失败
+    let _body = strip_bom(&_body).to_string();
     let mut result = M3uObjectList::new();
     let mut list = Vec::new();
     let exp_line = _body.lines();
@@ -619,6 +751,8 @@ fn parse_one_m3u(_arr: Vec<&str>, index: i32) -> Option<M3uObject> {
 /// # 返回值
 /// * `M3uObjectList` - 解析后的M3U对象列表
 pub fn parse_quota_str(_body: String) -> M3uObjectList {
+    // 去掉可能的 UTF-8 BOM
+    let _body = strip_bom(&_body).to_string();
     let mut result = M3uObjectList::new();
     let mut list = Vec::new();
     let exp_line = _body.lines();

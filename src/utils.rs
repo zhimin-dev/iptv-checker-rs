@@ -9,6 +9,7 @@ use std::fs;
 use std::fs::File;
 use std::io::{Error, ErrorKind, Read};
 use std::net::{IpAddr, Ipv4Addr, ToSocketAddrs};
+#[cfg(not(target_os = "windows"))]
 use std::process::Command;
 use std::sync::Mutex;
 use url::Url;
@@ -69,10 +70,72 @@ fn read_pid_contents(pid_file: String) -> Result<String, Error> {
     Ok(contents)
 }
 
+/// Windows 下直接用 Win32 API 判断/结束进程。
+///
+/// 之前用的是 Unix 的 `ps -p` / `kill -9`，Windows 上只有 PATH 里恰好存在
+/// Git 自带的 ps.exe 时才能跑通；PATH 不完整（例如容器/精简环境）时
+/// `ps` 找不到，`status.unwrap()` 会让 `web --start` / `web --status` 直接 panic。
+#[cfg(target_os = "windows")]
+mod win_process {
+    const PROCESS_TERMINATE: u32 = 0x0001;
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    const STILL_ACTIVE: u32 = 259;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn OpenProcess(
+            dw_desired_access: u32,
+            b_inherit_handle: i32,
+            dw_process_id: u32,
+        ) -> *mut core::ffi::c_void;
+        fn GetExitCodeProcess(h_process: *mut core::ffi::c_void, lp_exit_code: *mut u32) -> i32;
+        fn TerminateProcess(h_process: *mut core::ffi::c_void, u_exit_code: u32) -> i32;
+        fn CloseHandle(h_object: *mut core::ffi::c_void) -> i32;
+    }
+
+    /// 进程是否存在且仍在运行
+    pub fn exists(pid: u32) -> bool {
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if handle.is_null() {
+                return false;
+            }
+            let mut exit_code: u32 = 0;
+            let ok = GetExitCodeProcess(handle, &mut exit_code);
+            CloseHandle(handle);
+            ok != 0 && exit_code == STILL_ACTIVE
+        }
+    }
+
+    /// 强制结束进程，返回是否成功
+    pub fn kill(pid: u32) -> bool {
+        unsafe {
+            let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
+            if handle.is_null() {
+                return false;
+            }
+            let ok = TerminateProcess(handle, 1);
+            CloseHandle(handle);
+            ok != 0
+        }
+    }
+}
+
 /// 检查指定PID的进程是否存在
+#[cfg(target_os = "windows")]
 pub fn check_process(pid: u32) -> Result<bool, Error> {
-    let status = Command::new("ps").arg("-p").arg(pid.to_string()).output();
-    Ok(status.unwrap().status.success())
+    Ok(win_process::exists(pid))
+}
+
+/// 检查指定PID的进程是否存在（Linux / macOS 用 ps -p）
+#[cfg(not(target_os = "windows"))]
+pub fn check_process(pid: u32) -> Result<bool, Error> {
+    let output = Command::new("ps")
+        .arg("-p")
+        .arg(pid.to_string())
+        .output()
+        .map_err(|e| Error::new(ErrorKind::Other, format!("failed to run ps: {}", e)))?;
+    Ok(output.status.success())
 }
 
 /// 检查文件是否存在
@@ -279,24 +342,47 @@ pub fn folder_exists(file_path: &String) -> bool {
     }
 }
 
-/// 检查并清理已存在的PID文件
+/// 检查并清理已存在的PID文件。
+/// pid 文件损坏或进程检查失败时只告警，不再 panic（否则 `web --start` 会直接起不来）
 pub fn check_pid_exits(pid_name: &String) {
-    if file_exists(pid_name) {
-        let num = read_pid_num(pid_name).expect("获取pid失败");
-        let has_process = check_process(num).expect("检查pid失败");
-        if has_process {
+    if !file_exists(pid_name) {
+        return;
+    }
+    let num = match read_pid_num(pid_name) {
+        Ok(num) => num,
+        Err(e) => {
+            log::warn!("read pid file {} failed: {}", pid_name, e);
+            return;
+        }
+    };
+    match check_process(num) {
+        Ok(true) => {
+            log::info!("stopping previous web server, pid = {}", num);
             kill_process(num);
         }
+        Ok(false) => log::info!("pid {} is not running, ignore stale pid file", num),
+        Err(e) => log::warn!("check process {} failed: {}", num, e),
     }
 }
 
-/// 终止指定PID的进程
+/// 终止指定PID的进程（Windows: TerminateProcess；其他平台: kill -9）
+#[cfg(target_os = "windows")]
 fn kill_process(pid: u32) {
-    let _output = Command::new("kill")
+    if !win_process::kill(pid) {
+        log::warn!("failed to kill process {}", pid);
+    }
+}
+
+/// 终止指定PID的进程（Linux / macOS）
+#[cfg(not(target_os = "windows"))]
+fn kill_process(pid: u32) {
+    if let Err(e) = Command::new("kill")
         .arg("-9")
         .arg(pid.to_string())
         .output()
-        .expect("Failed to execute command");
+    {
+        log::warn!("failed to kill process {}: {}", pid, e);
+    }
 }
 
 /// 从PID文件中读取进程ID

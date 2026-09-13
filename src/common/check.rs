@@ -7,12 +7,62 @@ use crate::r#const::constant::{INPUT_SEARCH_FOLDER, OUTPUT_FOLDER};
 use lazy_static::lazy_static;
 use log::info;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fmt::Error;
 use std::sync::Mutex;
 
 lazy_static! {
     /// 本次检测被 body 校验直接丢弃的无效 m3u8 数量（检测报告统计用，每次检测开始前清零）
     pub static ref CHECK_REPORT_INVALID_M3U8: Mutex<u64> = Mutex::new(0);
+
+    /// 本次检测的失败原因统计（key: 归类后的原因，value: 次数）。
+    /// 之前失败原因被直接丢弃，日志里只看到「失败 N 个」，无法定位是 ffprobe 缺参数、
+    /// 源站超时还是 UA 被拒，只能靠猜。
+    pub static ref CHECK_FAIL_REASONS: Mutex<HashMap<String, u32>> = Mutex::new(HashMap::new());
+}
+
+/// 归类失败原因：去掉带具体 URL 的易变部分并截断，便于聚合统计
+fn normalize_fail_reason(reason: &str) -> String {
+    let mut s = reason.trim().to_string();
+    for marker in [" for url (", " for url ", " url: "] {
+        if let Some(idx) = s.find(marker) {
+            s.truncate(idx);
+            break;
+        }
+    }
+    if s.chars().count() > 140 {
+        s = s.chars().take(140).collect::<String>() + "…";
+    }
+    s
+}
+
+/// 记录一次失败原因（供检测报告 / 日志汇总）
+pub fn record_fail_reason(reason: &str) {
+    let key = normalize_fail_reason(reason);
+    if key.is_empty() {
+        return;
+    }
+    if let Ok(mut map) = CHECK_FAIL_REASONS.lock() {
+        *map.entry(key).or_insert(0) += 1;
+    }
+}
+
+/// 失败原因 TOP N（按次数倒序）
+pub fn top_fail_reasons(n: usize) -> Vec<FailReason> {
+    let map = match CHECK_FAIL_REASONS.lock() {
+        Ok(m) => m,
+        Err(_) => return vec![],
+    };
+    let mut v: Vec<FailReason> = map
+        .iter()
+        .map(|(k, c)| FailReason {
+            reason: k.clone(),
+            count: *c,
+        })
+        .collect();
+    v.sort_by(|a, b| b.count.cmp(&a.count));
+    v.truncate(n);
+    v
 }
 
 /// 取 URL 的 path 部分（去掉查询参数/锚点）并转小写
@@ -27,11 +77,15 @@ pub fn url_is_m3u8(url: &str) -> bool {
 }
 
 /// m3u8 链接预校验：HTTP 拉取 body（最多读前 4KB），检查是否为正规 m3u8
-async fn http_body_is_m3u8(url: &str, timeout_ms: u64) -> Result<bool, std::io::Error> {
+async fn http_body_is_m3u8(
+    url: &str,
+    timeout_ms: u64,
+    headers: &[(&str, &str)],
+) -> Result<bool, std::io::Error> {
     use futures::StreamExt;
     // 预校验用较短超时（最多 10s），死链快速失败；先直连、失败走代理
     let t = timeout_ms.min(10_000);
-    let resp = crate::common::util::request_with_fallback(url, &[], t / 1000 + 1)
+    let resp = crate::common::util::request_with_fallback(url, headers, t / 1000 + 1)
         .await
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("GET failed: {}", e)))?;
     if !resp.status().is_success() {
@@ -63,6 +117,13 @@ async fn http_body_is_m3u8(url: &str, timeout_ms: u64) -> Result<bool, std::io::
     Ok(crate::common::util::check_body_is_m3u8_format(head))
 }
 
+/// 检测报告：失败原因统计项
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct FailReason {
+    pub reason: String,
+    pub count: u32,
+}
+
 /// 检测报告：按格式统计一次检查的结果
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CheckReport {
@@ -79,6 +140,9 @@ pub struct CheckReport {
     pub other: usize,
     pub success: usize,
     pub failed: usize,
+    /// 失败原因 TOP（便于直接看出「为什么全失败」）
+    #[serde(default)]
+    pub fail_reasons: Vec<FailReason>,
 }
 
 fn build_check_report(data: &crate::common::M3uObjectList, output_id: &str) -> CheckReport {
@@ -96,6 +160,7 @@ fn build_check_report(data: &crate::common::M3uObjectList, output_id: &str) -> C
         other: 0,
         success: 0,
         failed: 0,
+        fail_reasons: vec![],
     };
     for obj in data.get_list_ref() {
         r.total += 1;
@@ -123,6 +188,7 @@ fn build_check_report(data: &crate::common::M3uObjectList, output_id: &str) -> C
         }
     }
     r.m3u8_invalid = *CHECK_REPORT_INVALID_M3U8.lock().unwrap() as usize;
+    r.fail_reasons = top_fail_reasons(8);
     r
 }
 
@@ -259,59 +325,80 @@ pub mod check {
     use tokio::time::Duration;
     use url::Url;
 
-    /// 使用超时运行命令并获取结果
+    /// 取字符串尾部至多 max 个字符（按字符边界切分，避免 UTF-8 截断 panic）
+    fn tail_chars(s: &str, max: usize) -> String {
+        let count = s.chars().count();
+        if count <= max {
+            return s.to_string();
+        }
+        s.chars().skip(count - max).collect()
+    }
+
+    /// 使用 ffprobe 探测流信息（带超时）
     ///
     /// # 参数
     /// * `_url` - 要检查的URL
-    /// * `timeout_mill_secs` - 超时时间（毫秒）
+    /// * `timeout_mill_secs` - 本次探测的整体超时（毫秒）
+    /// * `channel_ua` - 播放列表里为该频道声明的 User-Agent（http-user-agent / EXTVLCOPT）
     ///
     /// # 返回值
     /// * `Result<CheckUrlIsAvailableResponse, Error>` - 检查结果
     pub async fn run_command_with_timeout_new(
         _url: String,
         timeout_mill_secs: u64,
+        channel_ua: Option<&str>,
     ) -> Result<CheckUrlIsAvailableResponse, Error> {
         let timeout = Duration::from_millis(timeout_mill_secs);
-        let mut second = timeout_mill_secs / 1000;
-        if second < 1 {
-            second = 1
-        }
+        // 修复：socket I/O 超时的单位是「微秒」。
+        // 之前按秒传（-timeout 20 实际是 20 微秒），远程源第一次读 socket 就超时，
+        // 于是「播放器能正常播放」的源在 ffmpeg 检查里全部被判失败（检查结果为空）。
+        let io_timeout_us = timeout_mill_secs.saturating_mul(1000).max(1_000_000);
+        let (ua, headers) = crate::common::util::probe_request_headers(channel_ua);
 
-        // 1. 配置FFprobe命令
-        let mut cmd = Command::new("ffprobe");
+        // 1. 配置FFprobe命令（优先使用项目自带二进制，缺失时回退到 PATH）
+        let mut cmd = Command::new(crate::common::util::ffprobe_bin());
         // ffprobe 探测遵循网络代理配置
         crate::common::util::apply_proxy_to_command(&mut cmd);
-        cmd.args(vec![
-            "-v",
-            "quiet",
-            "-print_format",
-            "json",
-            "-show_format",
-            "-show_streams",
-            "-timeout",
-            &second.to_string(),
-            &_url.to_owned(),
-        ]);
+        cmd.arg("-v")
+            .arg("error")
+            .arg("-print_format")
+            .arg("json")
+            .arg("-show_format")
+            .arg("-show_streams")
+            .arg("-rw_timeout")
+            .arg(io_timeout_us.to_string());
+        // 频道自带 UA / 全局自定义请求头：播放器会带，检查链路也必须带，
+        // 否则需要特定 UA / Referer 的源会 403（播放器能播、检查全失败）
+        if let Some(ua) = ua {
+            cmd.arg("-user_agent").arg(ua);
+        }
+        if !headers.is_empty() {
+            let header_str: String = headers
+                .iter()
+                .map(|(k, v)| format!("{}: {}\r\n", k, v))
+                .collect();
+            cmd.arg("-headers").arg(header_str);
+        }
+        cmd.arg(&_url);
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
-        // 启动子进程
+        // 启动子进程：ffprobe 缺失时返回错误而不是 panic。
+        // 之前这里 unwrap() 会让整个检查线程直接退出，上层收不到结果会一直空转死等，
+        // 任务永远不结束、报告和输出文件都不生成（表现为「检查没有任何结果」）。
         let mut child = cmd
             .spawn()
-            .map_err(|e| format!("Failed to spawn command: {}", e))
-            .unwrap();
+            .map_err(|e| Error::new(ErrorKind::Other, format!("failed to run ffprobe: {}", e)))?;
 
         // 2. 获取标准输出和错误输出的管道句柄
         let stdout_handle = child
             .stdout
             .take()
-            .ok_or("Failed to open stdout pipe".to_string())
-            .unwrap();
+            .ok_or_else(|| Error::new(ErrorKind::Other, "failed to open stdout pipe"))?;
         let stderr_handle = child
             .stderr
             .take()
-            .ok_or("Failed to open stderr pipe".to_string())
-            .unwrap();
+            .ok_or_else(|| Error::new(ErrorKind::Other, "failed to open stderr pipe"))?;
 
         // 3. 创建共享缓冲区用于存储输出
         let stdout_buf = Arc::new(Mutex::new(Vec::new()));
@@ -411,16 +498,37 @@ pub mod check {
         stdout_thread.join().expect("Stdout thread panicked");
         stderr_thread.join().expect("Stderr thread panicked");
 
-        // 8. 处理超时情况
+        // 8. 处理超时情况（附带 ffprobe 的报错尾部，方便定位）
         if timed_out {
-            return Err(Error::new(ErrorKind::TimedOut, "Command timed out"));
+            let reason = {
+                let buf = stderr_buf.lock().unwrap();
+                tail_chars(&String::from_utf8_lossy(&buf), 300)
+            };
+            let reason = reason.trim();
+            return Err(Error::new(
+                ErrorKind::TimedOut,
+                if reason.is_empty() {
+                    format!("ffprobe timed out after {}ms", timeout_mill_secs)
+                } else {
+                    format!("ffprobe timed out after {}ms: {}", timeout_mill_secs, reason)
+                },
+            ));
         }
 
-        // 9. 检查进程退出状态
+        // 9. 检查进程退出状态（把 ffprobe 的报错带出来，之前 -v quiet 什么都看不到）
         if !final_status.success() {
+            let reason = {
+                let buf = stderr_buf.lock().unwrap();
+                tail_chars(&String::from_utf8_lossy(&buf), 300)
+            };
+            let reason = reason.trim();
             return Err(Error::new(
                 ErrorKind::Other,
-                format!("Command failed with status: {}", final_status),
+                if reason.is_empty() {
+                    format!("ffprobe exited with status: {}", final_status)
+                } else {
+                    format!("ffprobe failed: {}", reason)
+                },
             ));
         }
 
@@ -430,7 +538,11 @@ pub mod check {
         let ffprobe: Ffprobe = serde_json::from_str(&output).map_err(|e| {
             Error::new(
                 ErrorKind::InvalidData,
-                format!("Failed to parse ffprobe output: {}", e),
+                format!(
+                    "failed to parse ffprobe output: {} (output: {})",
+                    e,
+                    tail_chars(&output, 200)
+                ),
             )
         })?;
 
@@ -479,9 +591,9 @@ pub mod check {
     /// # 参数
     /// * `_url` - 要检查的URL
     /// * `timeout` - 超时时间（毫秒）
-    /// * `need_video_info` - 是否需要视频信息
     /// * `ffmpeg_check` - 是否使用FFmpeg检查
     /// * `not_http_skip` - 是否跳过非HTTP链接
+    /// * `channel_ua` - 播放列表为该频道声明的 User-Agent（播放器会带，检查也必须带）
     ///
     /// # 返回值
     /// * `Result<CheckUrlIsAvailableResponse, Error>` - 检查结果
@@ -490,12 +602,20 @@ pub mod check {
         timeout: u64,
         ffmpeg_check: bool,
         not_http_skip: bool,
+        channel_ua: Option<String>,
     ) -> Result<CheckUrlIsAvailableResponse, Error> {
+        // 频道自带 UA 优先、其次全局配置；预校验与 ffprobe 使用同一套请求头
+        let req_headers = crate::common::util::check_request_headers(channel_ua.as_deref());
+        let header_refs: Vec<(&str, &str)> = req_headers
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+
         // m3u8 后缀的链接先做 HTTP body 预校验：
         // 不是正规 m3u8（或拉不到 body）的直接丢弃，不再浪费 ffprobe 检测时间，
         // 保证交给 ffprobe 的都是合法链接
         if super::url_is_m3u8(&_url) {
-            match super::http_body_is_m3u8(&_url, timeout).await {
+            match super::http_body_is_m3u8(&_url, timeout, &header_refs).await {
                 Ok(true) => {}
                 Ok(false) => {
                     *super::CHECK_REPORT_INVALID_M3U8.lock().unwrap() += 1;
@@ -510,14 +630,9 @@ pub mod check {
             }
         }
         if ffmpeg_check {
-            let res = run_command_with_timeout_new(_url.to_owned(), timeout).await;
-            return match res {
-                Ok(res) => Ok(res),
-                Err(e) => Err(Error::new(
-                    ErrorKind::Other,
-                    format!("status is not 200 {}", e),
-                )),
-            };
+            // 失败原因原样返回（之前会被套上 "status is not 200"，把真实原因盖掉）
+            return run_command_with_timeout_new(_url.to_owned(), timeout, channel_ua.as_deref())
+                .await;
         }
         let parsed_info = Url::parse(&_url);
         match parsed_info {
@@ -541,7 +656,7 @@ pub mod check {
         // 先直连、失败走代理（国内源直连、国外源走代理）
         let http_res = crate::common::util::request_with_fallback(
             _url.as_str(),
-            &[],
+            &header_refs,
             (timeout / 1000).max(1),
         )
         .await;
@@ -698,7 +813,23 @@ pub async fn do_check(
     export_file: bool,
     rename_channel_type: i8,
     fast_sort: bool,
-) -> Result<bool, Error> {
+) -> Result<bool, std::io::Error> {
+    // ffmpeg 检查依赖 ffprobe：缺失时立刻报错中止。
+    // 否则每个频道都会被判失败并写进黑名单，用户看到的就是「检查没有任何结果」，
+    // 而且后续检查还会因为黑名单继续空转。
+    if ffmpeg_check && !no_check {
+        if let Err(e) = crate::common::util::check_ffprobe_available() {
+            log::error!(
+                "ffmpeg 检查已开启，但服务端 ffprobe 不可用（{}）。已中止本次检查：\
+                 请安装完整的 ffmpeg（含 ffprobe）或改用 http 快速检查。",
+                e
+            );
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("ffprobe unavailable: {}", e),
+            ));
+        }
+    }
     // 将文件转换为数组
     let list = common::m3u::m3u::from_arr(input_files.to_owned(), timeout as u64).await;
     // 将数组转换为对象
@@ -723,8 +854,9 @@ pub async fn do_check(
         exclude_host: vec![],
     })
     .await;
-    // 重置本次检测的无效 m3u8 计数
+    // 重置本次检测的无效 m3u8 计数与失败原因统计
     *CHECK_REPORT_INVALID_M3U8.lock().unwrap() = 0;
+    CHECK_FAIL_REASONS.lock().unwrap().clear();
     // 过滤黑名单源（连续失败达到阈值的源直接跳过，提升检查速度）
     let blacklisted = crate::check_blacklist::get_blacklisted_urls();
     if !blacklisted.is_empty() {
@@ -788,6 +920,16 @@ pub async fn do_check(
         report.success,
         report.failed,
     );
+    // 失败原因 TOP：直接回答「为什么全失败」，不用再去翻 debug 日志
+    if !report.fail_reasons.is_empty() {
+        let detail = report
+            .fail_reasons
+            .iter()
+            .map(|r| format!("{} ×{}", r.reason, r.count))
+            .collect::<Vec<String>>()
+            .join(" | ");
+        log::warn!("检测失败原因[{}]: {}", output_id, detail);
+    }
     // 导出数据
     if export_file {
         data.output_file(
@@ -857,7 +999,7 @@ mod tests {
 
         if let Ok((_url, timeout)) = rx.recv() {
             println!("Running command: {} {:?}", _url, timeout);
-            match run_command_with_timeout_new(_url.to_string(), (timeout as u64)).await {
+            match run_command_with_timeout_new(_url.to_string(), (timeout as u64), None).await {
                 Ok(ed) => {
                     for v in ed.ffmpeg_info.unwrap().video.clone() {
                         println!("Command finished successfully.{} {}", v.width, v.height)
@@ -866,5 +1008,36 @@ mod tests {
                 Err(e) => println!("Command failed: {}", e),
             }
         }
+    }
+
+    /// BOM 播放列表必须能被识别（否则会解析出 0 个频道）
+    #[test]
+    fn test_bom_playlist_is_normal_format() {
+        use crate::common::m3u::m3u::check_source_type;
+        let with_bom = "\u{feff}#EXTM3U\n#EXTINF:-1 tvg-name=\"A\",A\nhttp://127.0.0.1/a.m3u8\n";
+        assert!(check_source_type(with_bom.to_string()).is_some());
+        assert!(crate::common::util::check_body_is_m3u8_format(
+            with_bom.to_string()
+        ));
+        assert!(crate::common::util::check_body_is_m3u8_format(
+            "#EXTM3U\n".to_string()
+        ));
+        assert!(!crate::common::util::check_body_is_m3u8_format(
+            "<html>403</html>".to_string()
+        ));
+    }
+
+    /// 失败原因要能归类（去掉 URL 等易变内容），否则统计会变成一堆独立条目
+    #[test]
+    fn test_normalize_fail_reason() {
+        let a = super::normalize_fail_reason(
+            "m3u8 body check failed: GET failed: error sending request for url (http://a.b/c.m3u8)",
+        );
+        let b = super::normalize_fail_reason(
+            "m3u8 body check failed: GET failed: error sending request for url (http://x.y/z.m3u8)",
+        );
+        assert_eq!(a, b);
+        assert!(a.starts_with("m3u8 body check failed"));
+        assert!(super::normalize_fail_reason(&"x".repeat(500)).chars().count() <= 141);
     }
 }

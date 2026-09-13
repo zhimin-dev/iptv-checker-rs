@@ -73,7 +73,8 @@ async fn check_url_is_available(req: web::Query<CheckUrlIsAvailableRequest>) -> 
         timeout = i;
     }
     let res =
-        check::check::check_link_is_valid(req.url.to_owned(), timeout as u64, true, false).await;
+        check::check::check_link_is_valid(req.url.to_owned(), timeout as u64, true, false, None)
+            .await;
     match res {
         Ok(mut data) => {
             if data.ffmpeg_info.is_some() {
@@ -245,6 +246,14 @@ async fn system_check_reports(q: web::Query<CheckReportsQuery>) -> impl Responde
 #[derive(serde::Deserialize)]
 pub struct CheckReportsQuery {
     pub output_id: Option<String>,
+}
+
+/// 服务端 ffmpeg / ffprobe 可用性。
+/// ffmpeg 检查（ffmpeg_check=true）依赖 ffprobe，前端可据此提示 / 禁用该选项，
+/// 避免用户勾了 ffmpeg 检查却因为服务端没装 ffprobe 而「检查没有任何结果」。
+#[get("/system/ffmpeg-status")]
+async fn system_ffmpeg_status() -> impl Responder {
+    HttpResponse::Ok().json(crate::common::util::ffmpeg_tools_status())
 }
 
 /// 初始化今日搜索数据的API端点
@@ -2147,6 +2156,7 @@ async fn get_unmapped_epg_channels() -> impl Responder {
             .service(system_clear_search_folder)
             .service(system_init_search_data)
             .service(system_check_reports)
+            .service(system_ffmpeg_status)
             .service(system_open_url)
             .service(system_get_favourite_channel)
             .service(system_save_favourite)

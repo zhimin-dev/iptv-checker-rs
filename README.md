@@ -134,6 +134,21 @@ make build
 
 ## 更新日志
 
+- 4.7.2
+  - **Bug 修复（ffmpeg 检查）**:
+    - 修复 ffprobe 超时单位错误：`-timeout` 的 socket I/O 单位是**微秒**，之前按秒传入（如 `-timeout 20` 实际只有 20 微秒），导致远程源第一次读 socket 就超时——播放器能正常播放的源在 ffmpeg 检查里全部被判失败（检查结果为空）。改用 `-rw_timeout <微秒>`
+    - 修复 ffprobe 缺失时 `spawn().unwrap()` panic 导致检查线程退出、结果接收循环空转死等的问题：改为返回错误，并在检查开始前预检 ffprobe，缺失时直接中止（不会再把所有频道误判为失败并写进黑名单）
+    - 修复检查链路不带频道 UA / 自定义请求头的问题：播放列表里的 `http-user-agent` / `#EXTVLCOPT:http-user-agent=` 与 network.json 的自定义头现在同时作用于 HTTP 预校验和 ffprobe（之前只有播放器会带，需要特定 UA 的源会 403）
+    - 修复并发形同虚设：worker 之前在整个检查过程中持有任务队列锁，实际串行执行（8 个频道 `-c 4` 需 29s，修复后 7s）
+    - 修复 m3u 解析：带 UTF-8 BOM 的播放列表（记事本 / Excel 导出）会被解析出 0 个频道
+    - 失败原因不再丢失：`-v error` 保留 ffprobe 报错，检测报告与日志新增失败原因 TOP（如 `ffprobe timed out after 20000ms ×3`）
+    - ffprobe 优先使用项目自带二进制（`tools/ffmpeg/ffprobe`），与播放器中继的 ffmpeg 选择逻辑一致
+  - **Bug 修复（Windows 进程管理）**:
+    - `web --start` / `web --status` 不再依赖 Unix 的 `ps` / `kill`：Windows 改用 Win32 API（`OpenProcess` / `GetExitCodeProcess` / `TerminateProcess`）。之前 PATH 中没有 Git 自带的 `ps.exe` 时，只要 pid 文件存在就会 panic 导致服务起不来
+    - pid 文件损坏或进程检查失败时只记录告警，不再 `expect` panic；`web --status` 会明确输出「未运行 / 正在运行 + pid」
+    - 日志文件名去掉 `:`（`app-20260913-1557.log`）：Windows 上 `app-2026091315:57.log` 会把内容写进 NTFS 备用数据流，日志文件永远是 0 字节、看不到内容
+  - **新增接口**: `GET /system/ffmpeg-status` 返回服务端 ffmpeg / ffprobe 是否可用及路径版本
+  - **前端**: 服务端模式下自动检测 ffprobe，缺失时禁用「ffmpeg 慢速检查」并给出原因提示（不再让用户勾了却拿到空结果）
 - 4.7.1
   - **Bug 修复**:
     - 修复 bool 字段接收字符串 `"true"`/`"false"` 导致 400 错误（`fast_sort`、`sort`、`no_check` 等 10 个字段）

@@ -560,13 +560,7 @@ async fn spawn_ffmpeg_engine(
 ) -> Result<tokio::process::Child, String> {
     // 优先使用项目自带的 ffmpeg（tools/ffmpeg/ffmpeg.exe），
     // 部分 IPTV 源与系统新版 ffmpeg 存在兼容问题（如 mp2/mp3 流变化）
-    let ffmpeg_bin = if std::path::Path::new("./tools/ffmpeg/ffmpeg.exe").exists() {
-        "./tools/ffmpeg/ffmpeg.exe"
-    } else if std::path::Path::new("./tools/ffmpeg/ffmpeg").exists() {
-        "./tools/ffmpeg/ffmpeg"
-    } else {
-        "ffmpeg"
-    };
+    let ffmpeg_bin = crate::common::util::ffmpeg_bin();
     let mut cmd = tokio::process::Command::new(ffmpeg_bin);
     // 中继拉流遵循网络代理配置（系统代理 / 后台配置的代理）
     crate::common::util::apply_proxy_to_command(&mut cmd);
@@ -2214,7 +2208,8 @@ pub static SNAPSHOT_URL_BASE: &str = "/static/thumbnail/channels/";
 // 画面文件只要存在就直接复用（重新抓帧只在 refresh=true 或文件缺失时发生）
 
 async fn probe_video_codec_once(url: &str, with_proxy: bool) -> Option<String> {
-    let mut cmd = tokio::process::Command::new("ffprobe");
+    // 与检查链路一致：优先使用项目自带的 ffprobe，缺失时回退到 PATH
+    let mut cmd = tokio::process::Command::new(crate::common::util::ffprobe_bin());
     if with_proxy {
         crate::common::util::apply_proxy_to_command(&mut cmd);
     } else {
@@ -2259,14 +2254,9 @@ pub async fn probe_video_codec(url: &str) -> Option<String> {
     probe_video_codec_once(url, true).await
 }
 
-fn snapshot_ffmpeg_bin() -> &'static str {
-    if std::path::Path::new("./tools/ffmpeg/ffmpeg.exe").exists() {
-        "./tools/ffmpeg/ffmpeg.exe"
-    } else if std::path::Path::new("./tools/ffmpeg/ffmpeg").exists() {
-        "./tools/ffmpeg/ffmpeg"
-    } else {
-        "ffmpeg"
-    }
+fn snapshot_ffmpeg_bin() -> String {
+    // 自带二进制优先（部分 IPTV 源与系统新版 ffmpeg 存在兼容问题），缺失时回退到 PATH
+    crate::common::util::ffmpeg_bin()
 }
 
 async fn capture_snapshot_once(url: &str, out_path: &str, with_proxy: bool) -> bool {

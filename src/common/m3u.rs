@@ -131,6 +131,12 @@ impl M3uObject {
     pub fn check_by_block(&mut self, request_time: i32, ffmpeg_check: bool, not_http_skip: bool) {
         let url = self.url.clone();
         let _log_url = url.clone();
+        // 频道级 UA（播放列表 http-user-agent / #EXTVLCOPT:http-user-agent）：
+        // 播放器会带，检查链路（HTTP 预校验 + ffprobe）也必须带，否则需要特定 UA 的源会 403
+        let channel_ua = self
+            .get_extend_ref()
+            .map(|e| e.user_agent.trim().to_string())
+            .filter(|ua| !ua.is_empty());
         // 硬超时保护：request_time 毫秒后强制结束本次检查。
         // 部分源的 body 读取（龟速流/挂起连接）没有超时，会把检查任务永久卡住，
         // 导致同一任务的其他源与后续定时任务都无法执行。
@@ -138,7 +144,7 @@ impl M3uObject {
         let result = actix_rt::System::new().block_on(async move {
             tokio::time::timeout(
                 tokio::time::Duration::from_millis(timeout_ms),
-                check_link_is_valid(url, timeout_ms, ffmpeg_check, not_http_skip),
+                check_link_is_valid(url, timeout_ms, ffmpeg_check, not_http_skip, channel_ua),
             )
             .await
             .map_err(|_| {
@@ -156,7 +162,13 @@ impl M3uObject {
                 self.set_other_status(o_status);
                 self.set_status(Success);
             }
-            Err(_e) => self.set_status(Failed),
+            Err(e) => {
+                // 记录失败原因：以前这里把错误直接丢掉，日志里只有「失败 N 个」，
+                // 无法区分是 ffprobe 报错、源站超时还是 UA 被拒
+                crate::common::check::record_fail_reason(&e.to_string());
+                debug!("check failed: {} -> {}", _log_url, e);
+                self.set_status(Failed)
+            }
         };
     }
 
@@ -773,7 +785,7 @@ impl M3uObjectList {
 
             let data = self.list.clone();
             let (tx, rx) = mpsc::channel();
-            let (data_tx, data_rx) = mpsc::channel();
+            let (data_tx, data_rx) = mpsc::channel::<M3uObject>();
             let new_data_rx = Arc::new(Mutex::new(data_rx));
 
             for _i in 0..opt.concurrent {
@@ -781,26 +793,28 @@ impl M3uObjectList {
                 let data_rx_clone = Arc::clone(&new_data_rx);
 
                 thread::spawn(move || loop {
-                    match data_rx_clone.lock() {
-                        Ok(data) => {
-                            let mut item = {
-                                let rx_lock = data;
-                                rx_lock.recv().unwrap_or_else(|_| M3uObject::new())
-                            };
-                            if item.url == "" {
-                                break;
-                            }
-                            item.check_by_block(
-                                opt.request_time,
-                                opt.ffmpeg_check,
-                                opt.not_http_skip,
-                            );
-                            tx_clone.send(item.get_obj()).unwrap()
-                        }
+                    // 只在「取任务」时短暂持锁：检查单个频道可能耗时几十秒，
+                    // 之前是在持锁状态下执行整个 check_by_block，
+                    // 导致所有 worker 实际串行执行（并发数形同虚设，检查慢到像卡死）。
+                    let recv_result = match data_rx_clone.lock() {
+                        Ok(rx) => rx.recv(),
                         Err(e) => {
-                            error!("check_data_new error ---{} ", e);
+                            error!("check_data_new lock error ---{} ", e);
                             break;
                         }
+                    };
+                    let mut item = match recv_result {
+                        Ok(item) => item,
+                        // 发送端已全部关闭：没有更多任务了
+                        Err(_) => break,
+                    };
+                    if item.url == "" {
+                        break;
+                    }
+                    item.check_by_block(opt.request_time, opt.ffmpeg_check, opt.not_http_skip);
+                    if tx_clone.send(item.get_obj()).is_err() {
+                        // 接收端已退出（例如上层取消）：停止本 worker，避免 panic
+                        break;
                     }
                 });
             }
@@ -826,7 +840,16 @@ impl M3uObjectList {
                         counter.print_now_status();
                         i += 1;
                     }
-                    Err(_e) => {}
+                    Err(_e) => {
+                        // 所有 worker 都已退出但结果没收齐（例如检查线程 panic）：
+                        // 必须跳出，否则这里会变成死循环空转，任务永远不结束、
+                        // 报告与输出文件都不会生成（表现为「检查没有任何结果」）。
+                        error!(
+                            "check_data_new: result channel closed early, got {}/{} results",
+                            i, counter.total
+                        );
+                        break;
+                    }
                 }
             }
             self.set_list(res_list.clone());
@@ -1391,10 +1414,12 @@ pub mod m3u {
     use std::io::Read;
 
     pub fn check_source_type(_body: String) -> Option<SourceType> {
-        if _body.starts_with("#EXTM3U") {
+        // 去掉可能的 UTF-8 BOM：否则标准 m3u 会被误判成非标准格式，解析出 0 个频道
+        let body = crate::common::util::strip_bom(&_body);
+        if body.starts_with("#EXTM3U") {
             return Some(Normal);
         }
-        let exp = _body.lines();
+        let exp = body.lines();
         let mut quota = false;
         for x in exp {
             if !quota {
