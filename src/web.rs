@@ -1914,6 +1914,7 @@ async fn delete_epg_cache_api() -> impl Responder {
 
 /// 启动Web服务器
 pub async fn start_web(port: u16) {
+    crate::common::check::LOCAL_WEB_PORT.store(port, std::sync::atomic::Ordering::Relaxed);
     // 启动播放器中继会话的后台清理任务
     crate::player::spawn_cleanup_task();
     // 服务启动后立即执行一次「爬取源数据」与「EPG 同步」，与定时任务行为保持一致；
@@ -2085,18 +2086,9 @@ async fn get_unmapped_epg_channels() -> impl Responder {
                                         "task {} seems stuck (is_running > 2h), resetting state",
                                         id
                                     );
-                                    task.task_info.is_running = false;
-                                    task.task_info.task_status =
-                                        crate::common::task::TaskStatus::Pending;
-                                    // 清理残留的「当前运行任务」标记，避免前端一直显示“正在执行中”
-                                    if crate::config::get_now_check_task_id().as_deref()
-                                        == Some(id.as_str())
-                                    {
-                                        crate::config::set_now_check_id(None);
-                                    }
-                                    let _ = crate::config::task::file_config::save_task(
-                                        id.clone(),
-                                        task.get_task(),
+                                    crate::config::task::file_config::reset_stale_task(
+                                        &id,
+                                        task.task_info.last_run_time,
                                     );
                                     let _ = crate::config::task::file_config::save_task_config();
                                     continue;

@@ -28,6 +28,39 @@ impl TaskConfig {
             task: HashMap::new(),
         }
     }
+    /// 原子领取当前配置，旧调度快照不能覆盖用户的新配置或重新创建已删除任务。
+    fn begin_task(&mut self, id: &str, started_at: i32) -> Option<Task> {
+        let task = self.task.get_mut(id)?;
+        if task.task_info.is_running {
+            return None;
+        }
+        task.task_info.is_running = true;
+        task.task_info.task_status = crate::common::task::TaskStatus::InProgress;
+        task.task_info.last_run_time = started_at;
+        self.now = Some(id.to_string());
+        Some(task.clone())
+    }
+
+    fn reset_stale_task(&mut self, id: &str, observed_start: i32) {
+        if let Some(task) = self.task.get_mut(id) {
+            if task.task_info.is_running && task.task_info.last_run_time == observed_start {
+                task.task_info.is_running = false;
+                task.task_info.task_status = crate::common::task::TaskStatus::Pending;
+                if self.now.as_deref() == Some(id) {
+                    self.now = None;
+                }
+            }
+        }
+    }
+
+    fn finish_task(&mut self, id: &str, finished_at: i32) {
+        if self.now.as_deref() == Some(id) {
+            self.now = None;
+        }
+        if let Some(task) = self.task.get_mut(id) {
+            task.task_info.complete(finished_at);
+        }
+    }
 }
 
 static TASK_MAP: Lazy<RwLock<TaskConfig>> = Lazy::new(|| {
@@ -170,6 +203,31 @@ pub mod file_config {
         Ok(())
     }
 
+    pub fn begin_task(id: &str, started_at: i32) -> Option<Task> {
+        TASK_MAP.write().unwrap().begin_task(id, started_at)
+    }
+
+    pub fn reset_stale_task(id: &str, observed_start: i32) {
+        TASK_MAP
+            .write()
+            .unwrap()
+            .reset_stale_task(id, observed_start);
+    }
+
+    pub fn finish_task(id: &str, finished_at: i32) {
+        TASK_MAP.write().unwrap().finish_task(id, finished_at);
+    }
+
+    pub fn update_original(id: &str, original: crate::common::task::TaskContent) -> bool {
+        let mut config = TASK_MAP.write().unwrap();
+        if let Some(task) = config.task.get_mut(id) {
+            task.set_original(original);
+            true
+        } else {
+            false
+        }
+    }
+
     /// 删除任务
     pub fn delete_task(id: &str) -> Result<(), Error> {
         let mut config = TASK_MAP.write().unwrap();
@@ -197,5 +255,68 @@ pub mod file_config {
     pub fn get_all_tasks() -> Result<HashMap<String, Task>, Error> {
         let config = TASK_MAP.read().unwrap();
         Ok(config.task.clone())
+    }
+}
+
+#[cfg(test)]
+mod regression_tests {
+    use super::*;
+    use crate::common::task::{RunTime, TaskContent, TaskStatus};
+
+    #[test]
+    fn test_running_edit_preserves_config_and_latest_schedule() {
+        let mut config = TaskConfig::new();
+        let task = Task::new();
+        let id = task.get_uuid();
+        config.task.insert(id.clone(), task);
+        assert!(config.begin_task(&id, 100).is_some());
+        assert!(config.begin_task(&id, 101).is_none());
+        let mut edited = TaskContent::new();
+        edited.set_urls(vec!["new-source.m3u".into()]);
+        edited.set_result_file_name("new-result".into());
+        edited.set_run_type(RunTime::EveryHour);
+        config.task.get_mut(&id).unwrap().set_original(edited);
+        config.finish_task(&id, 200);
+        let latest = config.task.get(&id).unwrap();
+        assert_eq!(latest.original.get_result_name(), "new-result");
+        assert_eq!(latest.original.get_urls(), vec!["new-source.m3u"]);
+        assert!(!latest.task_info.is_running);
+        assert_eq!(latest.task_info.task_status, TaskStatus::Pending);
+        assert_eq!(latest.task_info.next_run_time, 3800);
+    }
+
+    #[test]
+    fn test_stale_reset_preserves_edit_and_does_not_reset_new_run() {
+        let mut config = TaskConfig::new();
+        let task = Task::new();
+        let id = task.get_uuid();
+        config.task.insert(id.clone(), task);
+        config.begin_task(&id, 100).unwrap();
+        config
+            .task
+            .get_mut(&id)
+            .unwrap()
+            .original
+            .set_result_file_name("edited".into());
+        config.reset_stale_task(&id, 100);
+        assert_eq!(config.task[&id].original.get_result_name(), "edited");
+        config.begin_task(&id, 200).unwrap();
+        config.reset_stale_task(&id, 100);
+        assert!(config.task[&id].task_info.is_running);
+    }
+
+    #[test]
+    fn test_deleted_task_is_not_resurrected_or_claimed() {
+        let mut config = TaskConfig::new();
+        let task = Task::new();
+        let id = task.get_uuid();
+        config.task.insert(id.clone(), task);
+        config.begin_task(&id, 100).unwrap();
+        config.task.remove(&id);
+        config.now = Some("other-running-task".into());
+        config.finish_task(&id, 200);
+        assert!(config.task.is_empty());
+        assert!(config.begin_task(&id, 300).is_none());
+        assert_eq!(config.now.as_deref(), Some("other-running-task"));
     }
 }

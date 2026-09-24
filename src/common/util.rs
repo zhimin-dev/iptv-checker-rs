@@ -460,6 +460,19 @@ pub fn get_github_token() -> Option<String> {
     }
 }
 
+/// 只记录来源站点和稳定指纹，避免在可分享日志中泄露路径令牌、查询参数或认证信息。
+pub fn source_log_label(source: &str) -> String {
+    let id = format!("{:x}", md5::compute(source));
+    match Url::parse(source) {
+        Ok(url) => format!(
+            "{} source_id={}",
+            url.origin().ascii_serialization(),
+            &id[..12]
+        ),
+        Err(_) => format!("local source_id={}", &id[..12]),
+    }
+}
+
 /// 获取URL的内容
 ///
 /// # 参数
@@ -469,6 +482,16 @@ pub fn get_github_token() -> Option<String> {
 /// # 返回值
 /// * `Result<String, Error>` - 成功返回URL内容，失败返回错误
 pub async fn get_url_body(_url: String, timeout: u64) -> Result<String, Error> {
+    get_url_body_with_context(_url, timeout, "source").await
+}
+
+pub async fn get_url_body_with_context(
+    _url: String,
+    timeout: u64,
+    context: &str,
+) -> Result<String, Error> {
+    let started = std::time::Instant::now();
+    let source = source_log_label(&_url);
     let mut builder = reqwest::Client::builder()
         .timeout(std::time::Duration::from_millis(timeout))
         .danger_accept_invalid_certs(true);
@@ -514,8 +537,36 @@ pub async fn get_url_body(_url: String, timeout: u64) -> Result<String, Error> {
     }
     builder = builder.default_headers(headers);
 
-    let client = builder.build().unwrap();
-    client.get(_url.to_owned()).send().await?.text().await
+    log::info!("[{}] stage=http_start source={} timeout_ms={} system_proxy={} custom_proxy={} custom_headers={}",
+        context, source, timeout, config.use_system_proxy, !config.proxy_url.trim().is_empty(), config.custom_headers.len());
+    let result = async {
+        let client = builder.build()?;
+        let response = client.get(&_url).send().await?;
+        let status = response.status();
+        log::info!("[{}] stage=http_response source={} status={} elapsed_ms={}", context, source, status.as_u16(), started.elapsed().as_millis());
+        if !status.is_success() {
+            log::warn!("[{}] stage=http_status source={} status={} hint=订阅服务器返回非成功状态，请检查认证、访问限制或服务器状态", context, source, status.as_u16());
+        }
+        let body = response.text().await?;
+        log::info!("[{}] stage=http_body source={} bytes={} elapsed_ms={}", context, source, body.len(), started.elapsed().as_millis());
+        Ok::<_, Error>(body)
+    }.await;
+    if let Err(e) = result {
+        let timeout = e.is_timeout();
+        let connect = e.is_connect();
+        let e = e.without_url();
+        log::error!(
+            "[{}] stage=http_failed source={} timeout={} connect={} elapsed_ms={} error={}",
+            context,
+            source,
+            timeout,
+            connect,
+            started.elapsed().as_millis(),
+            e
+        );
+        return Err(e);
+    }
+    result
 }
 
 /// 检查内容是否为M3U8格式

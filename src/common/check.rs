@@ -4,25 +4,13 @@ use crate::common::util::from_video_resolution;
 use crate::common::{AudioInfo, CheckOptions, SearchOptions, VideoInfo};
 use crate::config::favourite::get_favourite_list;
 use crate::r#const::constant::{INPUT_SEARCH_FOLDER, OUTPUT_FOLDER};
-use lazy_static::lazy_static;
 use log::info;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::Error;
-use std::sync::Mutex;
-
-lazy_static! {
-    /// 本次检测被 body 校验直接丢弃的无效 m3u8 数量（检测报告统计用，每次检测开始前清零）
-    pub static ref CHECK_REPORT_INVALID_M3U8: Mutex<u64> = Mutex::new(0);
-
-    /// 本次检测的失败原因统计（key: 归类后的原因，value: 次数）。
-    /// 之前失败原因被直接丢弃，日志里只看到「失败 N 个」，无法定位是 ffprobe 缺参数、
-    /// 源站超时还是 UA 被拒，只能靠猜。
-    pub static ref CHECK_FAIL_REASONS: Mutex<HashMap<String, u32>> = Mutex::new(HashMap::new());
-}
 
 /// 归类失败原因：去掉带具体 URL 的易变部分并截断，便于聚合统计
-fn normalize_fail_reason(reason: &str) -> String {
+pub(crate) fn normalize_fail_reason(reason: &str) -> String {
     let mut s = reason.trim().to_string();
     for marker in [" for url (", " for url ", " url: "] {
         if let Some(idx) = s.find(marker) {
@@ -34,35 +22,6 @@ fn normalize_fail_reason(reason: &str) -> String {
         s = s.chars().take(140).collect::<String>() + "…";
     }
     s
-}
-
-/// 记录一次失败原因（供检测报告 / 日志汇总）
-pub fn record_fail_reason(reason: &str) {
-    let key = normalize_fail_reason(reason);
-    if key.is_empty() {
-        return;
-    }
-    if let Ok(mut map) = CHECK_FAIL_REASONS.lock() {
-        *map.entry(key).or_insert(0) += 1;
-    }
-}
-
-/// 失败原因 TOP N（按次数倒序）
-pub fn top_fail_reasons(n: usize) -> Vec<FailReason> {
-    let map = match CHECK_FAIL_REASONS.lock() {
-        Ok(m) => m,
-        Err(_) => return vec![],
-    };
-    let mut v: Vec<FailReason> = map
-        .iter()
-        .map(|(k, c)| FailReason {
-            reason: k.clone(),
-            count: *c,
-        })
-        .collect();
-    v.sort_by(|a, b| b.count.cmp(&a.count));
-    v.truncate(n);
-    v
 }
 
 /// 取 URL 的 path 部分（去掉查询参数/锚点）并转小写
@@ -162,6 +121,7 @@ fn build_check_report(data: &crate::common::M3uObjectList, output_id: &str) -> C
         failed: 0,
         fail_reasons: vec![],
     };
+    let mut reasons: HashMap<String, u32> = HashMap::new();
     for obj in data.get_list_ref() {
         r.total += 1;
         let url = obj.get_url();
@@ -183,12 +143,25 @@ fn build_check_report(data: &crate::common::M3uObjectList, output_id: &str) -> C
         }
         match obj.get_status() {
             crate::common::CheckDataStatus::Success => r.success += 1,
-            crate::common::CheckDataStatus::Failed => r.failed += 1,
+            crate::common::CheckDataStatus::Failed => {
+                r.failed += 1;
+                if let Some(reason) = obj.get_failure_reason() {
+                    *reasons.entry(reason.to_string()).or_default() += 1;
+                    if reason == "not a valid m3u8 playlist" {
+                        r.m3u8_invalid += 1;
+                    }
+                }
+            }
             _ => {}
         }
     }
-    r.m3u8_invalid = *CHECK_REPORT_INVALID_M3U8.lock().unwrap() as usize;
-    r.fail_reasons = top_fail_reasons(8);
+    r.fail_reasons = reasons
+        .into_iter()
+        .map(|(reason, count)| FailReason { reason, count })
+        .collect();
+    r.fail_reasons
+        .sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.reason.cmp(&b.reason)));
+    r.fail_reasons.truncate(8);
     r
 }
 
@@ -618,7 +591,6 @@ pub mod check {
             match super::http_body_is_m3u8(&_url, timeout, &header_refs).await {
                 Ok(true) => {}
                 Ok(false) => {
-                    *super::CHECK_REPORT_INVALID_M3U8.lock().unwrap() += 1;
                     return Err(Error::new(ErrorKind::Other, "not a valid m3u8 playlist"));
                 }
                 Err(e) => {
@@ -718,6 +690,13 @@ pub mod check {
 }
 
 pub async fn get_favourite_channel(channel_type: String) -> Result<String, Error> {
+    get_favourite_channel_with_context(channel_type, "favourite").await
+}
+
+async fn get_favourite_channel_with_context(
+    channel_type: String,
+    context: &str,
+) -> Result<String, Error> {
     // 获取今日日期对应目录
     let today = chrono::Local::now().format("%Y%m%d").to_string();
     let search_path = format!("{}/{}", INPUT_SEARCH_FOLDER, today);
@@ -726,6 +705,7 @@ pub async fn get_favourite_channel(channel_type: String) -> Result<String, Error
     let dir_entries = match std::fs::read_dir(&search_path) {
         Ok(entries) => entries,
         Err(e) => {
+            log::warn!("[{}] stage=builtin_scan channel_type={} directory={:?} error={} hint=今日爬取目录不可读，请确认今日爬取是否完成及目录权限", context, channel_type, search_path, e);
             return Ok("".to_string());
         }
     };
@@ -741,6 +721,13 @@ pub async fn get_favourite_channel(channel_type: String) -> Result<String, Error
                 }
             }
             Err(e) => {
+                log::warn!(
+                    "[{}] stage=builtin_scan channel_type={} directory={:?} entry_error={}",
+                    context,
+                    channel_type,
+                    search_path,
+                    e
+                );
                 // 遇到单个文件错误也继续处理其他文件
                 continue;
             }
@@ -748,9 +735,18 @@ pub async fn get_favourite_channel(channel_type: String) -> Result<String, Error
     }
 
     // 将文件转换为数组
-    let list = common::m3u::m3u::from_arr(all_files.to_owned(), 0).await;
-    // 将数组转换为对象
+    let file_count = all_files.len();
+    let list = common::m3u::m3u::from_arr_with_context(all_files, 0, context).await;
+    let loaded = list.len();
     let mut data = list_str2obj(list, false);
+    let parsed = data.get_list_len();
+    info!(
+        "[{}] stage=builtin_scan channel_type={} directory={:?} files={} loaded={} parsed={}",
+        context, channel_type, search_path, file_count, loaded, parsed
+    );
+    if parsed == 0 {
+        log::warn!("[{}] stage=builtin_empty channel_type={} hint=没有解析到频道，请检查今日爬取结果、文件读取错误及播放列表格式", context, channel_type);
+    }
     // 将频道名繁体转简体
     data.t2s();
     // 去除name中无效的字符
@@ -764,6 +760,8 @@ pub async fn get_favourite_channel(channel_type: String) -> Result<String, Error
         keyword_full_match = get_favourite_list("equal").to_owned();
         keyword_like = get_favourite_list("like").to_owned();
     }
+    let exact_count = keyword_full_match.len();
+    let like_count = keyword_like.len();
     // 搜索关键字
     data.search(SearchOptions {
         keyword_full_match,
@@ -775,6 +773,13 @@ pub async fn get_favourite_channel(channel_type: String) -> Result<String, Error
         exclude_host: vec![],
     })
     .await;
+    info!("[{}] stage=builtin_filter channel_type={} before={} after={} exact_keywords={} like_keywords={}", context, channel_type, parsed, data.get_list_len(), exact_count, like_count);
+    if parsed > 0 && data.get_list_len() == 0 {
+        log::warn!(
+            "[{}] stage=builtin_filter_empty hint=收藏筛选后没有频道，请检查想看的频道关键词",
+            context
+        );
+    }
     let rename_channel_type = crate::config::base::get_base_config().rename_channel_type;
     let host = {
         let base_host = crate::config::base::get_base_config().host;
@@ -792,7 +797,111 @@ pub async fn get_favourite_channel(channel_type: String) -> Result<String, Error
         }
         data.replace_logos(host, &logos_map);
     }
-    return Ok(data.get_m3u_content_str(rename_channel_type,false));
+    return Ok(data.get_m3u_content_str(rename_channel_type, false));
+}
+
+/// 内置订阅直接读取本地爬取结果，避免依赖公网域名、反向代理和 Web 端口回环。
+pub static LOCAL_WEB_PORT: std::sync::atomic::AtomicU16 =
+    std::sync::atomic::AtomicU16::new(crate::DEFAULT_HTTP_PORT);
+
+fn builtin_channel_type(source: &str) -> Option<String> {
+    let host = crate::config::base::get_effective_host();
+    builtin_channel_type_for(
+        source,
+        &host,
+        LOCAL_WEB_PORT.load(std::sync::atomic::Ordering::Relaxed),
+    )
+}
+
+fn builtin_channel_type_for(
+    source: &str,
+    configured_host: &str,
+    local_port: u16,
+) -> Option<String> {
+    const ENDPOINT: &str = "/system/get-favourite-channel";
+    let source = source.trim();
+    let relative = source.starts_with("/system/get-favourite-channel?");
+    let url = if relative {
+        url::Url::parse(&format!("http://localhost{}", source)).ok()?
+    } else {
+        url::Url::parse(source).ok()?
+    };
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    let configured = url::Url::parse(&format!(
+        "{}{}",
+        configured_host.trim().trim_end_matches('/'),
+        ENDPOINT
+    ))
+    .ok();
+    let same_configured = configured.as_ref().map_or(false, |base| {
+        url.origin() == base.origin() && url.path() == base.path()
+    });
+    let loopback = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
+    let local_http = loopback
+        && url.scheme() == "http"
+        && url.port_or_known_default() == Some(local_port)
+        && url.path() == ENDPOINT;
+    if !(relative && url.path() == ENDPOINT || same_configured || local_http) {
+        return None;
+    }
+    let types: Vec<_> = url
+        .query_pairs()
+        .filter(|(key, _)| key == "channel_type")
+        .map(|(_, value)| value.into_owned())
+        .collect();
+    match types.as_slice() {
+        [value] if value == "all" || value == "like" => Some(value.clone()),
+        _ => None,
+    }
+}
+
+async fn load_check_sources(
+    sources: Vec<String>,
+    timeout: u64,
+    context: &str,
+) -> Result<Vec<String>, std::io::Error> {
+    let mut bodies = Vec::new();
+    for (index, source) in sources.into_iter().enumerate() {
+        let started = std::time::Instant::now();
+        let label = crate::common::util::source_log_label(&source);
+        let source_context = format!("{} source_index={}", context, index + 1);
+        let channel_type = builtin_channel_type(&source);
+        info!(
+            "[{}] stage=source_start source={} kind={}",
+            source_context,
+            label,
+            channel_type.as_deref().unwrap_or("external")
+        );
+        let loaded = if let Some(channel_type) = channel_type {
+            vec![
+                get_favourite_channel_with_context(channel_type, &source_context)
+                    .await
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?,
+            ]
+        } else {
+            common::m3u::m3u::from_arr_with_context(vec![source], timeout, &source_context).await
+        };
+        let bytes: usize = loaded.iter().map(String::len).sum();
+        let recognized = loaded
+            .iter()
+            .filter(|body| common::m3u::m3u::check_source_type((*body).clone()).is_some())
+            .count();
+        info!(
+            "[{}] stage=source_loaded bodies={} bytes={} recognized_playlists={} elapsed_ms={}",
+            source_context,
+            loaded.len(),
+            bytes,
+            recognized,
+            started.elapsed().as_millis()
+        );
+        if bytes == 0 || recognized == 0 {
+            log::warn!("[{}] stage=source_empty_or_invalid hint=订阅读取失败、内容为空或不是播放列表，请查看该来源前面的读取日志", source_context);
+        }
+        bodies.extend(loaded);
+    }
+    Ok(bodies)
 }
 
 pub async fn do_check(
@@ -814,15 +923,19 @@ pub async fn do_check(
     rename_channel_type: i8,
     fast_sort: bool,
 ) -> Result<bool, std::io::Error> {
+    let started = std::time::Instant::now();
+    let context = format!("check_run={}", uuid::Uuid::new_v4());
+    info!("[{}] stage=start output={:?} version={} sources={} http_timeout_ms={} check_timeout_ms={} concurrent={} no_check={} ffmpeg_check={} sort={} fast_sort={} same_save_num={} not_http_skip={} quality={:?} like_keywords={} dislike_keywords={}",
+        context, output_id, env!("CARGO_PKG_VERSION"), input_files.len(), timeout, request_timeout, concurrent, no_check, ffmpeg_check, sort, fast_sort, same_save_num, not_http_skip, video_quality, keyword_like.len(), keyword_dislike.len());
     // ffmpeg 检查依赖 ffprobe：缺失时立刻报错中止。
     // 否则每个频道都会被判失败并写进黑名单，用户看到的就是「检查没有任何结果」，
     // 而且后续检查还会因为黑名单继续空转。
     if ffmpeg_check && !no_check {
         if let Err(e) = crate::common::util::check_ffprobe_available() {
             log::error!(
-                "ffmpeg 检查已开启，但服务端 ffprobe 不可用（{}）。已中止本次检查：\
+                "[{}] stage=preflight_failed ffmpeg 检查已开启，但服务端 ffprobe 不可用（{}）。已中止本次检查：\
                  请安装完整的 ffmpeg（含 ffprobe）或改用 http 快速检查。",
-                e
+                context, e
             );
             return Err(std::io::Error::new(
                 std::io::ErrorKind::Other,
@@ -831,11 +944,22 @@ pub async fn do_check(
         }
     }
     // 将文件转换为数组
-    let list = common::m3u::m3u::from_arr(input_files.to_owned(), timeout as u64).await;
+    let list = load_check_sources(input_files, timeout as u64, &context).await?;
     // 将数组转换为对象
     let mut data = list_str2obj(list, false);
+    let parsed = data.get_list_len();
+    info!("[{}] stage=parsed channels={}", context, parsed);
+    if parsed == 0 {
+        log::warn!("[{}] stage=parsed_empty hint=未解析到任何频道，本次报告将为空；请查看source和builtin阶段日志", context);
+    }
+    info!("[{}] stage=dns_start channels={}", context, parsed);
     // 获取域名对应的ip类型
     data.to_ip_address();
+    info!(
+        "[{}] stage=dns_done elapsed_ms={}",
+        context,
+        started.elapsed().as_millis()
+    );
     // 将频道名繁体转简体
     data.t2s();
     // 去除name中无效的字符
@@ -854,30 +978,60 @@ pub async fn do_check(
         exclude_host: vec![],
     })
     .await;
-    // 重置本次检测的无效 m3u8 计数与失败原因统计
-    *CHECK_REPORT_INVALID_M3U8.lock().unwrap() = 0;
-    CHECK_FAIL_REASONS.lock().unwrap().clear();
+    let after_keywords = data.get_list_len();
+    info!(
+        "[{}] stage=keyword_filter before={} after={}",
+        context, parsed, after_keywords
+    );
+    if parsed > 0 && after_keywords == 0 {
+        log::warn!(
+            "[{}] stage=keyword_filter_empty hint=任务关键词过滤了全部频道，请检查喜欢和排除关键词",
+            context
+        );
+    }
     // 过滤黑名单源（连续失败达到阈值的源直接跳过，提升检查速度）
     let blacklisted = crate::check_blacklist::get_blacklisted_urls();
     if !blacklisted.is_empty() {
         let filtered = data.filter_urls(&blacklisted);
         if filtered > 0 {
-            info!("check blacklist filtered {} sources before checking", filtered);
+            info!(
+                "check blacklist filtered {} sources before checking",
+                filtered
+            );
         }
     }
+    let before_check = data.get_list_len();
+    info!(
+        "[{}] stage=blacklist_filter entries={} before={} after={}",
+        context,
+        blacklisted.len(),
+        after_keywords,
+        before_check
+    );
+    if after_keywords > 0 && before_check == 0 {
+        log::warn!("[{}] stage=blacklist_filter_empty hint=全部频道被检查黑名单过滤，请检查历史失败原因及黑名单配置", context);
+    }
+    info!(
+        "[{}] stage=probe_start channels={} skipped={}",
+        context, before_check, no_check
+    );
+    let probe_started = std::time::Instant::now();
     // 检查数据
-    data.check_data_new(CheckOptions {
-        request_time: request_timeout,
-        concurrent,
-        sort,
-        no_check,
-        ffmpeg_check,
-        same_save_num,
-        not_http_skip,
-        fast_sort,
-    })
-    .await;
-    println!("entry video quality {:?}", video_quality.clone());
+    let checked_data = data
+        .check_data_new(CheckOptions {
+            request_time: request_timeout,
+            concurrent,
+            sort,
+            no_check,
+            ffmpeg_check,
+            same_save_num,
+            not_http_skip,
+            fast_sort,
+        })
+        .await;
+    let before_quality = data.get_list_len();
+    let probe_report = build_check_report(&checked_data, &output_id);
+    info!("[{}] stage=probe_done input={} retained={} success={} failed={} same_save_num={} elapsed_ms={}", context, before_check, before_quality, probe_report.success, probe_report.failed, same_save_num, probe_started.elapsed().as_millis());
     if ffmpeg_check {
         if no_check {
             log::warn!(
@@ -894,19 +1048,53 @@ pub async fn do_check(
             video_quality
         );
     }
+    info!(
+        "[{}] stage=quality_filter before={} after={}",
+        context,
+        before_quality,
+        data.get_list_len()
+    );
+    if before_quality > 0 && data.get_list_len() == 0 {
+        log::warn!("[{}] stage=quality_filter_empty hint=清晰度过滤后没有频道，请检查清晰度条件及ffprobe识别结果", context);
+    }
     let output_file = format!("{}{}.json", OUTPUT_FOLDER, output_id);
     if print_result {
         info!("输出文件: {}", output_file);
     }
-    data.save_raw_data(output_file);
-    // 生成并保存检测报告（按格式统计，方便后期人工查看）
-    let report = build_check_report(&data, &output_id);
-    let report_path = format!("{}{}_report.json", OUTPUT_FOLDER, output_id);
-    if let Ok(json) = serde_json::to_string_pretty(&report) {
-        let _ = std::fs::write(&report_path, json);
-    }
+    data.save_raw_data(&output_file).map_err(|e| {
+        log::error!(
+            "[{}] stage=result_write_failed path={:?} error={} hint=请检查输出目录权限和磁盘空间",
+            context,
+            output_file,
+            e
+        );
+        e
+    })?;
     info!(
-        "检测报告[{}]: 总数 {} | m3u8 {} (无效 {}) | rtmp {} | rtsp {} | flv {} | ts {} | mp4 {} | 其他 {} | 成功 {} | 失败 {}",
+        "[{}] stage=result_saved path={:?} channels={}",
+        context,
+        output_file,
+        data.get_list_len()
+    );
+    // 生成并保存检测报告（按格式统计，方便后期人工查看）
+    let report = build_check_report(&checked_data, &output_id);
+    let report_path = format!("{}{}_report.json", OUTPUT_FOLDER, output_id);
+    let report_result = serde_json::to_string_pretty(&report)
+        .map_err(std::io::Error::from)
+        .and_then(|json| std::fs::write(&report_path, json));
+    if let Err(e) = report_result {
+        log::error!(
+            "[{}] stage=report_write_failed path={:?} error={} hint=请检查输出目录权限和磁盘空间",
+            context,
+            report_path,
+            e
+        );
+        return Err(e);
+    }
+    info!("[{}] stage=report_saved path={:?}", context, report_path);
+    info!(
+        "[{}] 检测报告[{}]: 总数 {} | m3u8 {} (无效 {}) | rtmp {} | rtsp {} | flv {} | ts {} | mp4 {} | 其他 {} | 成功 {} | 失败 {}",
+        context,
         output_id,
         report.total,
         report.m3u8_total,
@@ -928,7 +1116,12 @@ pub async fn do_check(
             .map(|r| format!("{} ×{}", r.reason, r.count))
             .collect::<Vec<String>>()
             .join(" | ");
-        log::warn!("检测失败原因[{}]: {}", output_id, detail);
+        log::warn!(
+            "[{}] stage=probe_failures 检测失败原因[{}]: {}",
+            context,
+            output_id,
+            detail
+        );
     }
     // 导出数据
     if export_file {
@@ -948,7 +1141,7 @@ pub async fn do_check(
     }
     // 更新检查黑名单统计：成功移出、失败累计（达到阈值即拉黑）
     if !no_check {
-        let list = data.get_list();
+        let list = checked_data.get_list();
         let mut success_count = 0;
         let mut failed_count = 0;
         for obj in list {
@@ -975,6 +1168,7 @@ pub async fn do_check(
             );
         }
     }
+    info!("[{}] stage=done output={:?} parsed={} after_keywords={} before_check={} before_quality={} final_total={} checked_total={} success={} failed={} no_check={} elapsed_ms={}", context, output_id, parsed, after_keywords, before_check, before_quality, data.get_list_len(), report.total, report.success, report.failed, no_check, started.elapsed().as_millis());
     Ok(true)
 }
 
@@ -984,6 +1178,266 @@ mod tests {
     use crate::common::check::check::run_command_with_timeout_new;
     use std::sync::mpsc;
     use std::thread;
+
+    #[test]
+    fn test_builtin_channel_source_urls() {
+        for source in [
+            "/system/get-favourite-channel?channel_type=like",
+            "http://localhost:8089/system/get-favourite-channel?channel_type=like",
+            " https://iptv.example.com/system/get-favourite-channel?x=1&channel_type=like ",
+        ] {
+            assert_eq!(
+                super::builtin_channel_type_for(source, "https://iptv.example.com", 8089)
+                    .as_deref(),
+                Some("like")
+            );
+        }
+        assert_eq!(
+            super::builtin_channel_type("/system/get-favourite-channel?channel_type=all")
+                .as_deref(),
+            Some("all")
+        );
+        for source in [
+            "static/input.m3u",
+            "https://example.com/list.m3u?next=/system/get-favourite-channel&channel_type=all",
+            "https://example.com/system/get-favourite-channel-extra?channel_type=all",
+            "ftp://example.com/system/get-favourite-channel?channel_type=all",
+            "/system/get-favourite-channel?channel_type=invalid",
+            "/system/get-favourite-channel?channel_type=all&channel_type=like",
+            "/system/get-favourite-channel",
+        ] {
+            assert_eq!(super::builtin_channel_type(source), None, "{}", source);
+        }
+    }
+
+    #[test]
+    fn test_builtin_channel_sources_without_web_server() {
+        // 配置和爬取目录是进程级的相对路径；在隔离子进程中验证，不改动用户数据。
+        const CHILD: &str = "IPTV_TEST_BUILTIN_SOURCES";
+        if std::env::var_os(CHILD).is_none() {
+            let dir = std::env::temp_dir().join(format!("iptv-sources-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "common::check::tests::test_builtin_channel_sources_without_web_server",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .env("WEB_PORT", "1")
+                .current_dir(&dir)
+                .output()
+                .unwrap();
+            std::fs::remove_dir_all(dir).unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        super::LOCAL_WEB_PORT.store(1, std::sync::atomic::Ordering::Relaxed);
+        std::fs::create_dir_all("static/core").unwrap();
+        crate::config::base::partial_update_base_config(
+            "https://unreachable.invalid".into(),
+            false,
+            String::new(),
+            0,
+        )
+        .unwrap();
+        std::fs::write("static/core/network.json", r#"{"use_system_proxy":false}"#).unwrap();
+        simplelog::WriteLogger::init(
+            log::LevelFilter::Info,
+            simplelog::Config::default(),
+            std::fs::File::create("diagnostics.log").unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            "static/core/favourite.json",
+            r#"{"like":[],"equal":["CCTV1"]}"#,
+        )
+        .unwrap();
+        let search_dir = format!("static/search/{}", chrono::Local::now().format("%Y%m%d"));
+        std::fs::create_dir_all(&search_dir).unwrap();
+        std::fs::write(format!("{}/channels.m3u", search_dir),
+            "#EXTM3U\n#EXTINF:-1,CCTV1\nhttp://127.0.0.1/one.m3u8\n#EXTINF:-1,CCTV2\nhttp://127.0.0.1/two.m3u8\n").unwrap();
+        std::fs::write(
+            "static/extra.m3u",
+            "#EXTM3U\n#EXTINF:-1,Extra\nhttp://127.0.0.1/extra.m3u8\n",
+        )
+        .unwrap();
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            for prefix in ["", "http://127.0.0.1:1", "https://unreachable.invalid"] {
+                for (channel_type, expected) in [("all", 2), ("like", 1)] {
+                    let source = format!(
+                        "{}/system/get-favourite-channel?channel_type={}",
+                        prefix, channel_type
+                    );
+                    let bodies =
+                        super::load_check_sources(vec![source, "static/extra.m3u".into()], 50, "test")
+                            .await
+                            .unwrap();
+                    let channels = super::list_str2obj(bodies, true).get_list();
+                    assert_eq!(channels.len(), expected + 1);
+                    assert!(channels.iter().any(|c| c.get_url().ends_with("/one.m3u8")));
+                    assert_eq!(
+                        channels.iter().any(|c| c.get_url().ends_with("/two.m3u8")),
+                        channel_type == "all"
+                    );
+                }
+            }
+            std::fs::create_dir_all(super::OUTPUT_FOLDER).unwrap();
+            std::fs::create_dir_all(format!("{}blocked.json", super::OUTPUT_FOLDER)).unwrap();
+            std::fs::create_dir_all(format!("{}report-blocked_report.json", super::OUTPUT_FOLDER)).unwrap();
+            for (channel_type, output, expected) in [
+                ("all", "all", Some(2)),
+                ("like", "like", Some(1)),
+                ("all", "empty", Some(0)),
+                ("all", "blocked", None),
+                ("all", "report-blocked", None),
+            ] {
+                let result = super::do_check(
+                    vec![format!(
+                        "/system/get-favourite-channel?channel_type={}",
+                        channel_type
+                    )],
+                    output.into(),
+                    50,
+                    false,
+                    50,
+                    1,
+                    if output == "empty" { vec!["no-matching-channel".into()] } else { vec![] },
+                    vec![],
+                    false,
+                    true,
+                    false,
+                    0,
+                    false,
+                    vec![],
+                    false,
+                    0,
+                    false,
+                )
+                .await;
+                if expected.is_none() {
+                    assert!(result.is_err());
+                    continue;
+                }
+                result.unwrap();
+                let report: serde_json::Value = serde_json::from_str(
+                    &std::fs::read_to_string(format!(
+                        "{}{}_report.json",
+                        super::OUTPUT_FOLDER,
+                        output
+                    ))
+                    .unwrap(),
+                )
+                .unwrap();
+                assert_eq!(report["total"], expected.unwrap());
+            }
+
+            // 返回 403 的订阅必须记录状态，不把响应正文或 URL 凭据写进日志。
+            use std::io::{Read, Write};
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            let server = std::thread::spawn(move || {
+                for _ in 0..2 {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+                let mut request = [0; 4096];
+                socket.read(&mut request).unwrap();
+                socket.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 19\r\nConnection: close\r\n\r\nprivate-body-secret").unwrap();
+                }
+            });
+            let source = format!("http://private-user:private-password@{}/system/get-favourite-channel?channel_type=all&token=private-query-secret", addr);
+            super::load_check_sources(vec![source.clone()], 2000, "test-http").await.unwrap();
+            // 全部失败且同名只保留一个时，报告与黑名单仍必须记录失败。
+            let failed_url = format!("http://{}/bad.m3u8", addr);
+            std::fs::write("failed-source.m3u", format!("#EXTM3U\n#EXTINF:-1,CCTV1\n{}\n", failed_url)).unwrap();
+            super::do_check(
+                vec!["failed-source.m3u".into()], "all-failed".into(),
+                2000, false, 2000, 2, vec![], vec![], false, false, false, 1,
+                false, vec![], false, 0, true,
+            ).await.unwrap();
+            let report: serde_json::Value = serde_json::from_str(&std::fs::read_to_string("static/output/all-failed_report.json").unwrap()).unwrap();
+            assert_eq!(report["total"], 1);
+            assert_eq!(report["failed"], 1);
+            assert_eq!(report["success"], 0);
+            assert_eq!(report["fail_reasons"][0]["count"], 1);
+            assert!(crate::check_blacklist::list().iter().any(|entry| entry["url"] == failed_url && entry["fail_count"] == 1));
+            server.join().unwrap();
+            // 同一端口的服务器已退出，此次应记录连接失败。
+            super::load_check_sources(vec![source], 2000, "test-connect").await.unwrap();
+            std::fs::write("invalid-utf8.m3u", [0xff]).unwrap();
+            super::load_check_sources(vec!["invalid-utf8.m3u".into()], 50, "test-file").await.unwrap();
+        });
+        log::logger().flush();
+        let logs = std::fs::read_to_string("diagnostics.log").unwrap();
+        for stage in [
+            "start",
+            "builtin_scan",
+            "builtin_filter",
+            "source_loaded",
+            "parsed",
+            "keyword_filter",
+            "blacklist_filter",
+            "probe_done",
+            "quality_filter",
+            "result_saved",
+            "report_saved",
+            "done",
+            "result_write_failed",
+            "report_write_failed",
+            "keyword_filter_empty",
+            "source_empty_or_invalid",
+            "http_status",
+            "http_failed",
+            "file_read_failed",
+        ] {
+            assert!(
+                logs.contains(&format!("stage={}", stage)),
+                "missing stage: {}\n{}",
+                stage,
+                logs
+            );
+        }
+        assert!(logs.contains("check_run="));
+        assert!(logs.contains("status=403"));
+        assert!(logs.contains("final_total=2"));
+        for secret in [
+            "private-user",
+            "private-password",
+            "private-path-secret",
+            "private-query-secret",
+            "private-body-secret",
+        ] {
+            assert!(!logs.contains(secret), "secret leaked: {}", secret);
+        }
+    }
+
+    #[test]
+    fn test_source_log_label_redacts_credentials_and_tokens() {
+        let source =
+            "https://user:password@example.com:8443/path-token?token=query-token#fragment-token";
+        let label = crate::common::util::source_log_label(source);
+        assert!(label.starts_with("https://example.com:8443 source_id="));
+        for secret in [
+            "user",
+            "password",
+            "path-token",
+            "query-token",
+            "fragment-token",
+        ] {
+            assert!(!label.contains(secret));
+        }
+        assert_eq!(label, crate::common::util::source_log_label(source));
+        assert_ne!(
+            label,
+            crate::common::util::source_log_label("https://example.com/another")
+        );
+    }
+
     #[tokio::test]
     async fn test_timeout() {
         let (tx, rx) = mpsc::channel();
@@ -1039,5 +1493,74 @@ mod tests {
         assert_eq!(a, b);
         assert!(a.starts_with("m3u8 body check failed"));
         assert!(super::normalize_fail_reason(&"x".repeat(500)).chars().count() <= 141);
+    }
+}
+
+#[cfg(test)]
+mod regression_tests {
+    use super::*;
+
+    #[test]
+    fn test_internal_source_requires_local_identity() {
+        let host = "https://mine.example/iptv";
+        for source in [
+            "/system/get-favourite-channel?channel_type=all",
+            "https://mine.example/iptv/system/get-favourite-channel?channel_type=all",
+            "http://127.0.0.1:9000/system/get-favourite-channel?channel_type=all",
+        ] {
+            assert_eq!(
+                builtin_channel_type_for(source, host, 9000).as_deref(),
+                Some("all")
+            );
+        }
+        for source in [
+            "https://other.example/iptv/system/get-favourite-channel?channel_type=all",
+            "http://127.0.0.1:9001/system/get-favourite-channel?channel_type=all",
+            "https://127.0.0.1:9000/system/get-favourite-channel?channel_type=all",
+            "https://mine.example:8443/iptv/system/get-favourite-channel?channel_type=all",
+        ] {
+            assert_eq!(
+                builtin_channel_type_for(source, host, 9000),
+                None,
+                "{}",
+                source
+            );
+        }
+    }
+
+    #[test]
+    fn test_concurrent_reports_keep_their_own_failure_evidence() {
+        let threads: Vec<_> = ["not a valid m3u8 playlist", "task B timeout"]
+            .into_iter()
+            .map(|reason| {
+                std::thread::spawn(move || {
+                    let mut object = crate::common::M3uObject::new();
+                    object.set_status(crate::common::CheckDataStatus::Failed);
+                    let mut value = serde_json::to_value(&object).unwrap();
+                    value["failure_reason"] = serde_json::json!(reason);
+                    value["url"] = serde_json::json!("http://example.com/live.m3u8");
+                    let mut data = crate::common::M3uObjectList::new();
+                    data.set_list(vec![serde_json::from_value(value).unwrap()]);
+                    for _ in 0..100 {
+                        let report = build_check_report(&data, reason);
+                        assert_eq!(report.failed, 1);
+                        assert_eq!(report.fail_reasons.len(), 1);
+                        assert_eq!(report.fail_reasons[0].reason, reason);
+                        assert_eq!(
+                            report.m3u8_invalid,
+                            usize::from(reason == "not a valid m3u8 playlist")
+                        );
+                        assert!(
+                            build_check_report(&crate::common::M3uObjectList::new(), "empty")
+                                .fail_reasons
+                                .is_empty()
+                        );
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
     }
 }

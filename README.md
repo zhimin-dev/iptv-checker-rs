@@ -118,6 +118,28 @@ GitHub API 对未认证请求有严格的频率限制（60次/时），配置 to
 
 完整文档见 [docs/player-api.md](docs/player-api.md)。
 
+## 检查任务问题反馈
+
+Web 服务日志位于运行目录下的 `static/logs/app-YYYYMMDD-HHMM.log`，同时输出到控制台。命令行检查请保存控制台输出。
+
+反馈“没有结果”“检测全失败”或“任务卡住”时，请提供任务的结果文件名、执行时间，以及该次检查从 `stage=task_start` / `stage=start` 开始到 `stage=done`、`stage=task_failed` 或最后一条日志的完整片段。关键诊断日志使用 INFO/WARN/ERROR 级别，无需额外开启 debug。
+
+每次检查都有独立的 `check_run` 编号；`source_index` 对应任务订阅列表中的顺序（从 1 开始），`source_id` 是来源地址的稳定指纹。新增订阅读取日志只显示站点和指纹，不记录 URL 中的用户名、密码、路径、查询参数和响应正文。分享完整日志前，仍请检查其他模块的历史日志是否含有敏感信息。
+
+| 日志阶段 | 排查方向 |
+| --- | --- |
+| `http_status` / `http_failed` | HTTP 状态码、连接失败、超时及代理开关 |
+| `builtin_scan` / `builtin_empty` | 今日爬取目录、文件数、读取成功数、解析频道数 |
+| `source_empty_or_invalid` / `parsed_empty` | 订阅为空、读取失败或播放列表格式不正确 |
+| `builtin_filter_empty` / `keyword_filter_empty` | 收藏或任务关键词把频道全部过滤 |
+| `blacklist_filter_empty` | 频道全部进入检查黑名单 |
+| `probe_start` / `probe_done` / `probe_failures` | 检测参数、耗时、完整检测结果的成功/失败数及失败原因汇总 |
+| `quality_filter_empty` | 清晰度条件过滤了全部结果 |
+| `result_write_failed` / `report_write_failed` | 输出目录不存在、权限不足或磁盘空间不足 |
+| `done` | 各阶段数量及本次检查总耗时 |
+
+`no_check=true` 表示跳过实际连通性检测；`probe_done` 的 `retained` 是同名筛选后的数量，成功/失败数和检测报告基于筛选前的完整检测结果；`done` 同时记录 `checked_total` 和输出的 `final_total`。若任务中断，请保留最后一个阶段及附近的错误日志；日志用于缩小范围，源站临时故障等问题仍可能需要现场验证。
+
 ## build
 
 ```bash

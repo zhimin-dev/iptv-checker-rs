@@ -98,6 +98,8 @@ pub struct M3uObject {
     status: CheckDataStatus,
     //当前状态
     other_status: OtherStatus, //其它状态
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    failure_reason: Option<String>,
 }
 
 impl M3uObject {
@@ -111,6 +113,7 @@ impl M3uObject {
             raw: "".to_string(),
             status: Unchecked,
             other_status: OtherStatus::new(),
+            failure_reason: None,
         };
     }
 
@@ -165,7 +168,8 @@ impl M3uObject {
             Err(e) => {
                 // 记录失败原因：以前这里把错误直接丢掉，日志里只有「失败 N 个」，
                 // 无法区分是 ffprobe 报错、源站超时还是 UA 被拒
-                crate::common::check::record_fail_reason(&e.to_string());
+                self.failure_reason =
+                    Some(crate::common::check::normalize_fail_reason(&e.to_string()));
                 debug!("check failed: {} -> {}", _log_url, e);
                 self.set_status(Failed)
             }
@@ -319,7 +323,14 @@ impl M3uObject {
     }
 
     pub fn set_status(&mut self, status: CheckDataStatus) {
+        if status != Failed {
+            self.failure_reason = None;
+        }
         self.status = status;
+    }
+
+    pub fn get_failure_reason(&self) -> Option<&str> {
+        self.failure_reason.as_deref()
     }
 }
 
@@ -411,25 +422,9 @@ impl M3uObjectList {
         }
     }
 
-    pub fn save_raw_data(&self, file_name: String) {
-        let res = serde_json::to_string(self);
-        match res {
-            Ok(data) => {
-                print!("save raw data to:: {}", file_name);
-                let f_res = File::create(file_name);
-                match f_res {
-                    Ok(mut f) => {
-                        f.write_all(data.as_bytes()).unwrap();
-                    }
-                    Err(e) => {
-                        error!("write error: {}", e);
-                    }
-                }
-            }
-            Err(e) => {
-                error!("{}", e);
-            }
-        }
+    pub fn save_raw_data(&self, file_name: &str) -> io::Result<()> {
+        let data = serde_json::to_string(self)?;
+        std::fs::write(file_name, data)
     }
 
     pub fn set_header(&mut self, header: M3uExt) {
@@ -587,35 +582,17 @@ impl M3uObjectList {
                 .as_ref()
                 .map(|e| e.tv_name.to_lowercase())
                 .unwrap_or_default();
-            let mut save = false;
-            if keyword_like.len() > 0 {
-                save = false;
-                for lk in keyword_like.to_owned() {
-                    let kw = trad_to_simp(&lk).to_lowercase();
-                    if search_target.contains(&kw) {
-                        save = true;
-                    }
-                }
-            } else {
-                if keyword_dislike.len() > 0 {
-                    save = true;
-                    for dk in keyword_dislike.to_owned() {
-                        let kw = trad_to_simp(&dk).to_lowercase();
-                        if search_target.contains(&kw) {
-                            save = false
-                        }
-                    }
-                }
-            }
-            if full_name_search.len() > 0 && !save {
-                save = false;
-                for fk in full_name_search.to_owned() {
-                    let kw = trad_to_simp(&fk).to_lowercase();
-                    if search_target.eq(&kw) {
-                        save = true
-                    }
-                }
-            }
+            let included = (keyword_like.is_empty() && full_name_search.is_empty())
+                || keyword_like
+                    .iter()
+                    .any(|k| search_target.contains(&trad_to_simp(k).to_lowercase()))
+                || full_name_search
+                    .iter()
+                    .any(|k| search_target == trad_to_simp(k).to_lowercase());
+            let excluded = keyword_dislike
+                .iter()
+                .any(|k| search_target.contains(&trad_to_simp(k).to_lowercase()));
+            let save = included && !excluded;
             if save {
                 save_list.push(i);
             }
@@ -775,7 +752,7 @@ impl M3uObjectList {
         self.list = results
     }
 
-    pub async fn check_data_new(&mut self, opt: CheckOptions) {
+    pub async fn check_data_new(&mut self, opt: CheckOptions) -> M3uObjectList {
         if !opt.no_check {
             let total = self.list.len();
             info!("文件中源总数： {}", total);
@@ -821,7 +798,8 @@ impl M3uObjectList {
             for item in data {
                 data_tx.send(item).unwrap();
             }
-            drop(tx); // 发送完成后关闭队列
+            drop(data_tx); // 关闭任务队列，worker处理完后退出
+            drop(tx);
 
             let mut res_list = vec![];
 
@@ -861,15 +839,17 @@ impl M3uObjectList {
             }
             info!("文件中源总数： {}", total);
         }
+        // 报告与黑名单消费完整检测结果，输出筛选不能丢失检测证据。
+        let checked = self.clone();
         if opt.same_save_num > 0 {
-            self.do_same_save(opt.same_save_num);
+            if opt.fast_sort {
+                self.do_fast_sort(opt.same_save_num);
+            } else {
+                self.do_same_save(opt.same_save_num);
+            }
         }
         if opt.sort {
             self.do_name_sort();
-        }
-        // 网速最快前N个筛选：按频道名分组，每组只保留delay最小的N个（N = same_save_num）
-        if opt.fast_sort && opt.same_save_num > 0 {
-            self.do_fast_sort(opt.same_save_num);
         }
         // 统计 success list（放在去重和排序之后，确保计数准确）
         let mut succ_count = 0;
@@ -879,6 +859,7 @@ impl M3uObjectList {
             }
         }
         self.counter.set_success_count(succ_count);
+        checked
     }
 
     pub fn get_list_len(&self) -> usize {
@@ -934,7 +915,12 @@ impl M3uObjectList {
                 hash_list.insert(key, list);
             }
         }
-        let mut save_list = vec![];
+        let mut save_list: Vec<_> = self
+            .list
+            .iter()
+            .filter(|item| item.status != Success)
+            .cloned()
+            .collect();
         for (_, items) in hash_list {
             let mut i = 0;
             for item in items {
@@ -1405,7 +1391,9 @@ pub enum SourceType {
 
 #[allow(dead_code)]
 pub mod m3u {
-    use crate::common::util::{get_url_body, is_url, parse_normal_str, parse_quota_str};
+    use crate::common::util::{
+        get_url_body_with_context, is_url, parse_normal_str, parse_quota_str, source_log_label,
+    };
     use crate::common::SourceType::{Normal, Quota};
     use crate::common::{M3uObjectList, SourceType};
     use core::option::Option;
@@ -1512,32 +1500,34 @@ pub mod m3u {
     // }
 
     pub async fn from_arr(_url: Vec<String>, _timeout: u64) -> Vec<String> {
+        from_arr_with_context(_url, _timeout, "source").await
+    }
+
+    pub async fn from_arr_with_context(
+        _url: Vec<String>,
+        _timeout: u64,
+        context: &str,
+    ) -> Vec<String> {
         let mut body_arr = vec![];
         for x in _url {
+            let source = source_log_label(&x);
             if is_url(x.clone()) {
-                let mut fetch_url = x.clone();
-                if let Ok(web_port) = std::env::var("WEB_PORT") {
-                    if x.contains("/system/get-favourite-channel") {
-                        // 尝试替换url中的端口为WEB_PORT值
-                        if let Ok(mut url_obj) = url::Url::parse(&fetch_url) {
-                            // 仅当host存在时才进行端口替换
-                            if url_obj.has_host() {
-                                // 将端口设置为WEB_PORT的值，并重写self.url
-                                // WEB_PORT可为端口号字符串，如"8089"
-                                if let Ok(port_u16) = web_port.parse::<u16>() {
-                                    url_obj.set_port(Some(port_u16)).ok();
-                                    let _ = url_obj.set_host(Some("127.0.0.1"));
-                                    fetch_url = url_obj.to_string();
-                                }
-                            }
-                        }
-                    }
-                }
-                debug!("----fetch_url is: {}", fetch_url.clone());
-                match get_url_body(fetch_url.clone(), _timeout).await {
+                let fetch_url = x.clone();
+                debug!(
+                    "[{}] stage=fetch_target source={} target={}",
+                    context,
+                    source,
+                    source_log_label(&fetch_url)
+                );
+                match get_url_body_with_context(fetch_url.clone(), _timeout, context).await {
                     Ok(data) => body_arr.push(data),
                     Err(e) => {
-                        error!("url can not be open : {}, error: {}", x.clone(), e)
+                        error!(
+                            "[{}] stage=source_failed source={} error={}",
+                            context,
+                            source,
+                            e.without_url()
+                        )
                     }
                 }
             } else {
@@ -1547,16 +1537,80 @@ pub mod m3u {
                     file_name = format!("./{}", x)
                 }
                 match File::open(file_name) {
-                    Ok(mut data) => {
-                        data.read_to_string(&mut contents).unwrap();
-                        body_arr.push(contents);
-                    }
+                    Ok(mut data) => match data.read_to_string(&mut contents) {
+                        Ok(bytes) => {
+                            debug!(
+                                "[{}] stage=file_read source={} bytes={}",
+                                context, source, bytes
+                            );
+                            body_arr.push(contents);
+                        }
+                        Err(e) => error!(
+                            "[{}] stage=file_read_failed source={} error={}",
+                            context, source, e
+                        ),
+                    },
                     Err(e) => {
-                        error!("file {} not exists, e {}", x, e)
+                        error!(
+                            "[{}] stage=file_open_failed source={} error={}",
+                            context, source, e
+                        )
                     }
                 }
             }
         }
         body_arr
+    }
+}
+
+#[cfg(test)]
+mod regression_tests {
+    use super::*;
+    fn channel(name: &str, delay: i32) -> M3uObject {
+        let mut c = M3uObject::new();
+        let mut ext = M3uExtend::new();
+        ext.set_tv_name(name.into());
+        c.set_extend(ext);
+        c.set_status(Success);
+        c.other_status.delay = delay;
+        c
+    }
+    #[test]
+    fn test_dislike_should_override_like() {
+        let mut data = M3uObjectList::new();
+        data.set_list(vec![channel("CCTV购物", 0)]);
+        data.search_keywords(vec![], vec!["CCTV".into()], vec!["购物".into()]);
+        assert_eq!(data.get_list_len(), 0, "排除关键词应过滤同时命中的频道");
+    }
+    #[tokio::test]
+    async fn test_fast_sort_should_keep_fastest() {
+        let mut data = M3uObjectList::new();
+        data.set_list(vec![channel("CCTV1", 900), channel("CCTV1", 20)]);
+        let checked = data
+            .check_data_new(CheckOptions {
+                request_time: 50,
+                concurrent: 1,
+                sort: false,
+                no_check: true,
+                ffmpeg_check: false,
+                same_save_num: 1,
+                not_http_skip: false,
+                fast_sort: true,
+            })
+            .await;
+        assert_eq!(checked.get_list_len(), 2, "报告保留截断前的全部检测结果");
+        assert_eq!(
+            data.list[0].other_status.delay, 20,
+            "快源不应在速度排序前被丢弃"
+        );
+    }
+    #[test]
+    fn test_failed_sources_should_survive_until_reporting() {
+        let mut data = M3uObjectList::new();
+        let mut failed = channel("CCTV1", 0);
+        failed.set_status(Failed);
+        data.set_list(vec![failed]);
+        data.do_same_save(1);
+        assert_eq!(data.get_list_len(), 1, "失败结果必须保留给报告及黑名单计数");
     }
 }
