@@ -1,6 +1,6 @@
 use crate::common::do_check;
 use crate::config::task::file_config;
-use crate::config::{get_now_check_task_id, save_task, save_task_config, set_now_check_id};
+use crate::config::{get_now_check_task_id, save_task_config};
 use crate::utils::deserialize_bool_flexible;
 use actix_web::{web, HttpResponse, Responder};
 use log::{debug, error, info};
@@ -46,6 +46,16 @@ impl TaskInfo {
             next_run_time: 0,
             is_running: false,
         };
+    }
+
+    pub fn complete(&mut self, finished_at: i32) {
+        self.is_running = false;
+        self.task_status = TaskStatus::Pending;
+        self.last_run_time = finished_at;
+        self.next_run_time = finished_at.saturating_add(match self.run_type {
+            RunTime::EveryDay => 86400,
+            RunTime::EveryHour => 3600,
+        });
     }
 
     pub fn set_run_type(&mut self, run_type: RunTime) {
@@ -377,12 +387,15 @@ impl Task {
     }
 
     fn run_inner(&mut self) {
-        self.task_info.is_running = true;
-        self.task_info.task_status = TaskStatus::InProgress;
-        // 记录本次运行开始时间：卡死检测的依据（任务卡住时 last_run_time 不会再更新，
-        // 调度器以此判断「运行中超过 2 小时」并复位）。任务正常完成后会更新为完成时间。
-        self.task_info.last_run_time = now() as i32;
-        let _ = save_task(self.id.clone(), self.get_task());
+        let started = std::time::Instant::now();
+        let Some(current) = file_config::begin_task(&self.id, now() as i32) else {
+            return;
+        };
+        *self = current;
+        info!(
+            "[task_id={}] stage=task_start output={:?} schedule={:?}",
+            self.id, self.original.result_name, self.task_info.run_type
+        );
         let _ = save_task_config();
 
         let urls = self.original.get_urls();
@@ -391,8 +404,6 @@ impl Task {
         let keyword_dislike = self.original.keyword_dislike.clone();
         let sort = self.original.sort;
         let task_id = self.id.clone();
-        // 设置当前任务id
-        set_now_check_id(Some(self.id.clone()));
         let http_timeout = self.original.get_http_timeout();
         let concurrent = self.original.get_current();
         let no_check = self.original.no_check;
@@ -412,7 +423,6 @@ impl Task {
                 .build()
                 .unwrap();
             rt.block_on(async {
-                debug!("start taskId: {}", task_id);
                 if let Err(e) = do_check(
                     urls,
                     out_out_file.clone(),
@@ -434,9 +444,18 @@ impl Task {
                 )
                 .await
                 {
-                    error!("task {} check failed: {}", task_id, e);
+                    error!(
+                        "[task_id={}] stage=task_failed output={:?} error={}",
+                        task_id, out_out_file, e
+                    );
+                } else {
+                    info!(
+                        "[task_id={}] stage=task_completed output={:?} elapsed_ms={}",
+                        task_id,
+                        out_out_file,
+                        started.elapsed().as_millis()
+                    );
                 };
-                debug!("end taskId: {}", task_id);
             });
         }));
 
@@ -445,25 +464,13 @@ impl Task {
             error!("task {} panicked during check: {:?}", task_id, e);
         }
 
-        self.task_info.task_status = TaskStatus::Pending;
-        self.task_info.is_running = false;
-        let now_time = now() as i32;
-        // 设置当前为空
-        set_now_check_id(None);
-        match self.task_info.run_type {
-            RunTime::EveryDay => {
-                self.task_info.next_run_time = now_time + 86400;
-            }
-            RunTime::EveryHour => {
-                self.task_info.next_run_time = now_time + 3600;
-            }
-        }
-        self.task_info.last_run_time = now_time;
-        // 更新任务信息
-        if let Err(e) = save_task(self.id.clone(), self.clone().get_task()) {
-            error!("Failed to update task {}: {}", self.id.clone(), e);
-        }
+        file_config::finish_task(&self.id, now() as i32);
         let _ = save_task_config();
+        info!(
+            "[task_id={}] stage=task_finished elapsed_ms={}",
+            self.id,
+            started.elapsed().as_millis()
+        );
     }
 }
 
@@ -508,24 +515,12 @@ impl TaskManager {
     }
 
     pub fn update_task(&self, id: String, pass_task: TaskContent) -> Result<bool> {
-        if let Ok(Some(task)) = file_config::get_task(&id) {
-            let mut task_info = task.get_task_info().clone();
-            let ori = pass_task.valid()?;
-            let mut new_task = Task::new();
-            new_task.set_original(ori);
-            new_task.set_id(id);
-            task_info.set_run_type(pass_task.run_type);
-            new_task.set_task_info(task_info);
-            if let Err(_) = file_config::save_task(new_task.get_uuid(), new_task) {
-                return Ok(false);
-            }
-            if let Err(_) = file_config::save_task_config() {
-                return Ok(false);
-            }
-            Ok(true)
-        } else {
-            Ok(false)
+        let original = pass_task.valid()?;
+        if !file_config::update_original(&id, original) {
+            return Ok(false);
         }
+        file_config::save_task_config()?;
+        Ok(true)
     }
 
     pub fn delete_task(&self, id: String) -> Result<bool> {

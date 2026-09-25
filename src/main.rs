@@ -242,16 +242,17 @@ pub fn show_status() {
     let pid_name = get_pid_file();
     if utils::file_exists(&pid_name) {
         match utils::read_pid_num(&pid_name) {
-            Ok(num) => {
-                let has_process = utils::check_process(num).unwrap();
-                if has_process {
-                    info!("web server running at pid = {}", num)
-                }
-            }
+            Ok(num) => match utils::check_process(num) {
+                Ok(true) => info!("web server running at pid = {}", num),
+                Ok(false) => info!("web server is not running (stale pid file: {})", num),
+                Err(e) => error!("check pid {} failed: {}", num, e),
+            },
             Err(e) => {
                 error!("server start failed: {}", e)
             }
         }
+    } else {
+        info!("web server is not running (no pid file)");
     }
 }
 
@@ -267,10 +268,11 @@ fn init_console_log() {
 fn init_file_log() {
     create_folder(&LOGS_FOLDER.to_string()).unwrap();
     // 初始化日志系统
+    // 文件名不能含 `:`（Windows 上会被当成 NTFS 备用数据流，日志文件永远是 0 字节、内容看不到）
     let log_file = File::create(format!(
         "{}app-{}.log",
         LOGS_FOLDER,
-        Local::now().format("%Y%m%d%H:%M").to_string()
+        Local::now().format("%Y%m%d-%H%M").to_string()
     ))
     .unwrap();
     let mut log_config = Config::default();
@@ -380,7 +382,7 @@ pub async fn main() {
         Commands::Check(args) => {
             if args.input_file.len() > 0 {
                 info!("您输入的文件地址是: {}", args.input_file.join(","));
-                do_check(
+                let check_result = do_check(
                     args.input_file.to_owned(),
                     args.output_file.clone(),
                     args.timeout as i32,
@@ -399,8 +401,12 @@ pub async fn main() {
                     args.rename_channel_type,
                     false, // fast_sort
                 )
-                .await
-                .unwrap();
+                .await;
+                // 不要 unwrap：ffprobe 不可用等致命错误要打印可读信息，而不是 panic 栈
+                if let Err(e) = check_result {
+                    error!("检查中止: {}", e);
+                    std::process::exit(1);
+                }
             }
         }
         Commands::Search(args) => {

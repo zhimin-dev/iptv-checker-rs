@@ -118,6 +118,28 @@ GitHub API 对未认证请求有严格的频率限制（60次/时），配置 to
 
 完整文档见 [docs/player-api.md](docs/player-api.md)。
 
+## 检查任务问题反馈
+
+Web 服务日志位于运行目录下的 `static/logs/app-YYYYMMDD-HHMM.log`，同时输出到控制台。命令行检查请保存控制台输出。
+
+反馈“没有结果”“检测全失败”或“任务卡住”时，请提供任务的结果文件名、执行时间，以及该次检查从 `stage=task_start` / `stage=start` 开始到 `stage=done`、`stage=task_failed` 或最后一条日志的完整片段。关键诊断日志使用 INFO/WARN/ERROR 级别，无需额外开启 debug。
+
+每次检查都有独立的 `check_run` 编号；`source_index` 对应任务订阅列表中的顺序（从 1 开始），`source_id` 是来源地址的稳定指纹。新增订阅读取日志只显示站点和指纹，不记录 URL 中的用户名、密码、路径、查询参数和响应正文。分享完整日志前，仍请检查其他模块的历史日志是否含有敏感信息。
+
+| 日志阶段 | 排查方向 |
+| --- | --- |
+| `http_status` / `http_failed` | HTTP 状态码、连接失败、超时及代理开关 |
+| `builtin_scan` / `builtin_empty` | 今日爬取目录、文件数、读取成功数、解析频道数 |
+| `source_empty_or_invalid` / `parsed_empty` | 订阅为空、读取失败或播放列表格式不正确 |
+| `builtin_filter_empty` / `keyword_filter_empty` | 收藏或任务关键词把频道全部过滤 |
+| `blacklist_filter_empty` | 频道全部进入检查黑名单 |
+| `probe_start` / `probe_done` / `probe_failures` | 检测参数、耗时、完整检测结果的成功/失败数及失败原因汇总 |
+| `quality_filter_empty` | 清晰度条件过滤了全部结果 |
+| `result_write_failed` / `report_write_failed` | 输出目录不存在、权限不足或磁盘空间不足 |
+| `done` | 各阶段数量及本次检查总耗时 |
+
+`no_check=true` 表示跳过实际连通性检测；`probe_done` 的 `retained` 是同名筛选后的数量，成功/失败数和检测报告基于筛选前的完整检测结果；`done` 同时记录 `checked_total` 和输出的 `final_total`。若任务中断，请保留最后一个阶段及附近的错误日志；日志用于缩小范围，源站临时故障等问题仍可能需要现场验证。
+
 ## build
 
 ```bash
@@ -134,6 +156,21 @@ make build
 
 ## 更新日志
 
+- 4.7.2
+  - **Bug 修复（ffmpeg 检查）**:
+    - 修复 ffprobe 超时单位错误：`-timeout` 的 socket I/O 单位是**微秒**，之前按秒传入（如 `-timeout 20` 实际只有 20 微秒），导致远程源第一次读 socket 就超时——播放器能正常播放的源在 ffmpeg 检查里全部被判失败（检查结果为空）。改用 `-rw_timeout <微秒>`
+    - 修复 ffprobe 缺失时 `spawn().unwrap()` panic 导致检查线程退出、结果接收循环空转死等的问题：改为返回错误，并在检查开始前预检 ffprobe，缺失时直接中止（不会再把所有频道误判为失败并写进黑名单）
+    - 修复检查链路不带频道 UA / 自定义请求头的问题：播放列表里的 `http-user-agent` / `#EXTVLCOPT:http-user-agent=` 与 network.json 的自定义头现在同时作用于 HTTP 预校验和 ffprobe（之前只有播放器会带，需要特定 UA 的源会 403）
+    - 修复并发形同虚设：worker 之前在整个检查过程中持有任务队列锁，实际串行执行（8 个频道 `-c 4` 需 29s，修复后 7s）
+    - 修复 m3u 解析：带 UTF-8 BOM 的播放列表（记事本 / Excel 导出）会被解析出 0 个频道
+    - 失败原因不再丢失：`-v error` 保留 ffprobe 报错，检测报告与日志新增失败原因 TOP（如 `ffprobe timed out after 20000ms ×3`）
+    - ffprobe 优先使用项目自带二进制（`tools/ffmpeg/ffprobe`），与播放器中继的 ffmpeg 选择逻辑一致
+  - **Bug 修复（Windows 进程管理）**:
+    - `web --start` / `web --status` 不再依赖 Unix 的 `ps` / `kill`：Windows 改用 Win32 API（`OpenProcess` / `GetExitCodeProcess` / `TerminateProcess`）。之前 PATH 中没有 Git 自带的 `ps.exe` 时，只要 pid 文件存在就会 panic 导致服务起不来
+    - pid 文件损坏或进程检查失败时只记录告警，不再 `expect` panic；`web --status` 会明确输出「未运行 / 正在运行 + pid」
+    - 日志文件名去掉 `:`（`app-20260913-1557.log`）：Windows 上 `app-2026091315:57.log` 会把内容写进 NTFS 备用数据流，日志文件永远是 0 字节、看不到内容
+  - **新增接口**: `GET /system/ffmpeg-status` 返回服务端 ffmpeg / ffprobe 是否可用及路径版本
+  - **前端**: 服务端模式下自动检测 ffprobe，缺失时禁用「ffmpeg 慢速检查」并给出原因提示（不再让用户勾了却拿到空结果）
 - 4.7.1
   - **Bug 修复**:
     - 修复 bool 字段接收字符串 `"true"`/`"false"` 导致 400 错误（`fast_sort`、`sort`、`no_check` 等 10 个字段）
