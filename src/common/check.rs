@@ -3,11 +3,12 @@ use crate::common::m3u::m3u::list_str2obj;
 use crate::common::util::from_video_resolution;
 use crate::common::{AudioInfo, CheckOptions, SearchOptions, VideoInfo};
 use crate::config::favourite::get_favourite_list;
-use crate::r#const::constant::{INPUT_SEARCH_FOLDER, OUTPUT_FOLDER};
+use crate::r#const::constant::OUTPUT_FOLDER;
 use log::info;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::Error;
+use std::sync::{Mutex, OnceLock};
 
 /// 归类失败原因：去掉带具体 URL 的易变部分并截断，便于聚合统计
 pub(crate) fn normalize_fail_reason(reason: &str) -> String {
@@ -693,19 +694,92 @@ pub async fn get_favourite_channel(channel_type: String) -> Result<String, Error
     get_favourite_channel_with_context(channel_type, "favourite").await
 }
 
+/// 生成收藏/全部频道 m3u 缓存：key = (channel_type, 数据文件指纹)。
+/// 目的大于 3 万频道时解析+繁简转换+关键词过滤需要数十秒，播放器、页面与检查任务
+/// 同时请求会重复做同样的工作；数据文件未变化时直接复用结果。
+const FAVOURITE_CACHE_TTL_SECS: u64 = 600;
+const FAVOURITE_CACHE_MAX_ENTRIES: usize = 8;
+
+struct FavouriteCacheEntry {
+    fingerprint: String,
+    created_at: std::time::Instant,
+    body: String,
+}
+
+fn favourite_cache() -> &'static Mutex<HashMap<String, FavouriteCacheEntry>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, FavouriteCacheEntry>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 数据文件指纹：目录 + 每个文件的路径/大小/修改时间。
+/// 今日目录没有数据时会把回退日期一起算进去，避免跨日复用了旧结果。
+fn favourite_source_fingerprint(search_path: &str, files: &[String]) -> String {
+    use std::fmt::Write as _;
+    let mut fingerprint = String::from(search_path);
+    for file in files {
+        let _ = write!(fingerprint, "|{}", file);
+        if let Ok(meta) = std::fs::metadata(file) {
+            let _ = write!(fingerprint, ":{}", meta.len());
+            if let Ok(modified) = meta.modified() {
+                if let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH) {
+                    let _ = write!(fingerprint, ":{}", duration.as_secs());
+                }
+            }
+        }
+    }
+    fingerprint
+}
+
+fn favourite_cache_get(key: &str, fingerprint: &str) -> Option<String> {
+    let mut cache = favourite_cache().lock().ok()?;
+    match cache.get(key) {
+        Some(entry)
+            if entry.fingerprint == fingerprint
+                && entry.created_at.elapsed().as_secs() < FAVOURITE_CACHE_TTL_SECS =>
+        {
+            Some(entry.body.clone())
+        }
+        Some(_) => {
+            cache.remove(key);
+            None
+        }
+        None => None,
+    }
+}
+
+fn favourite_cache_put(key: &str, fingerprint: &str, body: &str) {
+    if let Ok(mut cache) = favourite_cache().lock() {
+        if cache.len() >= FAVOURITE_CACHE_MAX_ENTRIES {
+            // 条目数很少，直接清空即可保证不会无限增长
+            cache.clear();
+        }
+        cache.insert(
+            key.to_string(),
+            FavouriteCacheEntry {
+                fingerprint: fingerprint.to_string(),
+                created_at: std::time::Instant::now(),
+                body: body.to_string(),
+            },
+        );
+    }
+}
+
 async fn get_favourite_channel_with_context(
     channel_type: String,
     context: &str,
 ) -> Result<String, Error> {
-    // 获取今日日期对应目录
-    let today = chrono::Local::now().format("%Y%m%d").to_string();
-    let search_path = format!("{}/{}", INPUT_SEARCH_FOLDER, today);
+    // 获取当前可用的爬取数据目录：优先今日，今日无数据时回退到最近一个日期目录
+    // （容器时区与宿主机不一致、或爬取尚未完成时，只认今日目录会读到 0 个频道）
+    let (search_path, fallback_date) = crate::search::resolve_latest_search_dir();
+    if fallback_date {
+        log::warn!("[{}] stage=builtin_date_fallback channel_type={} directory={:?} hint=今日爬取数据不存在或为空，已回退到最近一次爬取结果；请检查容器时区设置", context, channel_type, search_path);
+    }
 
     let mut all_files = Vec::new();
     let dir_entries = match std::fs::read_dir(&search_path) {
         Ok(entries) => entries,
         Err(e) => {
-            log::warn!("[{}] stage=builtin_scan channel_type={} directory={:?} error={} hint=今日爬取目录不可读，请确认今日爬取是否完成及目录权限", context, channel_type, search_path, e);
+            log::warn!("[{}] stage=builtin_scan channel_type={} directory={:?} error={} hint=爬取目录不可读，请确认爬取是否完成及目录权限", context, channel_type, search_path, e);
             return Ok("".to_string());
         }
     };
@@ -731,6 +805,45 @@ async fn get_favourite_channel_with_context(
                 // 遇到单个文件错误也继续处理其他文件
                 continue;
             }
+        }
+    }
+
+    // 文件顺序由文件系统给出，排序后再算指纹与读取，保证缓存键稳定
+    all_files.sort();
+
+    // 缓存键同时包含「会影响输出内容的配置」：想看的频道关键词、重命名方式、图标 host。
+    // 这样用户改配置后不会读到旧的结果，而不用等缓存过期。
+    let favourite_config = crate::config::favourite::get_favourite_map();
+    let base_config = crate::config::base::get_base_config();
+    let logos_host = crate::config::logos::get_logos_config().host;
+    let cache_key = format!(
+        "{}@{}@{}@{}@{}|{}|{}@{}",
+        channel_type,
+        search_path,
+        favourite_config.like.join("\u{1}"),
+        favourite_config.equal.join("\u{1}"),
+        base_config.rename_channel_type,
+        base_config.host,
+        logos_host,
+        base_config.remote_url2local_images
+    );
+    // 没有数据时不缓存（下次爬取完成后应立即重新读取）
+    let cacheable = !all_files.is_empty();
+    let fingerprint = if cacheable {
+        favourite_source_fingerprint(&search_path, &all_files)
+    } else {
+        String::new()
+    };
+    if cacheable {
+        if let Some(body) = favourite_cache_get(&cache_key, &fingerprint) {
+            info!(
+                "[{}] stage=builtin_cache_hit channel_type={} directory={:?} bytes={}",
+                context,
+                channel_type,
+                search_path,
+                body.len()
+            );
+            return Ok(body);
         }
     }
 
@@ -797,7 +910,11 @@ async fn get_favourite_channel_with_context(
         }
         data.replace_logos(host, &logos_map);
     }
-    return Ok(data.get_m3u_content_str(rename_channel_type, false));
+    let body = data.get_m3u_content_str(rename_channel_type, false);
+    if cacheable {
+        favourite_cache_put(&cache_key, &fingerprint, &body);
+    }
+    return Ok(body);
 }
 
 /// 内置订阅直接读取本地爬取结果，避免依赖公网域名、反向代理和 Web 端口回环。
@@ -813,6 +930,67 @@ fn builtin_channel_type(source: &str) -> Option<String> {
     )
 }
 
+/// 从 URL 的查询参数里取合法的 `channel_type`（要求路径以内置接口结尾，
+/// 以兼容反向代理子路径，如 `https://mine.example/iptv/system/get-favourite-channel`）。
+fn favourite_endpoint_channel_type(parsed: &url::Url) -> Option<String> {
+    const ENDPOINT: &str = "/system/get-favourite-channel";
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return None;
+    }
+    let path = parsed.path().trim_end_matches('/').to_ascii_lowercase();
+    if !path.ends_with(ENDPOINT) {
+        return None;
+    }
+    let types: Vec<_> = parsed
+        .query_pairs()
+        .filter(|(key, _)| key == "channel_type")
+        .map(|(_, value)| value.into_owned())
+        .collect();
+    match types.as_slice() {
+        [value] if value == "all" || value == "like" => Some(value.clone()),
+        _ => None,
+    }
+}
+
+/// 仅按「URL 形态」判断是否可能是本服务的收藏频道接口（不看 host/端口，也不看凭据）。
+/// 只用于 HTTP 取源失败后的兜底，不参与正常的内置源判定。
+fn builtin_channel_type_from_endpoint(source: &str) -> Option<&'static str> {
+    let source = source.trim();
+    let parsed = if source.starts_with('/') {
+        url::Url::parse(&format!("http://localhost{}", source)).ok()?
+    } else {
+        url::Url::parse(source).ok()?
+    };
+    let channel_type = favourite_endpoint_channel_type(&parsed)?;
+    Some(if channel_type == "like" { "like" } else { "all" })
+}
+
+/// 判断 URL 主机是否属于「内网地址」（不含回环）。
+/// - 内网 IPv4：10/8、172.16/12、192.168/16，以及 169.254/16、100.64/10
+/// - 无点号的单段主机名（`nas`、`iptv` 之类），通常由内网 DNS/mDNS 解析
+/// 回环地址由调用方按「端口必须等于 WEB_PORT」单独判断，因此这里返回 false。
+fn host_looks_lan(url: &url::Url) -> bool {
+    match url.host() {
+        Some(url::Host::Domain(host)) => {
+            let host = host.trim_end_matches('.').to_ascii_lowercase();
+            !host.is_empty() && host != "localhost" && !host.contains('.')
+        }
+        Some(url::Host::Ipv4(ip)) => {
+            ip.is_private()
+                || ip.is_link_local()
+                // 100.64.0.0/10（CGNAT，部分内网/VPN 也在用）
+                || (ip.octets()[0] == 100 && (64..128).contains(&ip.octets()[1]))
+        }
+        // IPv6 ULA / 链路本地（fc00::/7、fe80::/10）
+        Some(url::Host::Ipv6(ip)) => {
+            let segments = ip.segments();
+            (segments[0] & 0xfe00) == 0xfc00 || (segments[0] & 0xffc0) == 0xfe80
+        }
+        None => false,
+    }
+}
+
+/// 通用的内置源判断：等价于 [`builtin_channel_type`]，保留显式端口用于测试。
 fn builtin_channel_type_for(
     source: &str,
     configured_host: &str,
@@ -835,26 +1013,33 @@ fn builtin_channel_type_for(
         ENDPOINT
     ))
     .ok();
+    // 配置的 host 可能带反向代理子路径（如 https://mine.example/iptv），先按完整路径匹配
     let same_configured = configured.as_ref().map_or(false, |base| {
-        url.origin() == base.origin() && url.path() == base.path()
+        url.origin() == base.origin() && url.path().trim_end_matches('/') == base.path()
     });
+    let channel_type = favourite_endpoint_channel_type(&url)?;
+    // 带内嵌凭据（http://user:pass@host/...）的地址按普通订阅处理：
+    // 通常是用户自己的第三方订阅，不能当成内置源。
+    if !url.username().is_empty() || url.password().is_some() {
+        return None;
+    }
     let loopback = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
     let local_http = loopback
         && url.scheme() == "http"
-        && url.port_or_known_default() == Some(local_port)
-        && url.path() == ENDPOINT;
-    if !(relative && url.path() == ENDPOINT || same_configured || local_http) {
-        return None;
+        && url.port_or_known_default() == Some(local_port);
+    if relative || same_configured || local_http {
+        return Some(channel_type);
     }
-    let types: Vec<_> = url
-        .query_pairs()
-        .filter(|(key, _)| key == "channel_type")
-        .map(|(_, value)| value.into_owned())
-        .collect();
-    match types.as_slice() {
-        [value] if value == "all" || value == "like" => Some(value.clone()),
-        _ => None,
+    if host_looks_lan(&url) {
+        // 兜底：内网地址指向本服务接口，但端口与配置不一致（Docker 端口映射、
+        // 局域网 IP、反向代理等）。这种地址在服务内部通常取不到数据，直接读本地更可靠。
+        log::debug!(
+            "favourite endpoint source host mismatch, read local crawl data instead: {}",
+            crate::common::util::source_log_label(source)
+        );
+        return Some(channel_type);
     }
+    None
 }
 
 async fn load_check_sources(
@@ -874,20 +1059,42 @@ async fn load_check_sources(
             label,
             channel_type.as_deref().unwrap_or("external")
         );
-        let loaded = if let Some(channel_type) = channel_type {
+        let mut loaded = if let Some(channel_type) = channel_type {
             vec![
                 get_favourite_channel_with_context(channel_type, &source_context)
                     .await
                     .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?,
             ]
         } else {
-            common::m3u::m3u::from_arr_with_context(vec![source], timeout, &source_context).await
+            common::m3u::m3u::from_arr_with_context(vec![source.clone()], timeout, &source_context)
+                .await
         };
-        let bytes: usize = loaded.iter().map(String::len).sum();
-        let recognized = loaded
+        let mut recognized = loaded
             .iter()
             .filter(|body| common::m3u::m3u::check_source_type((*body).clone()).is_some())
             .count();
+        if recognized == 0 {
+            // 订阅取不到数据时的兜底：地址本身就是本服务的收藏/全部频道接口
+            // （公网域名、反代地址等），直接读本地爬取数据，避免检查结果全是 0。
+            if let Some(channel_type) = builtin_channel_type_from_endpoint(&source) {
+                log::warn!(
+                    "[{}] stage=source_local_fallback source={} kind={} hint=该地址是本机收藏频道接口但读取失败，已改为直接读取本地爬取数据",
+                    source_context,
+                    label,
+                    channel_type
+                );
+                if let Ok(body) =
+                    get_favourite_channel_with_context(channel_type.to_string(), &source_context)
+                        .await
+                {
+                    if common::m3u::m3u::check_source_type(body.clone()).is_some() {
+                        recognized = 1;
+                        loaded = vec![body];
+                    }
+                }
+            }
+        }
+        let bytes: usize = loaded.iter().map(String::len).sum();
         info!(
             "[{}] stage=source_loaded bodies={} bytes={} recognized_playlists={} elapsed_ms={}",
             source_context,
@@ -1181,15 +1388,31 @@ mod tests {
 
     #[test]
     fn test_builtin_channel_source_urls() {
+        let expected_type = |source: &str| -> &'static str {
+            if source.contains("channel_type=all") {
+                "all"
+            } else {
+                "like"
+            }
+        };
         for source in [
             "/system/get-favourite-channel?channel_type=like",
             "http://localhost:8089/system/get-favourite-channel?channel_type=like",
-            " https://iptv.example.com/system/get-favourite-channel?x=1&channel_type=like ",
+            " https://iptv.example.com/iptv/system/get-favourite-channel?x=1&channel_type=like ",
+            // issue #117：Docker 端口映射 / 局域网 IP / 反向代理地址，服务内部取不到数据，
+            // 必须按内置源直接读本地爬取结果，否则会走 HTTP 超时导致检查结果为 0
+            "http://192.168.0.13:8081/system/get-favourite-channel?channel_type=like",
+            "http://192.168.0.13:8081/system/get-favourite-channel?channel_type=all",
+            "https://iptv.example.com/iptv/system/get-favourite-channel?channel_type=all",
+            // 反向代理子路径 + 结尾多一个斜杠
+            "https://iptv.example.com/iptv/system/get-favourite-channel/?channel_type=all",
         ] {
             assert_eq!(
-                super::builtin_channel_type_for(source, "https://iptv.example.com", 8089)
+                super::builtin_channel_type_for(source.trim(), "https://iptv.example.com/iptv", 8089)
                     .as_deref(),
-                Some("like")
+                Some(expected_type(source)),
+                "{}",
+                source
             );
         }
         assert_eq!(
@@ -1205,8 +1428,32 @@ mod tests {
             "/system/get-favourite-channel?channel_type=invalid",
             "/system/get-favourite-channel?channel_type=all&channel_type=like",
             "/system/get-favourite-channel",
+            "https://example.com/system/get-favourite-channel",
+            "https://example.com/system/get-favourite-channel?channel_type=",
+            // 公网地址按普通订阅处理：不能因为是同路径就当成内置源（否则带凭据的
+            // 第三方订阅会被误读成本地数据，也无法再记录 403 等失败状态）
+            "http://8.8.8.8:8089/system/get-favourite-channel?channel_type=all",
+            "http://user:pass@8.8.8.8:8089/system/get-favourite-channel?channel_type=all",
         ] {
             assert_eq!(super::builtin_channel_type(source), None, "{}", source);
+        }
+        // 内网地址：即使端口与 WEB_PORT 不一致，也应直接读本地爬取数据
+        for source in [
+            "http://192.168.0.13:8081/system/get-favourite-channel?channel_type=all",
+            "http://10.0.0.5/system/get-favourite-channel?channel_type=like",
+            "http://172.16.3.4:8081/system/get-favourite-channel?channel_type=all",
+            "http://nas:8081/system/get-favourite-channel?channel_type=all",
+        ] {
+            assert_eq!(
+                super::builtin_channel_type_for(source, "", 8089).as_deref(),
+                Some(if source.contains("channel_type=like") {
+                    "like"
+                } else {
+                    "all"
+                }),
+                "{}",
+                source
+            );
         }
     }
 
@@ -1507,17 +1754,23 @@ mod regression_tests {
             "/system/get-favourite-channel?channel_type=all",
             "https://mine.example/iptv/system/get-favourite-channel?channel_type=all",
             "http://127.0.0.1:9000/system/get-favourite-channel?channel_type=all",
+            // issue #117：内网地址即使端口与 WEB_PORT 不一致（Docker 端口映射），
+            // 也要按内置源读本地数据，否则会走 HTTP 超时导致检查结果为 0
+            "http://192.168.0.13:8081/system/get-favourite-channel?channel_type=all",
         ] {
             assert_eq!(
                 builtin_channel_type_for(source, host, 9000).as_deref(),
-                Some("all")
+                Some("all"),
+                "{}",
+                source
             );
         }
         for source in [
             "https://other.example/iptv/system/get-favourite-channel?channel_type=all",
-            "http://127.0.0.1:9001/system/get-favourite-channel?channel_type=all",
             "https://127.0.0.1:9000/system/get-favourite-channel?channel_type=all",
             "https://mine.example:8443/iptv/system/get-favourite-channel?channel_type=all",
+            "http://8.8.8.8:8081/system/get-favourite-channel?channel_type=all",
+            "http://user:pass@192.168.0.13:8081/system/get-favourite-channel?channel_type=all",
         ] {
             assert_eq!(
                 builtin_channel_type_for(source, host, 9000),

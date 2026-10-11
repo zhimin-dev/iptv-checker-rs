@@ -473,6 +473,29 @@ pub fn source_log_label(source: &str) -> String {
     }
 }
 
+/// 判断地址是否指向「本机」：相对路径、localhost、127.0.0.0/8 与 ::1 等回环地址。
+/// 这类请求不应该走代理（系统代理/自定义代理通常代理不到自己），否则会连不上或超时
+/// ——issue #117 中检查任务取不到订阅数据的原因之一。
+pub fn is_local_or_loopback_url(raw: &str) -> bool {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return false;
+    }
+    if raw.starts_with('/') {
+        return true;
+    }
+    let url = match Url::parse(raw) {
+        Ok(url) => url,
+        Err(_) => return false,
+    };
+    match url.host() {
+        Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        None => false,
+    }
+}
+
 /// 获取URL的内容
 ///
 /// # 参数
@@ -492,13 +515,17 @@ pub async fn get_url_body_with_context(
 ) -> Result<String, Error> {
     let started = std::time::Instant::now();
     let source = source_log_label(&_url);
+    let local_target = is_local_or_loopback_url(&_url);
     let mut builder = reqwest::Client::builder()
         .timeout(std::time::Duration::from_millis(timeout))
         .danger_accept_invalid_certs(true);
 
     // Apply proxy and headers from config
     let config = crate::config::network::get_network_config();
-    if config.use_system_proxy {
+    if local_target {
+        // 本机/回环地址强制直连，避免被系统代理或自定义代理劫持导致超时
+        builder = builder.no_proxy();
+    } else if config.use_system_proxy {
         // Windows 全局代理（系统代理开关）不体现在环境变量里，需从注册表读取
         #[cfg(target_os = "windows")]
         if let Some(url) = get_windows_system_proxy() {
@@ -537,8 +564,8 @@ pub async fn get_url_body_with_context(
     }
     builder = builder.default_headers(headers);
 
-    log::info!("[{}] stage=http_start source={} timeout_ms={} system_proxy={} custom_proxy={} custom_headers={}",
-        context, source, timeout, config.use_system_proxy, !config.proxy_url.trim().is_empty(), config.custom_headers.len());
+    log::info!("[{}] stage=http_start source={} timeout_ms={} system_proxy={} custom_proxy={} custom_headers={} local_direct={}",
+        context, source, timeout, config.use_system_proxy, !config.proxy_url.trim().is_empty(), config.custom_headers.len(), local_target);
     let result = async {
         let client = builder.build()?;
         let response = client.get(&_url).send().await?;

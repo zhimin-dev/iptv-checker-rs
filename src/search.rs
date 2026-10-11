@@ -984,6 +984,61 @@ pub fn get_search_folder() -> String {
     )
 }
 
+/// 从 `static/search/` 下挑选「当前可用的爬取数据目录」。
+///
+/// 优先今日目录；当今日目录不存在或没有任何文件时，回退到最近一个有数据的日期目录。
+/// 原因：检查任务与播放器只认今日目录，容器时区与宿主机不一致（或爬取尚未完成）时
+/// 会读到 0 个频道，表现为「页面能看到频道、定时检查却全是 0」。
+///
+/// 返回值：`(目录路径, 是否回退到了历史日期)`
+pub fn resolve_latest_search_dir() -> (String, bool) {
+    let today = chrono::Local::now().format("%Y%m%d").to_string();
+    let today_path = format!("{}{}", INPUT_SEARCH_FOLDER, today);
+    if dir_has_files(&today_path) {
+        return (today_path, false);
+    }
+
+    let mut dates: Vec<String> = Vec::new();
+    if let Ok(entries) = fs::read_dir(INPUT_SEARCH_FOLDER) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let name = match path.file_name().and_then(|n| n.to_str()) {
+                Some(name) => name.to_string(),
+                None => continue,
+            };
+            // 只接受 YYYYMMDD 形式的日期目录，避免误用备份/临时目录
+            if name.len() == 8 && name.chars().all(|c| c.is_ascii_digit()) {
+                dates.push(name);
+            }
+        }
+    }
+    // 日期字符串可直接按字典序倒排（同长度纯数字）
+    dates.sort();
+    for date in dates.into_iter().rev() {
+        let candidate = format!("{}{}", INPUT_SEARCH_FOLDER, date);
+        if dir_has_files(&candidate) {
+            warn!(
+                "search data for today ({}) is missing or empty, fallback to latest available directory: {}",
+                today, candidate
+            );
+            return (candidate, true);
+        }
+    }
+
+    // 没有任何可用数据：返回今日目录，保持原有行为（调用方自行处理空数据）
+    (today_path, false)
+}
+
+fn dir_has_files(path: &str) -> bool {
+    match fs::read_dir(path) {
+        Ok(entries) => entries.flatten().any(|entry| entry.path().is_file()),
+        Err(_) => false,
+    }
+}
+
 const EPG_SUPPORT_ZIP_EXTENSION: [&str; 2] = ["zip", "gz"];
 
 pub fn get_url_extension(url_str: &str) -> String {

@@ -17,10 +17,9 @@
 use crate::common::m3u::m3u::list_str2obj;
 use crate::common::m3u::SearchOptions;
 use crate::epg_mapping::get_best_tvg_id;
-use crate::r#const::constant::{INPUT_SEARCH_FOLDER, PLAYER_FOLDER};
+use crate::r#const::constant::PLAYER_FOLDER;
 use actix_files::NamedFile;
 use actix_web::{delete, get, post, web, HttpRequest, HttpResponse, Responder};
-use chrono::Local;
 use lazy_static::lazy_static;
 use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
@@ -76,11 +75,16 @@ fn default_channel_filter() -> String {
     "all".to_string()
 }
 
-/// 获取服务端当前已有的频道列表（来自今日搜索数据）。
+/// 获取服务端当前已有的频道列表（来自今日搜索数据，今日无数据时回退到最近一次爬取结果）。
 /// filter: all | like（应用收藏关键词过滤）
 pub async fn build_player_channels(filter: &str) -> Result<Vec<PlayerChannel>, String> {
-    let today = Local::now().format("%Y%m%d").to_string();
-    let search_path = format!("{}/{}", INPUT_SEARCH_FOLDER, today);
+    let (search_path, fallback_date) = crate::search::resolve_latest_search_dir();
+    if fallback_date {
+        log::warn!(
+            "player: today's search data is missing or empty, using latest available directory: {}",
+            search_path
+        );
+    }
 
     let mut files = Vec::new();
     let dir_entries = std::fs::read_dir(&search_path)
